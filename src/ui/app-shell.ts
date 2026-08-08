@@ -86,7 +86,12 @@ function menuItem(
   return shortcut === '' ? { id, label, action, enabled } : { id, label, shortcut, action, enabled };
 }
 
-function buildMenus(actions: AppShellActions): Menu[] {
+/** 菜单分隔符：渲染为 <hr>，不可点击（修复 P2[blocking]：此前分隔项漏设 separator:true）。 */
+function separator(id: string): MenuItem {
+  return { id, label: '', separator: true, action: () => undefined };
+}
+
+export function buildMenus(actions: AppShellActions): Menu[] {
   const insertItems: MenuItem[] = INSERT_ELEMENTS.map((element) =>
     menuItem(
       `insert-${element.id}`,
@@ -103,10 +108,10 @@ function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem('file-new', '新建', actions.onNew, 'Ctrl+N'),
         menuItem('file-open', '打开', actions.onOpen, 'Ctrl+O'),
-        menuItem('file-sep1', '', () => undefined, '', undefined),
+        separator('file-sep1'),
         menuItem('file-save', '保存', actions.onSave, 'Ctrl+S'),
         menuItem('file-save-as', '另存为', actions.onSaveAs, 'Ctrl+Shift+S'),
-        menuItem('file-sep2', '', () => undefined, '', undefined),
+        separator('file-sep2'),
         menuItem('file-export-html', '导出 HTML', actions.onExportHtml),
         menuItem('file-export-pdf', '导出 PDF', actions.onExportPdf),
       ],
@@ -117,7 +122,7 @@ function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem('edit-undo', '撤销', actions.onUndo),
         menuItem('edit-redo', '重做', actions.onRedo),
-        menuItem('edit-sep1', '', () => undefined, '', undefined),
+        separator('edit-sep1'),
         menuItem('edit-cut', '剪切', actions.onCut),
         menuItem('edit-copy', '复制', actions.onCopy),
         menuItem('edit-paste', '粘贴', actions.onPaste),
@@ -195,14 +200,24 @@ export function createAppShell(
     close.textContent = '关闭';
     dialog.append(title, renderCheatsheet(bindings), close);
     overlay.appendChild(dialog);
-    const dismiss = (): void => overlay.remove();
+    function dismiss(): void {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+    }
+    function onKey(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        dismiss();
+      }
+    }
     overlay.addEventListener('pointerdown', (event) => {
       if (event.target === overlay) {
         dismiss();
       }
     });
     close.addEventListener('click', dismiss);
+    document.addEventListener('keydown', onKey);
     document.body.appendChild(overlay);
+    close.focus();
   }
 
   function renderTabBar(
