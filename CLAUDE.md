@@ -27,3 +27,9 @@ Use Vitest with `describe`/`it` and name files `*.test.ts` inside `__tests__/`. 
 ## Commit & Pull Request Guidelines
 
 History generally uses concise, imperative subjects with Conventional Commit prefixes such as `feat(export):`, `fix(perf):`, `docs:`, and `ci:`. Keep commits scoped to one concern. Pull requests should explain the user-visible change, list verification commands, link related requirements or issues, and include screenshots or recordings for UI changes. Call out platform-specific Tauri behavior and any known limitations.
+
+## Version Release Process
+
+Keep the release version identical in `package.json`, both root entries in `package-lock.json`, `src-tauri/Cargo.toml`, the LightInk entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Before tagging, run `npm run build`, `npm test`, and `cargo test --manifest-path src-tauri/Cargo.toml`. Commit with a subject such as `chore(release): v0.1.1`, push `main`, then create and push an annotated tag: `git tag -a v0.1.1 -m "LightInk v0.1.1"` and `git push origin v0.1.1`.
+
+Do not manually create or publish the GitHub Release before pushing the tag; `.github/workflows/release.yml` owns Release creation and asset upload. Wait for both the platform build matrix and `Verify release assets` job to pass. Confirm the public Release contains `.msi`, `.exe`, `.dmg`, `.deb`, and `.AppImage` files. Never move an existing release tag; fix the issue and publish a new patch version.

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release:
     strategy:
@@ -25,18 +29,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # 需要完整历史以提取变更记录
+          filter: blob:none  # 历史只取 commit/tree，当前版本文件按需下载
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -49,10 +54,12 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: src-tauri -> target
+          cache-workspace-crates: true
+          cache-bin: false
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       # 自动提取变更记录：取上一个 tag 到当前 tag 之间的提交，按
       # conventional commit 前缀分组（feat/fix/其他），注入 releaseBody。
@@ -86,13 +93,38 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build and publish release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'LightInk ${{ github.ref_name }}'
           releaseBody: ${{ env.RELEASE_BODY }}
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
+          retryAttempts: 3
           args: --target ${{ matrix.target }}
+
+  verify-release:
+    name: Verify release assets
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Require all platform installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASSETS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[].name')
+          echo "$ASSETS"
+
+          for PATTERN in '\.msi$' '\.exe$' '\.dmg$' '\.deb$' '\.AppImage$'; do
+            if ! grep -Eq "$PATTERN" <<< "$ASSETS"; then
+              echo "::error::Release ${GITHUB_REF_NAME} is missing an asset matching ${PATTERN}"
+              exit 1
+            fi
+          done
