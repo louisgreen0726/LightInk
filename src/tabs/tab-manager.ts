@@ -88,6 +88,10 @@ export interface TabManagerDeps {
    * 仅在写入磁盘成功时触发。
    */
   onFileSaved?: (filePath: string, content: string) => void;
+  /**
+   * R14：点击文档内链接时回调（main.ts 分类后跳转）。经 mountEditor 选项注入。
+   */
+  onLinkNavigate?: (href: string) => void;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   reportError?: (message: string, error: unknown) => void;
@@ -110,7 +114,7 @@ export function snapshotKeyOf(tab: Pick<TabState, 'filePath' | 'syntheticId'>): 
 const DEFAULT_DEBOUNCE_MS = 1000;
 
 export class TabManager {
-  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved'>;
+  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate'>;
   private tabs: TabState[] = [];
   private activeId: string | null = null;
   private counter = 0;
@@ -138,6 +142,7 @@ export class TabManager {
       onActiveContentChanged: deps.onActiveContentChanged,
       onFileOpened: deps.onFileOpened,
       onFileSaved: deps.onFileSaved,
+      onLinkNavigate: deps.onLinkNavigate,
     };
   }
 
@@ -431,6 +436,7 @@ export class TabManager {
         getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
       }),
       onAssetError: (message, error) => this.deps.reportError(message, error),
+      onLinkNavigate: this.deps.onLinkNavigate,
     });
     const tab: TabState = {
       id,

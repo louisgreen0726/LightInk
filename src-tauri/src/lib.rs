@@ -8,6 +8,7 @@ mod recents;
 mod snapshot;
 
 use tauri::{Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,6 +36,7 @@ pub fn run() {
     }));
     builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(cli::PendingFile(std::sync::Mutex::new(first_file)))
         .invoke_handler(tauri::generate_handler![
             file::read_file,
@@ -55,7 +57,38 @@ pub fn run() {
             snapshot::list_versions,
             snapshot::read_version,
             snapshot::restore_version,
+            open_in_browser,
+            open_path_default,
+            reveal_path_in_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── R14 链接跳转 / R3 在文件管理器中显示 ──────────────────────────────
+// 经 tauri-plugin-opener 的 Rust API（OpenerExt）实现：外部链接走系统浏览器、
+// 本地文件走系统默认程序、reveal 在文件管理器中定位（T8 已 invoke 此命令）。
+
+/// 在系统默认浏览器打开外部 URL（http(s) 等）。
+#[tauri::command]
+fn open_in_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// 以系统默认方式打开本地文件（非 .md）。
+#[tauri::command]
+fn open_path_default(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// 在系统文件管理器中定位该文件（R3 标签页右键「在文件管理器中显示」）。
+#[tauri::command]
+fn reveal_path_in_files(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|e| e.to_string())
 }

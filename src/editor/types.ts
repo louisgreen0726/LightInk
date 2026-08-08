@@ -84,6 +84,11 @@ export interface MountOptions {
    * T2 only stubs this — persistence is delivered by T4.
    */
   readonly assetsDir?: string;
+  /**
+   * R14：点击文档内链接 mark 时回调（由 main.ts 分类后跳转：外链→浏览器、
+   * 本地 .md→新标签、其他本地文件→系统默认程序）。
+   */
+  readonly onLinkNavigate?: (href: string) => void;
 }
 
 /** 当前选区的位置摘要（R7/R3 选区访问器）。 */

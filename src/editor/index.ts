@@ -38,6 +38,7 @@ import { attachCursorListeners, type CursorEventBinding } from './dom-events.js'
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
+import { linkNavigationPlugin } from './link-navigation.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
@@ -165,6 +166,10 @@ export async function mountEditor(
         .use(mathPlugin)
         // T9：mermaid 代码块即时渲染（按需加载 + 语法错误隔离，见 R9）。
         .use(mermaidPlugin);
+      // T14：文档链接点击跳转（R14）。注入回调时拦截单击 link mark。
+      if (options.onLinkNavigate !== undefined) {
+        editor.use(linkNavigationPlugin({ onLinkNavigate: options.onLinkNavigate }));
+      }
       // T4：注入图片落盘回调时拦截粘贴/拖拽图片 → 落盘 → 插入相对引用。
       if (options.assetSaver !== undefined) {
         editor.use(

@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ask, confirm, message as dialogMessage, save } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
+import { classifyLink } from './editor/link-navigation.js';
 import { SourceView } from './editor/source-view.js';
 import {
   buildEditorContextMenuItems,
@@ -283,6 +284,7 @@ manager = new TabManager({
     // R13：每次成功保存自动生成一份版本快照。
     void invoke('create_version', { filePath, content }).catch(() => undefined);
   },
+  onLinkNavigate: (href) => handleLinkNavigation(href),
 });
 
 // T7：大纲侧栏。闭包读取活动标签的宿主/markdown；刷新由 TabManager 的
@@ -350,6 +352,44 @@ function showVersionsForActive(): void {
     saveCurrent: () =>
       invoke('create_version', { filePath, content: tab?.editor.getMarkdown() ?? '' }),
   });
+}
+
+/** 取路径所在目录（兼容 / 与 \）。 */
+function dirOf(path: string): string {
+  const parts = path.split(/[\\/]/);
+  parts.pop();
+  return parts.join('/');
+}
+
+/** R14：点击文档链接 → 分类跳转（外链浏览器 / 本地 .md 新标签 / 其他本地文件系统默认）。 */
+function handleLinkNavigation(href: string): void {
+  const docPath = manager.activeTab?.filePath ?? '';
+  const currentDocDir = docPath !== '' ? dirOf(docPath) : '';
+  const link = classifyLink(href, currentDocDir);
+  switch (link.kind) {
+    case 'external':
+      void invoke('open_in_browser', { url: link.target }).catch(() => undefined);
+      return;
+    case 'localMd':
+      void openLocalMdLink(link.target);
+      return;
+    case 'localFile':
+      void invoke('open_path_default', { path: link.target }).catch(() => undefined);
+      return;
+    default:
+      return;
+  }
+}
+
+/** 相对/绝对 .md 链接：应用内新标签打开；目标不存在给出提示。 */
+async function openLocalMdLink(path: string): Promise<void> {
+  const opened = await manager.openFile(path);
+  if (opened === null) {
+    void dialogMessage(`无法打开「${path}」：文件不存在或无法读取。`, {
+      title: '轻墨 LightInk',
+      kind: 'warning',
+    });
+  }
 }
 
 // T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。
