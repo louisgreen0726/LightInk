@@ -33,6 +33,7 @@ import {
 } from '@milkdown/utils';
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
+import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import type { EditorInstance, MountOptions } from './types.js';
 
@@ -103,7 +104,9 @@ export async function mountEditor(
         })
         .use(commonmark)
         .use(gfm)
-        .use(history);
+        .use(history)
+        // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
+        .use(codeHighlightPlugin);
       // T4：注入图片落盘回调时拦截粘贴/拖拽图片 → 落盘 → 插入相对引用。
       if (options.assetSaver !== undefined) {
         editor.use(
