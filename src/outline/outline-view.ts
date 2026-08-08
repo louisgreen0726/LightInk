@@ -64,6 +64,8 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   const toggle = doc.createElement('button');
   toggle.classList.add('lightink-outline-toggle');
   toggle.setAttribute('title', '折叠/展开大纲');
+  toggle.setAttribute('aria-label', '折叠/展开大纲');
+  toggle.setAttribute('aria-expanded', 'true');
   toggle.textContent = '«';
   header.appendChild(title);
   header.appendChild(toggle);
@@ -139,6 +141,7 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
     },
     toggleCollapse(): void {
       collapsed = !collapsed;
+      toggle.setAttribute('aria-expanded', String(!collapsed));
       if (collapsed) {
         root.classList.add('collapsed');
         toggle.textContent = '»';
