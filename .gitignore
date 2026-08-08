@@ -1,0 +1,9 @@
+# Dependencies
+node_modules
+
+# Frontend build output
+dist
+
+# Rust / Tauri build artifacts
+src-tauri/target
+src-tauri/gen
