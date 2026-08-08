@@ -27,6 +27,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "highlight.js": "^11.11.1",
     "katex": "^0.18.1",
+    "mermaid": "^11.16.1",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "unified": "^11.0.3"
