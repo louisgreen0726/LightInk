@@ -197,6 +197,22 @@ body {
   overflow-y: auto;
 }
 
+/* R6 底部状态栏：固定高度、不抢占编辑区（编辑区 flex:1 自适应）。 */
+#lightink-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border-top: 1px solid var(--lightink-border);
+  background: var(--lightink-bg-elevated);
+  color: var(--lightink-fg);
+  opacity: 0.7;
+  font-size: 12px;
+  user-select: none;
+}
+
 .lightink-tab-host {
   max-width: 860px;
   margin: 0 auto;

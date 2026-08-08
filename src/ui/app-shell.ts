@@ -57,6 +57,8 @@ export interface AppShell {
   readonly editorArea: HTMLDivElement;
   /** 大纲侧栏槽位（主区左侧），由 outline 视图挂载内容。 */
   readonly outlineSidebar: HTMLDivElement;
+  /** 底部状态栏槽位（R6），由 status-bar 视图挂载字数/字符数。 */
+  readonly statusBar: HTMLDivElement;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -159,6 +161,8 @@ export function createAppShell(
   const mainRow = document.createElement('div');
   mainRow.id = 'lightink-main';
   mainRow.replaceChildren(outlineSidebar, editorArea);
+  const statusBar = document.createElement('div');
+  statusBar.id = 'lightink-statusbar';
 
   // 紧凑高频按钮。
   for (const cmd of COMPACT_COMMANDS) {
@@ -184,7 +188,7 @@ export function createAppShell(
   const menuBar = createMenuBar({ menus });
   toolbar.appendChild(menuBar.element);
 
-  root.replaceChildren(toolbar, tabBar, mainRow);
+  root.replaceChildren(toolbar, tabBar, mainRow, statusBar);
 
   function showCheatsheet(bindings: readonly CheatBinding[]): void {
     const overlay = document.createElement('div');
@@ -248,5 +252,5 @@ export function createAppShell(
     );
   }
 
-  return { toolbar, tabBar, editorArea, outlineSidebar, renderTabBar };
+  return { toolbar, tabBar, editorArea, outlineSidebar, statusBar, renderTabBar };
 }

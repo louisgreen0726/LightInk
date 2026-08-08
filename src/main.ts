@@ -34,6 +34,7 @@ import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { ShortcutRegistry, type ShortcutAction } from './ui/shortcuts.js';
+import { countDocumentStats, createStatusBarView, type StatusBarView } from './ui/status-bar.js';
 import './theme/tokens.css';
 import './ui/theme.css';
 
@@ -54,6 +55,8 @@ const themeService = new ThemeService({
 let manager: TabManager;
 // T7：大纲视图在 TabManager 之后创建（见下），回调触发时必然已赋值。
 let outline: OutlineView;
+// T9：状态栏视图同上（回调触发时必然已赋值）。
+let statusBar: StatusBarView;
 
 function saveActiveAs(): void {
   const id = manager.activeTabId;
@@ -243,7 +246,10 @@ manager = new TabManager({
       kind: 'warning',
     }),
   onTabsChanged: renderTabBar,
-  onActiveContentChanged: () => outline.scheduleRefresh(),
+  onActiveContentChanged: () => {
+    outline.scheduleRefresh();
+    refreshStatusBar();
+  },
 });
 
 // T7：大纲侧栏。闭包读取活动标签的宿主/markdown；刷新由 TabManager 的
@@ -263,6 +269,27 @@ outline = createOutlineView({
   },
 });
 shell.outlineSidebar.appendChild(outline.root);
+
+// T9/R6：底部状态栏（字数/字符数）。随活动标签切换/内容变化经既有
+// onActiveContentChanged 回调实时刷新（每键击重算，常规文档可接受）。
+statusBar = createStatusBarView(document);
+shell.statusBar.appendChild(statusBar.root);
+/** 刷新底部状态栏字数/字符数（无活动标签或读取异常时清空）。 */
+function refreshStatusBar(): void {
+  const tab = manager.activeTab;
+  if (tab === null) {
+    statusBar.setStats(null);
+    return;
+  }
+  let md: string;
+  try {
+    md = tab.editor.getMarkdown();
+  } catch {
+    statusBar.setStats(null);
+    return;
+  }
+  statusBar.setStats(countDocumentStats(md));
+}
 
 // T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。
 const sourceViews = new Map<string, SourceView>();
