@@ -34,6 +34,7 @@ import {
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
+import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
@@ -107,6 +108,8 @@ export async function mountEditor(
         .use(commonmark)
         .use(gfm)
         .use(history)
+        // R4：Typora 式配对输入（自动配对 + 选中包裹）。
+        .use(inputAssistPlugin)
         // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
         .use(codeHighlightPlugin)
         // T8：LaTeX 公式即时渲染（KaTeX 按需加载 + 错误隔离，见 R8）。
