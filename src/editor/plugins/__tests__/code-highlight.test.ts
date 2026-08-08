@@ -20,8 +20,11 @@ import { Schema } from '@milkdown/prose/model';
 import {
   buildCodeDecorations,
   codeHighlightPlugin,
+  copyButtonClassName,
+  copyButtonLabel,
   escapeHtml,
   highlightCode,
+  readCodeSource,
   resolveLanguage,
   scopeToClasses,
   tokenizeCode,
@@ -159,6 +162,35 @@ describe('tokenizeCode', () => {
   it('scopeToClasses maps dotted scopes to hljs classes', () => {
     expect(scopeToClasses('keyword')).toBe('hljs-keyword');
     expect(scopeToClasses('comment.doc')).toBe('hljs-comment hljs-doc');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R8 代码块复制按钮：纯逻辑（源码读取 / 按钮文案与 class）
+// ---------------------------------------------------------------------------
+
+describe('R8 copy button logic', () => {
+  it('readCodeSource preserves multi-line text and indentation exactly', () => {
+    const code = 'def f():\n    return 1\n';
+    expect(readCodeSource({ textContent: code })).toBe(code);
+    // 含制表符 / CRLF 等亦原样保留。
+    expect(readCodeSource({ textContent: 'a\tb\r\nc' })).toBe('a\tb\r\nc');
+  });
+
+  it('readCodeSource returns empty string when textContent is null', () => {
+    expect(readCodeSource({ textContent: null })).toBe('');
+  });
+
+  it('copyButtonLabel toggles between default and copied labels', () => {
+    expect(copyButtonLabel(false)).toBe('复制');
+    expect(copyButtonLabel(true)).toBe('已复制');
+  });
+
+  it('copyButtonClassName appends copied modifier only when copied', () => {
+    expect(copyButtonClassName(false)).toBe('lightink-code-copy-btn');
+    expect(copyButtonClassName(true)).toBe(
+      'lightink-code-copy-btn lightink-code-copy-btn--copied',
+    );
   });
 });
 

@@ -54,7 +54,7 @@ import hljsYaml from 'highlight.js/lib/languages/yaml';
 import { $prose } from '@milkdown/utils';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
-import { Decoration, DecorationSet } from '@milkdown/prose/view';
+import { Decoration, DecorationSet, type NodeView } from '@milkdown/prose/view';
 
 // ---------------------------------------------------------------------------
 // Language registration — R4 要求的 14 种语言（按需注册，非全量 bundle）。
@@ -255,12 +255,162 @@ export function buildCodeDecorations(doc: PMNode): DecorationSet {
 }
 
 // ---------------------------------------------------------------------------
+// R8：代码块悬浮复制按钮
+// ---------------------------------------------------------------------------
+//
+// 设计取舍（见 02-technical-solution.md R8）：高亮继续走 decoration（不变）；
+// 复制按钮用 nodeView 叠加——因为「悬停浮现、覆盖在代码块右上角」的按钮必须作为
+// code_block 外层 <pre> 的非内容子节点存在（contentDOM 仍是 <code>，PM 独占文本
+// 管理）。Decoration.widget 只能插入文档流中的兄弟节点，无法相对 <pre> 定位，故
+// 按钮态叠加采用 nodeView（业内代码块复制按钮的标准做法）；hljs 高亮仍由上方
+// decoration 提供，PM 会把 Decoration.node 的 class（含 data-language）作用到本
+// nodeView 的 <pre> 上，复用既有 data-language 作用域。
+//
+// 纯逻辑（copyButtonLabel / copyButtonClassName / readCodeSource）headless 可测；
+// nodeView 装配与剪贴板写入属编辑器集成面（同既有插件，仅断言工厂形态）。
+
+export const COPY_BUTTON_CLASS = 'lightink-code-copy-btn';
+export const COPIED_FLAG_CLASS = 'lightink-code-copy-btn--copied';
+export const COPY_LABEL = '复制';
+export const COPIED_LABEL = '已复制';
+const COPY_FEEDBACK_MS = 1500;
+
+/** 按钮文案：默认「复制」，复制成功后「已复制」。 */
+export function copyButtonLabel(copied: boolean): string {
+  return copied ? COPIED_LABEL : COPY_LABEL;
+}
+
+/** 按钮 class：复制成功附加 `--copied` 修饰类，供主题反馈态着色。 */
+export function copyButtonClassName(copied: boolean): string {
+  return copied ? `${COPY_BUTTON_CLASS} ${COPIED_FLAG_CLASS}` : COPY_BUTTON_CLASS;
+}
+
+/** 代码块源码读取：直接取 contentDOM(<code>) 文本，保留多行与缩进（R8「完全一致」）。 */
+export function readCodeSource(contentDOM: { textContent: string | null }): string {
+  return contentDOM.textContent ?? '';
+}
+
+/** 创建复制按钮（仅编辑器挂载态调用，依赖全局 document）。 */
+export function createCopyButton(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = COPY_BUTTON_CLASS;
+  btn.textContent = COPY_LABEL;
+  btn.setAttribute('aria-label', COPY_LABEL);
+  btn.setAttribute('title', COPY_LABEL);
+  return btn;
+}
+
+/** 切换按钮「已复制」反馈态（文案/class/aria-label 同步）。 */
+export function setCopiedState(btn: HTMLButtonElement, copied: boolean): void {
+  btn.textContent = copyButtonLabel(copied);
+  btn.className = copyButtonClassName(copied);
+  btn.setAttribute('aria-label', copyButtonLabel(copied));
+}
+
+/**
+ * 写剪贴板：优先 `navigator.clipboard`（Tauri webview 为安全上下文），
+ * 失败或不可用时降级到隐藏 textarea + `execCommand('copy')`。成功返回 true。
+ */
+export async function writeClipboardText(text: string): Promise<boolean> {
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.clipboard !== undefined &&
+      typeof navigator.clipboard.writeText === 'function'
+    ) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 降级到 legacy 路径。
+  }
+  return legacyClipboardCopy(text);
+}
+
+function legacyClipboardCopy(text: string): boolean {
+  if (typeof document === 'undefined') return false;
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'absolute';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(textarea);
+  return ok;
+}
+
+/**
+ * code_block nodeView：渲染默认 `<pre><code>`（contentDOM=<code>，PM 独占文本）
+ * 并叠加一个右上角复制按钮——悬停（mouseenter/mouseleave）显隐，点击复制源码并
+ * 闪现「已复制」反馈。高亮 decoration 由 PM 作用到返回的 <pre> 上。
+ */
+function createCodeBlockNodeView(node: PMNode): NodeView {
+  const dom = document.createElement('pre');
+  dom.className = 'lightink-code-block';
+  dom.setAttribute('data-lightink-code', '');
+  // 作为按钮绝对定位的上下文。
+  dom.style.position = 'relative';
+
+  const contentDOM = document.createElement('code');
+  dom.appendChild(contentDOM);
+
+  const btn = createCopyButton();
+  btn.style.position = 'absolute';
+  btn.style.top = '0.4em';
+  btn.style.right = '0.4em';
+  btn.style.opacity = '0';
+  btn.style.pointerEvents = 'none';
+  btn.style.transition = 'opacity 120ms ease';
+  dom.appendChild(btn);
+
+  const reveal = (): void => {
+    btn.style.opacity = '1';
+    btn.style.pointerEvents = 'auto';
+  };
+  const hide = (): void => {
+    btn.style.opacity = '0';
+    btn.style.pointerEvents = 'none';
+  };
+  const onCopy = async (): Promise<void> => {
+    const ok = await writeClipboardText(readCodeSource(contentDOM));
+    if (ok) {
+      setCopiedState(btn, true);
+      window.setTimeout(() => setCopiedState(btn, false), COPY_FEEDBACK_MS);
+    }
+  };
+
+  dom.addEventListener('mouseenter', reveal);
+  dom.addEventListener('mouseleave', hide);
+  btn.addEventListener('click', onCopy);
+
+  return {
+    dom,
+    contentDOM,
+    // 同类型节点（含 language attr 变化、文本编辑）复用本视图；PM 据此同步 <code>。
+    update: (incoming: PMNode) => incoming.type === node.type,
+    destroy(): void {
+      dom.removeEventListener('mouseenter', reveal);
+      dom.removeEventListener('mouseleave', hide);
+      btn.removeEventListener('click', onCopy);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Milkdown 插件
 // ---------------------------------------------------------------------------
 
 /**
- * Milkdown 插件（`$prose`）：为 code_block 注入语法高亮 decorations。
- * 在 mountEditor 中于 commonmark/gfm/history 之后注册。
+ * Milkdown 插件（`$prose`）：为 code_block 注入语法高亮 decorations，并叠加
+ * 悬浮复制按钮（R8，nodeView）。在 mountEditor 中于 commonmark/gfm/history 之后注册。
  */
 export const codeHighlightPlugin = $prose(
   () =>
@@ -276,6 +426,10 @@ export const codeHighlightPlugin = $prose(
       props: {
         decorations(state) {
           return codeHighlightPluginKey.getState(state);
+        },
+        // R8：每个 code_block 经 nodeView 叠加复制按钮（高亮仍由 decorations 提供）。
+        nodeViews: {
+          code_block: (node: PMNode) => createCodeBlockNodeView(node),
         },
       },
     }),
