@@ -105,11 +105,12 @@ export async function mountEditor(
           ctx.set(rootCtx, container);
           ctx.set(defaultValueCtx, state.cachedMarkdown);
         })
+        // R4：Typora 式配对输入 + 空列表项回车退出 + 表格 Tab。注册早于 preset，
+        // 使 Enter(空列表项 lift 退出)/Tab(表格 goToNextCell) 优先于 preset keymap。
+        .use(inputAssistPlugin)
         .use(commonmark)
         .use(gfm)
         .use(history)
-        // R4：Typora 式配对输入（自动配对 + 选中包裹）。
-        .use(inputAssistPlugin)
         // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
         .use(codeHighlightPlugin)
         // T8：LaTeX 公式即时渲染（KaTeX 按需加载 + 错误隔离，见 R8）。
