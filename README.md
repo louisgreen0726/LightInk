@@ -33,6 +33,11 @@ npm install          # 安装依赖
 npm run tauri:dev    # 启动开发模式（Vite dev server + 热重载）
 ```
 
+> **Windows + Git Bash 用户**：npm 默认用 cmd.exe 转发脚本参数，会把 shell 路径拼进
+> `npm test -- <path>` 之类的过滤参数。如遇此问题，在用户级 npmrc 固定 bash：
+> `npm config set script-shell "C:\Program Files\Git\bin\bash.exe" --location=user`
+> （此配置不能提交到仓库 `.npmrc`，否则 macOS/Linux 环境会因找不到该 Windows 路径而构建失败）。
+
 常用命令：
 
 ```bash
