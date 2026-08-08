@@ -10,6 +10,7 @@ import { ask, confirm } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
 import { readFile } from './file/file-service.js';
+import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager } from './tabs/tab-manager.js';
 import type { CloseChoice } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
@@ -33,6 +34,8 @@ const themeService = new ThemeService({
 
 // 外壳按钮/快捷键回调仅在用户交互时触发，此时 manager 必然已赋值。
 let manager: TabManager;
+// T7：大纲视图在 TabManager 之后创建（见下），回调触发时必然已赋值。
+let outline: OutlineView;
 
 function saveActiveAs(): void {
   const id = manager.activeTabId;
@@ -102,7 +105,26 @@ manager = new TabManager({
       kind: 'warning',
     }),
   onTabsChanged: renderTabBar,
+  onActiveContentChanged: () => outline.scheduleRefresh(),
 });
+
+// T7：大纲侧栏。闭包读取活动标签的宿主/markdown；刷新由 TabManager 的
+// onActiveContentChanged 回调防抖驱动（切换标签/活动标签内容变化）。
+outline = createOutlineView({
+  getActiveHost: () => manager.activeTab?.hostElement ?? null,
+  getActiveMarkdown: () => {
+    const tab = manager.activeTab;
+    if (tab === null) {
+      return null;
+    }
+    try {
+      return tab.editor.getMarkdown();
+    } catch {
+      return null;
+    }
+  },
+});
+shell.outlineSidebar.appendChild(outline.root);
 
 // 快捷键：捕获阶段注册，保存等操作在编辑器内同样生效。
 const shortcuts = new ShortcutRegistry({

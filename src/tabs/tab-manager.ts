@@ -72,6 +72,12 @@ export interface TabManagerDeps {
   listUntitledDrafts?: () => Promise<fileService.UntitledDraft[]>;
   /** 标签列表/脏标记变化后的 UI 刷新回调。 */
   onTabsChanged?: () => void;
+  /**
+   * T7：活动标签内容或活动标签本身变化后的回调（大纲等视图据此刷新）。
+   * 触发点：切换标签、新建标签（内含切换）、活动标签内容变化、
+   * 关闭活动标签且无后继（活动变为 null）。
+   */
+  onActiveContentChanged?: () => void;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   reportError?: (message: string, error: unknown) => void;
@@ -94,7 +100,7 @@ export function snapshotKeyOf(tab: Pick<TabState, 'filePath' | 'syntheticId'>): 
 const DEFAULT_DEBOUNCE_MS = 1000;
 
 export class TabManager {
-  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged'>> & Pick<TabManagerDeps, 'onTabsChanged'>;
+  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged'>;
   private tabs: TabState[] = [];
   private activeId: string | null = null;
   private counter = 0;
@@ -119,6 +125,7 @@ export class TabManager {
       },
       ...deps,
       onTabsChanged: deps.onTabsChanged,
+      onActiveContentChanged: deps.onActiveContentChanged,
     };
   }
 
@@ -326,6 +333,9 @@ export class TabManager {
       this.activeId = null;
       if (next !== null) {
         this.switchTab(next.id);
+      } else {
+        // 活动标签关闭且无后继：活动变为 null，通知大纲等视图清空。
+        this.notifyActiveContentChanged();
       }
     }
     this.notifyChanged();
@@ -340,6 +350,7 @@ export class TabManager {
     }
     this.activeId = tab.id;
     this.notifyChanged();
+    this.notifyActiveContentChanged();
   }
 
   /**
@@ -362,6 +373,9 @@ export class TabManager {
       this.scheduleSnapshot(tab, current);
     }
     this.notifyChanged();
+    if (id === this.activeId) {
+      this.notifyActiveContentChanged();
+    }
   }
 
   /** 立即写入该标签的待处理快照（测试与关闭前兜底用）。 */
@@ -464,6 +478,10 @@ export class TabManager {
 
   private notifyChanged(): void {
     this.deps.onTabsChanged?.();
+  }
+
+  private notifyActiveContentChanged(): void {
+    this.deps.onActiveContentChanged?.();
   }
 }
 

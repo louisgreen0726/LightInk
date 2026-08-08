@@ -2,8 +2,8 @@
  * `app-shell` — 极简应用外壳（T6, R11）：命令行 + 标签栏 + 编辑区。
  *
  * 布局：顶部一排紧凑命令按钮（新建/打开/保存/另存为/主题，均一次点击，
- * 并有对应快捷键 tooltip），其下标签栏，其余为编辑区。无冗余工具栏堆叠、
- * 无重型装饰；样式在 theme.css，配色全部取自主题令牌。
+ * 并有对应快捷键 tooltip），其下标签栏，其余为主区（左侧大纲侧栏槽位 + 编辑区，
+ * T7 加入）。无冗余工具栏堆叠、无重型装饰；样式在 theme.css，配色全部取自主题令牌。
  *
  * 承接原 main.ts 的临时工具栏/标签条逻辑，TabManager 接线保持不变
  * （宿主元素仍由入口创建并挂入 editorArea）。
@@ -32,6 +32,8 @@ export interface AppShell {
   readonly toolbar: HTMLDivElement;
   readonly tabBar: HTMLDivElement;
   readonly editorArea: HTMLDivElement;
+  /** T7：大纲侧栏槽位（主区左侧），由 outline 视图挂载内容。 */
+  readonly outlineSidebar: HTMLDivElement;
   /** 按当前标签状态重绘标签栏（替代原 main.ts 的内联实现）。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -60,7 +62,13 @@ export function createAppShell(root: HTMLElement, actions: AppShellActions): App
   tabBar.id = 'lightink-tabbar';
   const editorArea = document.createElement('div');
   editorArea.id = 'lightink-editor-area';
-  root.replaceChildren(toolbar, tabBar, editorArea);
+  // T7：主区 = 大纲侧栏槽位 + 编辑区（横向排布）。
+  const outlineSidebar = document.createElement('div');
+  outlineSidebar.id = 'lightink-outline-sidebar';
+  const mainRow = document.createElement('div');
+  mainRow.id = 'lightink-main';
+  mainRow.replaceChildren(outlineSidebar, editorArea);
+  root.replaceChildren(toolbar, tabBar, mainRow);
 
   for (const cmd of COMMANDS) {
     const btn = document.createElement('button');
@@ -99,5 +107,5 @@ export function createAppShell(root: HTMLElement, actions: AppShellActions): App
     );
   }
 
-  return { toolbar, tabBar, editorArea, renderTabBar };
+  return { toolbar, tabBar, editorArea, outlineSidebar, renderTabBar };
 }
