@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+mod asset;
 mod file;
 mod snapshot;
 
@@ -14,6 +15,8 @@ pub fn run() {
             snapshot::clear_snapshot,
             snapshot::read_stale_snapshot,
             snapshot::list_untitled_drafts,
+            asset::save_asset,
+            asset::migrate_staging_assets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

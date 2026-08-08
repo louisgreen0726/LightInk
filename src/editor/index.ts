@@ -33,6 +33,7 @@ import {
 } from '@milkdown/utils';
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
+import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import type { EditorInstance, MountOptions } from './types.js';
 
 interface MountState {
@@ -71,7 +72,7 @@ function isCreated(state: MountState): boolean {
  */
 export async function mountEditor(
   container: HTMLElement,
-  options: MountOptions = {},
+  options: MountOptions & ImageAssetMountOptions = {},
 ): Promise<EditorInstance> {
   if (
     typeof container === 'undefined' ||
@@ -103,6 +104,15 @@ export async function mountEditor(
         .use(commonmark)
         .use(gfm)
         .use(history);
+      // T4：注入图片落盘回调时拦截粘贴/拖拽图片 → 落盘 → 插入相对引用。
+      if (options.assetSaver !== undefined) {
+        editor.use(
+          imageAssetPlugin({
+            saver: options.assetSaver,
+            onError: options.onAssetError,
+          }),
+        );
+      }
       state.editor = editor;
 
       editor.onStatusChange((status) => {

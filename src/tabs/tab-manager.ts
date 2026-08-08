@@ -23,7 +23,10 @@
  * 全部通过 `TabManagerDeps` 注入，vitest 可在 node 环境下以 fake 替换。
  */
 
+import { createAssetSaver } from '../asset/asset-service.js';
+import * as assetService from '../asset/asset-service.js';
 import type { EditorInstance, MountOptions } from '../editor/types.js';
+import type { ImageAssetMountOptions } from '../editor/plugins/image.js';
 import {
   defaultRoundtripDeps,
   openFileFlow,
@@ -46,7 +49,10 @@ function newUntitledToken(): string {
 
 export interface TabManagerDeps {
   /** 挂载编辑器（生产为 src/editor 的 mountEditor）。 */
-  mountEditor: (container: HTMLElement, options: MountOptions) => Promise<EditorInstance>;
+  mountEditor: (
+    container: HTMLElement,
+    options: MountOptions & ImageAssetMountOptions,
+  ) => Promise<EditorInstance>;
   /** 为标签创建宿主元素（生产为 document.createElement('div')）。 */
   createHostElement: (tabId: string) => HTMLElement;
   /** 把宿主元素挂到界面上。 */
@@ -69,6 +75,15 @@ export interface TabManagerDeps {
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   reportError?: (message: string, error: unknown) => void;
+  /** T4：图片落盘（生产为 asset-service 的 saveAsset）。 */
+  saveAsset?: (
+    docPath: string | null,
+    sessionId: string,
+    bytesBase64: string,
+    ext: string,
+  ) => Promise<string>;
+  /** T4：另存为后迁移该会话暂存图片到文档旁 assets/。 */
+  migrateStagingAssets?: (sessionId: string, docPath: string) => Promise<string[]>;
 }
 
 /** 有效快照键：有文件路径用路径（与 Rust 侧哈希命名一致），否则用合成 id。 */
@@ -95,6 +110,8 @@ export class TabManager {
       clearSnapshot: fileService.clearSnapshot,
       readStaleSnapshot: fileService.readStaleSnapshot,
       listUntitledDrafts: fileService.listUntitledDrafts,
+      saveAsset: assetService.saveAsset,
+      migrateStagingAssets: assetService.migrateStagingAssets,
       snapshotDebounceMs: DEFAULT_DEBOUNCE_MS,
       reportError: (message, error) => {
         // eslint-disable-next-line no-console
@@ -262,6 +279,14 @@ export class TabManager {
     tab.title = fileNameOf(newPath);
     tab.lastSavedMarkdown = content;
     tab.dirty = false;
+    // T4：未命名时期粘贴的图片落在会话暂存目录；引用均为相对路径
+    // assets/...，按原名迁入新文档旁 assets/ 后引用保持有效，无需改写
+    // 文档内容。无暂存时 Rust 侧为 no-op。
+    try {
+      await this.deps.migrateStagingAssets(tab.syntheticId, newPath);
+    } catch (error) {
+      this.deps.reportError('迁移暂存图片失败', error);
+    }
     this.notifyChanged();
     return true;
   }
@@ -365,6 +390,15 @@ export class TabManager {
     this.deps.attachHost(host);
     const editor = await this.deps.mountEditor(host, {
       initialMarkdown: args.initialMarkdown,
+      // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
+      // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
+      // （sessionId = syntheticId），保存时由 saveTabAs 迁移。
+      assetSaver: createAssetSaver({
+        saveAsset: this.deps.saveAsset,
+        sessionId: args.syntheticId,
+        getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
+      }),
+      onAssetError: (message, error) => this.deps.reportError(message, error),
     });
     const tab: TabState = {
       id,
