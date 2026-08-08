@@ -123,8 +123,13 @@ export async function processImagePaste(
   event: ClipboardEvent,
   deps: ImageAssetDeps,
 ): Promise<boolean> {
+  // R16：检测到图片却读取失败（WebView 形状异常/空字节）时明确反馈，不静默无反应。
+  const detected = clipboardHasImage(event);
   const image = await extractClipboardImage(event);
   if (image === null) {
+    if (detected) {
+      deps.onError?.('剪贴板图片读取失败，未插入', undefined);
+    }
     return false;
   }
   let url: string;

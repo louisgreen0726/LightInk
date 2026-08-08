@@ -27,6 +27,7 @@ import type { Ctx } from '@milkdown/ctx';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
 import type { EditorView } from '@milkdown/prose/view';
 
+import { clipboardHasImage } from '../../asset/clipboard.js';
 import { routeClipboardPaste } from '../paste.js';
 
 const PLUGIN_KEY = new PluginKey('lightink-clipboard-md');
@@ -47,8 +48,10 @@ export const clipboardMdPlugin = $prose((ctx: Ctx) => {
       // （view 经 ctx.editorViewCtx 由 insert 宏取得，故此参数不直接使用。）
       handlePaste(_view: EditorView, event: ClipboardEvent): boolean {
         const dt = event.clipboardData;
-        // 图片粘贴优先交 imageAssetPlugin 拦截。
-        if (dt !== null && dt !== undefined && typeof dt.files !== 'undefined' && dt.files.length > 0) {
+        // 图片粘贴优先交 imageAssetPlugin 拦截。R16：部分 WebView 把截图放
+        // 在 items（含空 MIME）而非 files，故用 clipboardHasImage 兜底判定，
+        // 否则文本粘贴会拦截并静默丢图。
+        if (dt !== null && dt !== undefined && (dt.files.length > 0 || clipboardHasImage(event))) {
           return false;
         }
         const text = dt?.getData('text/plain') ?? '';
