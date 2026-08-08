@@ -41,33 +41,34 @@ describe('placeToolbar placement decision (R7)', () => {
   const viewport = { width: 1000, height: 800 };
 
   it('places above the selection anchor when there is room', () => {
-    const p = placeToolbar({ top: 200, left: 500 }, size, viewport);
+    const p = placeToolbar({ top: 200, bottom: 220, left: 500 }, size, viewport);
     // 上方：200 - 40 - 6 = 154
     expect(p.top).toBe(154);
     // 居中于起点：500 - 100 = 400
     expect(p.left).toBe(400);
   });
 
-  it('flips below when not enough room above', () => {
-    const p = placeToolbar({ top: 20, left: 500 }, size, viewport);
-    // 上方 20-40-6=-26 < 0 → 翻到下方 anchor.top + gap = 26
-    expect(p.top).toBe(26);
+  it('flips below the selection bottom when not enough room above', () => {
+    const p = placeToolbar({ top: 20, bottom: 40, left: 500 }, size, viewport);
+    // 上方 20-40-6=-26 < 0 → 放到选区末行底部以下：bottom + gap = 40 + 6 = 46
+    // （不压住所选首行）
+    expect(p.top).toBe(46);
   });
 
   it('clamps left within the viewport (near right edge)', () => {
-    const p = placeToolbar({ top: 200, left: 990 }, size, viewport);
+    const p = placeToolbar({ top: 200, bottom: 220, left: 990 }, size, viewport);
     // 居中 990-100=890；maxLeft=1000-6-200=794 → 夹到 794
     expect(p.left).toBe(794);
   });
 
   it('clamps left to the gap when anchor is near the left edge', () => {
-    const p = placeToolbar({ top: 200, left: 10 }, size, viewport);
+    const p = placeToolbar({ top: 200, bottom: 220, left: 10 }, size, viewport);
     // 居中 10-100=-90 → 夹到 gap=6
     expect(p.left).toBe(6);
   });
 
   it('respects a custom gap', () => {
-    const p = placeToolbar({ top: 200, left: 500 }, size, viewport, 20);
+    const p = placeToolbar({ top: 200, bottom: 220, left: 500 }, size, viewport, 20);
     // 上方 200-40-20=140
     expect(p.top).toBe(140);
   });

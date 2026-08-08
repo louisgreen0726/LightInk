@@ -44,18 +44,18 @@ export interface ToolbarPlacement {
 }
 
 /**
- * 纯逻辑：给定选区起点屏幕坐标、工具条尺寸、视口尺寸，计算「不遮挡选区」的放置点。
- * 上方优先（top - height - gap）；上方放不下则翻到选区起点下方（top + gap）；
- * 水平居中于起点并夹在视口内。
+ * 纯逻辑：给定选区屏幕范围（首行 top、末行 bottom、起点 left）、工具条尺寸、视口尺寸，
+ * 计算「不遮挡选区」的放置点。上方优先（top - height - gap）；上方放不下则放到选区
+ * **末行底部以下**（bottom + gap，避免压住所选首行）；水平居中于起点并夹在视口内。
  */
 export function placeToolbar(
-  anchor: { top: number; left: number },
+  anchor: { top: number; bottom: number; left: number },
   size: { width: number; height: number },
   viewport: { width: number; height: number },
   gap = 6,
 ): ToolbarPlacement {
   const above = anchor.top - size.height - gap;
-  const top = above >= 0 ? above : anchor.top + gap;
+  const top = above >= 0 ? above : anchor.bottom + gap;
   let left = anchor.left - size.width / 2;
   const maxLeft = viewport.width - gap - size.width;
   if (left < gap) left = gap;
@@ -72,7 +72,6 @@ function createToolbarElement(): HTMLElement {
   el.style.display = 'none';
   el.style.position = 'fixed';
   el.style.zIndex = '1000';
-  el.style.display = 'none';
   for (const tool of FORMAT_TOOLS) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -106,16 +105,17 @@ function applyFormatTool(view: EditorView, id: FormatToolId): void {
 /** 依据当前选区同步工具条显隐与位置。 */
 function syncToolbar(view: EditorView, toolbar: HTMLElement): void {
   const { selection } = view.state;
-  if (selection.empty || selection.from === selection.to) {
+  if (selection.empty) {
     toolbar.style.display = 'none';
     return;
   }
   // 先显示以测得尺寸（display:none 时 getBoundingClientRect 为 0）。
   toolbar.style.display = '';
-  const anchor = view.coordsAtPos(selection.from);
+  const start = view.coordsAtPos(selection.from);
+  const end = view.coordsAtPos(selection.to);
   const rect = toolbar.getBoundingClientRect();
   const placement = placeToolbar(
-    { top: anchor.top, left: anchor.left },
+    { top: start.top, bottom: end.bottom, left: start.left },
     { width: rect.width, height: rect.height },
     { width: window.innerWidth, height: window.innerHeight },
   );
@@ -137,9 +137,16 @@ export const formatToolbarPlugin = $prose(() => {
         if (id === undefined) return;
         applyFormatTool(view, id);
       };
+      // 关键：阻止工具条按钮在 mousedown 时抢走编辑器焦点——否则 view.dom 失焦 →
+      // onHide 同步隐藏工具条 → 随后 click 落空、applyFormatTool 不执行（浮动菜单
+      // 焦点抢占问题）。preventDefault 不阻止 click 本身。
+      const onPointerDown = (event: Event): void => {
+        event.preventDefault();
+      };
       const onHide = (): void => {
         toolbar.style.display = 'none';
       };
+      toolbar.addEventListener('mousedown', onPointerDown);
       toolbar.addEventListener('click', onClick);
       view.dom.addEventListener('blur', onHide, true);
       document.body.appendChild(toolbar);
@@ -150,6 +157,7 @@ export const formatToolbarPlugin = $prose(() => {
           syncToolbar(view, toolbar);
         },
         destroy() {
+          toolbar.removeEventListener('mousedown', onPointerDown);
           toolbar.removeEventListener('click', onClick);
           view.dom.removeEventListener('blur', onHide, true);
           toolbar.remove();
