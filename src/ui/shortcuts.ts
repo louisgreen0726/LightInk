@@ -19,7 +19,16 @@
  * fake 事件驱动，无需真实 DOM。
  */
 
-export type ShortcutAction = 'new' | 'open' | 'save' | 'save-as' | 'toggle-theme';
+export type ShortcutAction =
+  | 'new'
+  | 'open'
+  | 'save'
+  | 'save-as'
+  | 'toggle-theme'
+  | 'insert-link'
+  | 'insert-image'
+  | 'toggle-outline'
+  | 'toggle-source-mode';
 
 export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   new: 'Ctrl+N',
@@ -27,6 +36,11 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   save: 'Ctrl+S',
   'save-as': 'Ctrl+Shift+S',
   'toggle-theme': 'Ctrl+J',
+  // R5：补齐插入链接/图片、大纲显隐、源码模式切换（源码模式由 T7/R10 接通）。
+  'insert-link': 'Ctrl+K',
+  'insert-image': 'Ctrl+Alt+I',
+  'toggle-outline': 'Ctrl+Shift+L',
+  'toggle-source-mode': 'Ctrl+/',
 };
 
 /** 结构化键盘事件（兼容 DOM KeyboardEvent 的结构子集）。 */
@@ -116,6 +130,14 @@ export class ShortcutRegistry {
   /** 返回动作当前绑定的组合键描述（用于按钮 tooltip 等）。 */
   comboOf(action: ShortcutAction): string {
     return this.combos[action];
+  }
+
+  /** 列出已注册处理器对应的动作与组合键（供快捷键速查表 R5 使用）。 */
+  entries(): ReadonlyArray<{ action: ShortcutAction; combo: string }> {
+    return (Object.keys(this.handlers) as ShortcutAction[]).map((action) => ({
+      action,
+      combo: this.combos[action],
+    }));
   }
 
   /**

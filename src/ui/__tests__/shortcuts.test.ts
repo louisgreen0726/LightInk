@@ -39,13 +39,17 @@ function keyEvent(overrides: Partial<KeyboardEventLike> = {}): KeyboardEventLike
 }
 
 describe('默认键位映射', () => {
-  it('核心操作各有一个快捷键', () => {
+  it('核心操作各有一个快捷键（含 R5 补齐的插入/大纲/源码模式）', () => {
     expect(DEFAULT_SHORTCUTS).toEqual({
       new: 'Ctrl+N',
       open: 'Ctrl+O',
       save: 'Ctrl+S',
       'save-as': 'Ctrl+Shift+S',
       'toggle-theme': 'Ctrl+J',
+      'insert-link': 'Ctrl+K',
+      'insert-image': 'Ctrl+Alt+I',
+      'toggle-outline': 'Ctrl+Shift+L',
+      'toggle-source-mode': 'Ctrl+/',
     });
   });
 });
@@ -167,5 +171,13 @@ describe('ShortcutRegistry 派发', () => {
       expect.any(Function),
       true,
     );
+  });
+
+  it('entries 列出已注册动作及其组合键（供快捷键速查表）', () => {
+    const { registry } = makeRegistry();
+    const entries = registry.entries();
+    const actions = entries.map((e) => e.action);
+    expect(actions).toEqual(['new', 'open', 'save', 'save-as', 'toggle-theme']);
+    expect(entries[0]).toEqual({ action: 'new', combo: 'Ctrl+N' });
   });
 });

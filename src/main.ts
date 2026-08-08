@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ask, confirm, message as dialogMessage, save } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
+import { insertElementMarkdown, type InsertElementId } from './editor/insert-commands.js';
 import { buildExportCss } from './export/export-css.js';
 import {
   exportActiveTabHtml,
@@ -24,8 +25,9 @@ import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager } from './tabs/tab-manager.js';
 import type { CloseChoice } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
+import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
-import { ShortcutRegistry } from './ui/shortcuts.js';
+import { ShortcutRegistry, type ShortcutAction } from './ui/shortcuts.js';
 import './theme/tokens.css';
 import './ui/theme.css';
 
@@ -52,6 +54,37 @@ function saveActiveAs(): void {
   if (id !== null) {
     void manager.saveTabAs(id);
   }
+}
+
+/** 向活动标签追加插入元素（R2 插入菜单 MVP；光标级精度由 T6/R11 叠加）。 */
+function insertElement(id: InsertElementId): void {
+  const tab = manager.activeTab;
+  if (tab === null) {
+    return;
+  }
+  tab.editor.setMarkdown(insertElementMarkdown(tab.editor.getMarkdown(), id));
+  const activeId = manager.activeTabId;
+  if (activeId !== null) {
+    manager.handleContentChanged(activeId);
+  }
+}
+
+/** 在活动编辑器宿主派发一次 Ctrl+Z / Ctrl+Shift+Z（撤销/重做 MVP）。 */
+function dispatchEditorCombo(combo: 'Ctrl+Z' | 'Ctrl+Shift+Z'): void {
+  const host = manager.activeTab?.hostElement ?? null;
+  if (host === null) {
+    return;
+  }
+  host.focus();
+  host.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      shiftKey: combo === 'Ctrl+Shift+Z',
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
 }
 
 // T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
@@ -101,17 +134,30 @@ const exportDeps: ExportServiceDeps = {
   },
 };
 
-const shell = createAppShell(app, {
-  onNew: () => void manager.newTab(),
-  onOpen: () => void manager.openFile(),
-  onSave: () => void manager.saveActiveTab(),
-  onSaveAs: saveActiveAs,
-  onToggleTheme: () => {
-    themeService.toggle();
+const shell = createAppShell(
+  app,
+  {
+    onNew: () => void manager.newTab(),
+    onOpen: () => void manager.openFile(),
+    onSave: () => void manager.saveActiveTab(),
+    onSaveAs: saveActiveAs,
+    onExportHtml: () => void exportActiveTabHtml(exportDeps),
+    onExportPdf: () => void exportActiveTabPdf(exportDeps),
+    onUndo: () => dispatchEditorCombo('Ctrl+Z'),
+    onRedo: () => dispatchEditorCombo('Ctrl+Shift+Z'),
+    onCut: () => document.execCommand('cut'),
+    onCopy: () => document.execCommand('copy'),
+    onPaste: () => document.execCommand('paste'),
+    onInsertElement: insertElement,
+    onToggleTheme: () => {
+      themeService.toggle();
+    },
+    onToggleOutline: () => outline.toggleCollapse(),
+    // 源码模式由 T7/R10 接通，T1 阶段菜单项禁用，回调占位。
+    onToggleSourceMode: () => undefined,
   },
-  onExportHtml: () => void exportActiveTabHtml(exportDeps),
-  onExportPdf: () => void exportActiveTabPdf(exportDeps),
-});
+  { shortcutBindings: getShortcutBindings },
+);
 
 /** 关闭未保存标签的三选一确认（dialog 插件两步询问，临时方案）。 */
 async function confirmClose(tab: { title: string }): Promise<CloseChoice> {
@@ -194,8 +240,32 @@ const shortcuts = new ShortcutRegistry({
   'toggle-theme': () => {
     themeService.toggle();
   },
+  // R5：插入链接/图片、大纲显隐（源码模式 Ctrl+/ 由 T7 注册）。
+  'insert-link': () => insertElement('link'),
+  'insert-image': () => insertElement('image'),
+  'toggle-outline': () => outline.toggleCollapse(),
 });
 shortcuts.attach(document);
+
+const SHORTCUT_LABELS: Readonly<Record<ShortcutAction, string>> = {
+  new: '新建',
+  open: '打开',
+  save: '保存',
+  'save-as': '另存为',
+  'toggle-theme': '切换主题',
+  'insert-link': '插入链接',
+  'insert-image': '插入图片',
+  'toggle-outline': '大纲显隐',
+  'toggle-source-mode': '源码模式',
+};
+
+/** 快捷键速查表数据源（R5）：从注册表派生标签→组合键。 */
+function getShortcutBindings(): CheatBinding[] {
+  return shortcuts.entries().map(({ action, combo }) => ({
+    label: SHORTCUT_LABELS[action],
+    shortcut: combo,
+  }));
+}
 
 async function bootstrap(): Promise<void> {
   // 先恢复崩溃遗留的未命名草稿，再决定是否新建初始标签。
