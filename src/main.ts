@@ -459,6 +459,20 @@ function getShortcutBindings(): CheatBinding[] {
 async function bootstrap(): Promise<void> {
   // 先恢复崩溃遗留的未命名草稿（其副作用：为每个恢复草稿开标签）。
   await manager.recoverUntitledDrafts();
+  // R1：先注册单实例 open-file 监听，再取首实例 pending——监听就绪前到达的第二实例
+  // 文件由随后的初始 take_pending_file 抽干槽兜底，避免启动竞态内事件被孤立。
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    await listen('open-file', () => {
+      void invoke<string | null>('take_pending_file')
+        .then((path) => {
+          if (path !== null) void manager.openFile(path);
+        })
+        .catch(() => undefined);
+    });
+  } catch {
+    // 非 Tauri 环境（纯前端 dev）：无单实例事件，忽略。
+  }
   // R1：取出启动/关联文件（首实例 argv 经后端 take_pending_file；命令未就绪时静默）。
   const pendingFile = await invoke<string | null>('take_pending_file').catch(() => null);
   if (pendingFile !== null) {
@@ -468,18 +482,6 @@ async function bootstrap(): Promise<void> {
   if (manager.tabList.length === 0) {
     await manager.newTab('# 轻墨 LightInk\n\n开始书写。\n');
   }
-  // R1：监听第二实例的 open-file 信号（单实例转发），取出待打开文件开新标签。
-  import('@tauri-apps/api/event')
-    .then(({ listen }) => {
-      void listen('open-file', () => {
-        void invoke<string | null>('take_pending_file')
-          .then((path) => {
-            if (path !== null) void manager.openFile(path);
-          })
-          .catch(() => undefined);
-      });
-    })
-    .catch(() => undefined);
 }
 
 bootstrap().catch((err: unknown) => {

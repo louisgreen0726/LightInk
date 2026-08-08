@@ -15,12 +15,30 @@ use std::sync::Mutex;
 pub struct PendingFile(pub Mutex<Option<String>>);
 
 /// 扫描 argv（含程序路径，索引 0 跳过），返回首个 `.md`/`.markdown` 文件参数。
-/// 大小写不敏感；无匹配返回 `None`。
+/// 大小写不敏感；无匹配返回 `None`。返回的是原始参数（可能相对）。
 pub fn extract_file_arg(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
         .find(|a| has_markdown_extension(a))
         .cloned()
+}
+
+/// 解析首个 markdown 文件参数为可被首实例进程直接读取的路径：
+/// 绝对路径原样返回；相对路径按 `cwd`（第二实例转发的 shell 工作目录，或
+/// 首实例进程 cwd）拼接为绝对路径。第二实例 cwd 与首实例 cwd 通常不同，
+/// 故相对路径必须按其来源 cwd 解析，否则 `read_file` 会取错目录静默失败。
+/// 不做 canonicalize（避免 Windows UNC 前缀与文件必须存在的前置），`..` 等
+/// 由 OS 在打开时解析。
+pub fn resolve_file_arg(args: &[String], cwd: Option<&str>) -> Option<String> {
+    let raw = extract_file_arg(args)?;
+    if std::path::Path::new(&raw).is_absolute() {
+        return Some(raw);
+    }
+    let base = match cwd {
+        Some(c) => std::path::PathBuf::from(c),
+        None => std::env::current_dir().unwrap_or_default(),
+    };
+    Some(base.join(&raw).to_string_lossy().into_owned())
 }
 
 /// 大小写不敏感的 `.md` / `.markdown` 扩展名判断（不访问文件系统）。
@@ -88,5 +106,49 @@ mod tests {
     fn bare_markdown_without_dot_is_not_matched() {
         assert!(extract_file_arg(&argv(&["lightink", "markdown"])).is_none());
         assert!(extract_file_arg(&argv(&["lightink", "readme.md.txt"])).is_none());
+    }
+
+    #[test]
+    fn resolve_relative_joins_cwd() {
+        // 相对路径按来源 cwd 拼为绝对路径（OS 无关：两侧同用 PathBuf::join）。
+        let resolved =
+            resolve_file_arg(&argv(&["lightink", "note.md"]), Some("/home/user")).unwrap();
+        assert_eq!(
+            resolved,
+            std::path::PathBuf::from("/home/user")
+                .join("note.md")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert!(std::path::Path::new(&resolved).is_absolute() || resolved.contains("home"));
+    }
+
+    #[test]
+    fn resolve_absolute_returned_unchanged() {
+        let abs = if cfg!(windows) {
+            "C:\\docs\\note.md"
+        } else {
+            "/docs/note.md"
+        };
+        let resolved = resolve_file_arg(&argv(&["lightink", abs]), Some("/other/cwd")).unwrap();
+        assert_eq!(resolved, abs);
+    }
+
+    #[test]
+    fn resolve_dotdot_against_cwd() {
+        let resolved = resolve_file_arg(&argv(&["lightink", "sub\\..\\note.md"]), Some("/home/user"))
+            .unwrap();
+        assert_eq!(
+            resolved,
+            std::path::PathBuf::from("/home/user")
+                .join("sub\\..\\note.md")
+                .to_string_lossy()
+                .into_owned()
+        );
+    }
+
+    #[test]
+    fn resolve_no_arg_is_none() {
+        assert!(resolve_file_arg(&argv(&["lightink"]), Some("/home/user")).is_none());
     }
 }
