@@ -197,6 +197,20 @@ describe('createMermaidLoader', () => {
     const load = createMermaidLoader(async () => ({}));
     await expect(load()).rejects.toThrow('render');
   });
+
+  it('does not cache a rejected import — the next call retries for real', async () => {
+    let attempts = 0;
+    const factory = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('network flake');
+      return { initialize: () => undefined, render: async () => ({ svg: '<svg/>' }) };
+    });
+    const load = createMermaidLoader(factory);
+    await expect(load()).rejects.toThrow('network flake');
+    // 第二次调用应真正重试工厂而非复用 rejected promise。
+    await expect(load()).resolves.toBeDefined();
+    expect(factory).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -219,7 +233,10 @@ const codeSchema = new Schema({
 });
 
 function codeBlock(language: string, code: string) {
-  return codeSchema.nodes['code_block']!.create({ language }, codeSchema.text(code));
+  return codeSchema.nodes['code_block']!.create(
+    { language },
+    code === '' ? undefined : codeSchema.text(code),
+  );
 }
 
 function para(text: string) {
@@ -237,6 +254,11 @@ function decoAttrs(d: unknown): Record<string, string | undefined> | undefined {
 
 function decoClass(d: unknown): string {
   return decoAttrs(d)?.['class'] ?? '';
+}
+
+/** widget decoration 的 key 存于内部 `type.spec.key`（非公开 typings）。 */
+function decoKey(d: unknown): string | undefined {
+  return (d as { type: { spec?: { key?: string } } }).type.spec?.key;
 }
 
 const okOutcome = (svg: string): MermaidRenderOutcome => ({ ok: true, svg });
@@ -263,6 +285,33 @@ describe('collectMermaidDefinitions / docHasMermaid', () => {
 
   it('does not treat an unlabeled fence as mermaid', () => {
     expect(docHasMermaid(docOf(codeBlock('', 'graph TD; A-->B')))).toBe(false);
+  });
+
+  it('empty mermaid block is inert: not collected, no error flash while typing', () => {
+    const doc = docOf(codeBlock('mermaid', ''));
+    expect(collectMermaidDefinitions(doc)).toEqual([]);
+    expect(docHasMermaid(doc)).toBe(false);
+    const found = buildMermaidDecorations(doc, new Map()).find();
+    expect(found).toHaveLength(0);
+  });
+
+  it('widget key is content-addressed: same definition keeps DOM, position move does not reuse stale svg', () => {
+    const defA = 'graph TD; A-->B';
+    const defB = 'graph TD; C-->D';
+    const results = new Map([
+      [defA, okOutcome('<svg>A</svg>')],
+      [defB, okOutcome('<svg>B</svg>')],
+    ]);
+    const doc1 = docOf(codeBlock('mermaid', defA), codeBlock('mermaid', defB));
+    const deco1 = buildMermaidDecorations(doc1, results).find();
+    const widgetKeys1 = deco1.filter((d) => decoClass(d) === '').map((d) => decoKey(d));
+    // 删除 A 块后 B 块上移到 A 的原位置 —— key 仍随内容，不复用旧 DOM。
+    const doc2 = docOf(codeBlock('mermaid', defB));
+    const deco2 = buildMermaidDecorations(doc2, results).find();
+    const widgetKeys2 = deco2.filter((d) => decoClass(d) === '').map((d) => decoKey(d));
+    expect(widgetKeys2).toHaveLength(1);
+    expect(widgetKeys1).toContain(widgetKeys2[0]);
+    expect(widgetKeys1[0]).not.toBe(widgetKeys2[0]);
   });
 });
 

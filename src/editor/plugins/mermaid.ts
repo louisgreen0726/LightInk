@@ -120,8 +120,8 @@ export async function renderMermaidSvg(
  * 断言「无 mermaid 块时从不触发 import」。首次加载后执行一次
  * `initialize({ startOnLoad: false, securityLevel: 'strict' })`：
  * 我们手动驱动 render（禁用自动挂载），并保留 mermaid 默认的严格
- * 安全级别（其内置的 SVG 消毒）。加载失败的 rejected promise 也会被
- * 缓存，避免每次编辑都重试。
+ * 安全级别（其内置的 SVG 消毒）。加载失败时缓存被清除（`cached = null`），
+ * 使下一次 view 更新的重试真正生效。
  */
 export function createMermaidLoader(
   load: () => Promise<unknown> = () => import('mermaid'),
@@ -129,7 +129,7 @@ export function createMermaidLoader(
   let cached: Promise<MermaidModule> | null = null;
   return () => {
     if (cached === null) {
-      cached = Promise.resolve()
+      const pending = Promise.resolve()
         .then(load)
         .then((mod) => {
           const shaped = mod as Partial<MermaidModule> & { default?: Partial<MermaidModule> };
@@ -142,6 +142,11 @@ export function createMermaidLoader(
           }
           return mermaid as MermaidModule;
         });
+      // 失败不缓存 rejected promise：让后续调用真正重试。
+      pending.catch(() => {
+        if (cached === pending) cached = null;
+      });
+      cached = pending;
     }
     return cached;
   };
@@ -167,12 +172,25 @@ interface MermaidPluginMeta {
   result?: { definition: string; outcome: MermaidRenderOutcome };
 }
 
-/** code_block 节点的 mermaid 定义（trim 后的文本内容）；非 mermaid 块返回 null。 */
+/** code_block 节点的 mermaid 定义（trim 后的文本内容）；非 mermaid 块或
+ * 空块（用户刚敲完 fence 尚未输入内容）返回 null —— 空块按普通代码块
+ * 原样展示，不闪现错误样式。 */
 function mermaidDefinitionOf(node: PMNode): string | null {
   if (node.type.name !== 'code_block') return null;
   const language = typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
   if (!isMermaidBlock(language)) return null;
-  return node.textContent.trim();
+  const text = node.textContent.trim();
+  return text === '' ? null : text;
+}
+
+/** definition 的稳定短哈希（FNV-1a 32-bit hex），用于 widget key 内容寻址。 */
+function definitionHash(definition: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < definition.length; i++) {
+    hash ^= definition.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
 /** 收集文档中全部 mermaid 定义（去重）；惰性加载与渲染的门槛判断。 */
@@ -256,7 +274,7 @@ export function buildMermaidDecorations(
           el.innerHTML = svg;
           return el;
         },
-        { side: 1, key: `lightink-mermaid-${pos}` },
+        { side: 1, key: `lightink-mermaid-${definitionHash(def)}` },
       ),
     );
     return false; // code_block 只含文本，无需下降
@@ -324,7 +342,8 @@ export const mermaidPlugin = $prose(() => {
               view.dispatch(view.state.tr.setMeta(mermaidPluginKey, { mermaid }));
             })
             .catch(() => {
-              // 加载失败：保持源码显示，不打扰编辑；重试留给下次挂载。
+              // 加载失败：保持源码显示，不打扰编辑；loader 不缓存失败，
+              // 下次 view 更新会真正重试 import。
               loadRequested = false;
             });
           return;
