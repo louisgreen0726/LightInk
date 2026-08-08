@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史以提取变更记录
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -52,6 +54,37 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 自动提取变更记录：取上一个 tag 到当前 tag 之间的提交，按
+      # conventional commit 前缀分组（feat/fix/其他），注入 releaseBody。
+      - name: Generate changelog from commits
+        shell: bash
+        run: |
+          set -e
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${GITHUB_REF_NAME}"
+            SINCE="自 ${PREV_TAG}"
+          else
+            RANGE="${GITHUB_REF_NAME}"
+            SINCE="首个发布"
+          fi
+
+          FEATS=$(git log "$RANGE" --pretty=format:'- %s' --no-merges | grep -E '^- (feat|perf)(\(|:)' || true)
+          FIXES=$(git log "$RANGE" --pretty=format:'- %s' --no-merges | grep -E '^- fix(\(|:)' || true)
+          OTHERS=$(git log "$RANGE" --pretty=format:'- %s' --no-merges | grep -vE '^- (feat|fix|perf)(\(|:)' || true)
+
+          {
+            echo "RELEASE_BODY<<EOF"
+            echo "本版本变更（${SINCE}）："
+            echo ""
+            if [ -n "$FEATS" ]; then echo "### 新特性"; echo "$FEATS"; echo ""; fi
+            if [ -n "$FIXES" ]; then echo "### 修复"; echo "$FIXES"; echo ""; fi
+            if [ -n "$OTHERS" ]; then echo "### 其他"; echo "$OTHERS"; echo ""; fi
+            echo "---"
+            echo "Windows: NSIS/MSI 安装包；macOS: DMG（Apple Silicon）；Linux: deb/AppImage。"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -59,7 +92,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'LightInk ${{ github.ref_name }}'
-          releaseBody: '见 README 与 CHANGELOG。Windows 提供 NSIS/MSI 安装包，macOS 提供 DMG（Apple Silicon），Linux 提供 deb/AppImage。'
+          releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}

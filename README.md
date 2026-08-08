@@ -63,7 +63,7 @@ npm run tauri:build
 
 ### 发布流程
 
-推送 `v*` tag 即触发 GitHub Actions 自动编译并发布三平台安装包（见 `.github/workflows/release.yml`）：
+推送 `v*` tag 即触发 GitHub Actions 自动编译并发布三平台安装包（见 `.github/workflows/release.yml`），Release 说明从上个 tag 以来的提交记录自动提取（按 feat/fix/其他分组，基于 conventional commits）：
 
 ```bash
 # 1. 升版本号（package.json 与 src-tauri/tauri.conf.json 的 version 保持一致）
@@ -116,4 +116,4 @@ docs/sakullla-workflow/  开发过程文档（需求/方案/计划/各任务记�
 
 ## License
 
-待定。
+[GPL-3.0](LICENSE)
