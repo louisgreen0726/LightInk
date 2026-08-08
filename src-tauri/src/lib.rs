@@ -13,6 +13,7 @@ pub fn run() {
             snapshot::write_snapshot,
             snapshot::clear_snapshot,
             snapshot::read_stale_snapshot,
+            snapshot::list_untitled_drafts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

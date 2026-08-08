@@ -17,6 +17,7 @@
     "@milkdown/core": "^7.22.0",
     "@milkdown/ctx": "^7.22.0",
     "@milkdown/exception": "^7.22.0",
+    "@milkdown/plugin-history": "^7.22.0",
     "@milkdown/preset-commonmark": "^7.22.0",
     "@milkdown/preset-gfm": "^7.22.0",
     "@milkdown/prose": "^7.22.0",

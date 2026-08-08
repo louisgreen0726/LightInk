@@ -110,9 +110,15 @@ addToolbarButton('另存为', () => {
   }
 });
 
-manager
-  .newTab('# 轻墨 LightInk\n\n开始书写。\n')
-  .catch((err: unknown) => {
-    // eslint-disable-next-line no-console
-    console.error('[lightink] initial tab failed:', err);
-  });
+async function bootstrap(): Promise<void> {
+  // 先恢复崩溃遗留的未命名草稿，再决定是否新建初始标签。
+  const restored = await manager.recoverUntitledDrafts();
+  if (restored.length === 0 && manager.tabList.length === 0) {
+    await manager.newTab('# 轻墨 LightInk\n\n开始书写。\n');
+  }
+}
+
+bootstrap().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error('[lightink] bootstrap failed:', err);
+});

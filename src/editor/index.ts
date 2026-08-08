@@ -26,6 +26,7 @@ import {
 } from '@milkdown/core';
 import { commonmark } from '@milkdown/preset-commonmark';
 import { gfm } from '@milkdown/preset-gfm';
+import { history } from '@milkdown/plugin-history';
 import {
   getMarkdown as milkdownGetMarkdown,
   replaceAll,
@@ -100,7 +101,8 @@ export async function mountEditor(
           ctx.set(defaultValueCtx, state.cachedMarkdown);
         })
         .use(commonmark)
-        .use(gfm);
+        .use(gfm)
+        .use(history);
       state.editor = editor;
 
       editor.onStatusChange((status) => {

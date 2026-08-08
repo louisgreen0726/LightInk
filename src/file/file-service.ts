@@ -38,3 +38,13 @@ export async function clearSnapshot(filePath: string): Promise<void> {
 export async function readStaleSnapshot(filePath: string): Promise<string | null> {
   return invoke<string | null>('read_stale_snapshot', { filePath });
 }
+
+/** 启动时枚举崩溃遗留的未命名草稿（key + content）。 */
+export interface UntitledDraft {
+  key: string;
+  content: string;
+}
+
+export async function listUntitledDrafts(): Promise<UntitledDraft[]> {
+  return invoke<UntitledDraft[]>('list_untitled_drafts');
+}

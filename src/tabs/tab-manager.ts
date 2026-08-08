@@ -10,9 +10,14 @@
  *     正常保存/关闭后清除快照；
  *   - 打开文件时检测「快照比磁盘新」并提示恢复（崩溃恢复）。
  *
- * 撤销栈说明：独立 undo 栈依赖 @milkdown/plugin-history 接入编辑器
- * （属 T2 编辑器内部，本任务未改动 src/editor/**）。每个标签已是独立
- * 的 ProseMirror EditorView，接入 history 插件后各标签撤销栈天然独立。
+ * 撤销栈说明：@milkdown/plugin-history 已接入编辑器（src/editor/index.ts，
+ * 随本次返工补齐）。每个标签是独立的 ProseMirror EditorView，各标签撤销
+ * 栈天然独立。
+ *
+ * 崩溃快照键：文件标签用文件路径；未命名标签用含跨会话唯一 token 的
+ * `untitled-<token>` 合成 id（不复用旧键覆盖草稿）。Rust 侧维护
+ * untitled-index.json 以便启动时枚举崩溃遗留草稿（见 recoverUntitledDrafts）。
+ * 保存前会先取消并等待进行中的快照写入，避免写/清快照的 IPC 竞态。
  *
  * 测试性设计：DOM 创建/挂载、编辑器挂载、文件流程、快照、确认对话框
  * 全部通过 `TabManagerDeps` 注入，vitest 可在 node 环境下以 fake 替换。
@@ -29,6 +34,15 @@ import {
 } from '../file/roundtrip.js';
 import * as fileService from '../file/file-service.js';
 import type { CloseChoice, TabState } from './types.js';
+
+/** 跨会话唯一的未命名快照键片段：crypto.randomUUID 优先，缺失时退化。 */
+function newUntitledToken(): string {
+  const c = globalThis.crypto;
+  if (c !== undefined && typeof c.randomUUID === 'function') {
+    return c.randomUUID().slice(0, 8);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export interface TabManagerDeps {
   /** 挂载编辑器（生产为 src/editor 的 mountEditor）。 */
@@ -48,6 +62,8 @@ export interface TabManagerDeps {
   writeSnapshot?: (key: string, content: string) => Promise<void>;
   clearSnapshot?: (key: string) => Promise<void>;
   readStaleSnapshot?: (path: string) => Promise<string | null>;
+  /** 启动时枚举崩溃遗留的未命名草稿。 */
+  listUntitledDrafts?: () => Promise<fileService.UntitledDraft[]>;
   /** 标签列表/脏标记变化后的 UI 刷新回调。 */
   onTabsChanged?: () => void;
   /** 快照防抖间隔（毫秒），默认 1000。 */
@@ -69,6 +85,8 @@ export class TabManager {
   private counter = 0;
   private untitledCounter = 0;
   private snapshotTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 进行中的快照写入 Promise（按标签 id），保存前需先等待以避免写/清竞态。 */
+  private snapshotWrites = new Map<string, Promise<void>>();
 
   constructor(deps: TabManagerDeps) {
     this.deps = {
@@ -76,6 +94,7 @@ export class TabManager {
       writeSnapshot: fileService.writeSnapshot,
       clearSnapshot: fileService.clearSnapshot,
       readStaleSnapshot: fileService.readStaleSnapshot,
+      listUntitledDrafts: fileService.listUntitledDrafts,
       snapshotDebounceMs: DEFAULT_DEBOUNCE_MS,
       reportError: (message, error) => {
         // eslint-disable-next-line no-console
@@ -98,16 +117,50 @@ export class TabManager {
     return this.tabs.find((t) => t.id === this.activeId) ?? null;
   }
 
-  /** 新建未命名标签。 */
+  /** 新建未命名标签。快照键含跨会话唯一 token，避免复用覆盖崩溃草稿。 */
   async newTab(initialMarkdown = ''): Promise<TabState> {
     this.untitledCounter += 1;
     return this.createTab({
       filePath: null,
       title: `未命名-${this.untitledCounter}`,
-      syntheticId: `untitled-${this.untitledCounter}`,
+      syntheticId: `untitled-${newUntitledToken()}`,
       initialMarkdown,
       lastSavedMarkdown: initialMarkdown,
     });
+  }
+
+  /**
+   * 启动时恢复未命名崩溃草稿：枚举 Rust 侧索引的遗留快照，逐个询问恢复；
+   * 恢复则以其原 syntheticId 开标签（后续防抖覆盖同一键，保存/关闭即清除），
+   * 放弃则删除该快照。正常保存/关闭的快照不会出现在索引中，故现存条目
+   * 即崩溃遗留。
+   */
+  async recoverUntitledDrafts(): Promise<TabState[]> {
+    let drafts: fileService.UntitledDraft[];
+    try {
+      drafts = await this.deps.listUntitledDrafts();
+    } catch (error) {
+      this.deps.reportError('枚举未命名崩溃草稿失败', error);
+      return [];
+    }
+    const restored: TabState[] = [];
+    for (const draft of drafts) {
+      const restore = await this.deps.promptRestore(draft.key);
+      if (restore) {
+        this.untitledCounter += 1;
+        const tab = await this.createTab({
+          filePath: null,
+          title: `未命名-${this.untitledCounter}（已恢复）`,
+          syntheticId: draft.key,
+          initialMarkdown: draft.content,
+          lastSavedMarkdown: '',
+        });
+        restored.push(tab);
+      } else {
+        await this.deps.clearSnapshot(draft.key).catch(() => undefined);
+      }
+    }
+    return restored;
   }
 
   /**
@@ -148,7 +201,7 @@ export class TabManager {
     return this.createTab({
       filePath: opened.path,
       title: fileNameOf(opened.path),
-      syntheticId: `untitled-${(this.untitledCounter += 1)}`,
+      syntheticId: `untitled-${newUntitledToken()}`,
       initialMarkdown: content,
       // 恢复的内容与磁盘不同 → 通过比较自然得到 dirty = true。
       lastSavedMarkdown: opened.content,
@@ -167,6 +220,10 @@ export class TabManager {
     if (tab.filePath === null) {
       return this.saveTabAs(id);
     }
+    // 先停掉待写快照并等待进行中的快照写入完成，避免「写快照 IPC 晚于
+    // 清快照 IPC 落盘」留下比文件新的孤儿快照。
+    this.cancelPendingSnapshot(id);
+    await this.snapshotWrites.get(id)?.catch(() => undefined);
     const content = tab.editor.getMarkdown();
     const ok = await saveToPathFlow(this.deps.roundtrip, tab.filePath, content);
     if (!ok) {
@@ -185,6 +242,8 @@ export class TabManager {
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
   async saveTabAs(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
+    this.cancelPendingSnapshot(id);
+    await this.snapshotWrites.get(id)?.catch(() => undefined);
     const content = tab.editor.getMarkdown();
     const newPath = await saveAsFlow(
       this.deps.roundtrip,
@@ -340,9 +399,17 @@ export class TabManager {
     } catch {
       return;
     }
-    this.deps.writeSnapshot(snapshotKeyOf(tab), content).catch((error: unknown) => {
-      this.deps.reportError('写入快照失败', error);
-    });
+    const pending = this.deps
+      .writeSnapshot(snapshotKeyOf(tab), content)
+      .catch((error: unknown) => {
+        this.deps.reportError('写入快照失败', error);
+      })
+      .finally(() => {
+        if (this.snapshotWrites.get(tab.id) === pending) {
+          this.snapshotWrites.delete(tab.id);
+        }
+      });
+    this.snapshotWrites.set(tab.id, pending);
   }
 
   private cancelPendingSnapshot(id: string): void {

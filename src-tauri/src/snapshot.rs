@@ -15,16 +15,25 @@ use crate::file::write_file_impl;
 
 const SNAPSHOT_DIR_NAME: &str = "snapshots";
 const SNAPSHOT_EXT: &str = "snapshot";
+/// 未命名标签快照索引：快照文件按哈希命名无法反推键，故维护
+/// `untitled-index.json`（键 → 写入毫秒时间戳），使启动时可枚举崩溃遗留的
+/// 未命名草稿。正常保存/关闭会同时移除索引条目与快照文件。
+const UNTITLED_INDEX_NAME: &str = "untitled-index.json";
+const UNTITLED_KEY_PREFIX: &str = "untitled-";
 
 /// FNV-1a 64-bit 哈希 —— 跨进程/跨运行稳定（std 的 DefaultHasher 不保证
 /// 稳定，不能用于持久化命名）。对规范化后的路径字符串计算，输出 hex。
 fn stable_path_hash(file_path: &str) -> String {
-    // 规范化：统一为反斜杠小写（Windows 路径大小写不敏感），去掉结尾分隔符，
-    // 使同一路径的不同写法映射到同一快照。
-    let normalized = file_path
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_lowercase();
+    // 规范化：统一分隔符并去结尾分隔符。Windows 路径大小写不敏感，仅在
+    // Windows 上小写化，避免大小写敏感文件系统（Linux/macOS）下仅大小写
+    // 不同的两个文件映射到同一快照而串档。
+    let unified = file_path.replace('/', "\\");
+    let trimmed = unified.trim_end_matches('\\');
+    let normalized = if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_owned()
+    };
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in normalized.as_bytes() {
         hash ^= u64::from(*byte);
@@ -40,20 +49,114 @@ pub fn snapshot_path_for(base_dir: &Path, file_path: &str) -> PathBuf {
         .join(format!("{}.{}", stable_path_hash(file_path), SNAPSHOT_EXT))
 }
 
-/// 原子写快照（复用 file 模块的原子写实现）。
-pub fn write_snapshot_impl(base_dir: &Path, file_path: &str, content: &str) -> Result<(), String> {
-    let snap = snapshot_path_for(base_dir, file_path);
-    write_file_impl(&snap, content)
+/// 未命名草稿索引条目（序列化进 untitled-index.json）。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct UntitledIndexEntry {
+    key: String,
+    written_at_ms: u64,
 }
 
-/// 删除快照；快照不存在不算错误。
+/// 返回给前端的未命名崩溃草稿。
+#[derive(serde::Serialize)]
+pub struct UntitledDraft {
+    pub key: String,
+    pub content: String,
+}
+
+fn untitled_index_path(base_dir: &Path) -> PathBuf {
+    base_dir.join(SNAPSHOT_DIR_NAME).join(UNTITLED_INDEX_NAME)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn load_untitled_index(base_dir: &Path) -> Vec<UntitledIndexEntry> {
+    let path = untitled_index_path(base_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(), // 索引不存在等同空
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_untitled_index(base_dir: &Path, entries: &[UntitledIndexEntry]) -> Result<(), String> {
+    let path = untitled_index_path(base_dir);
+    let body = serde_json::to_string(entries)
+        .map_err(|e| format!("无法序列化未命名快照索引: {}", e))?;
+    write_file_impl(&path, &body)
+}
+
+/// 原子写快照（复用 file 模块的原子写实现）；未命名键同步登记索引。
+pub fn write_snapshot_impl(base_dir: &Path, file_path: &str, content: &str) -> Result<(), String> {
+    let snap = snapshot_path_for(base_dir, file_path);
+    write_file_impl(&snap, content)?;
+    if file_path.starts_with(UNTITLED_KEY_PREFIX) {
+        let mut entries = load_untitled_index(base_dir);
+        entries.retain(|e| e.key != file_path);
+        entries.push(UntitledIndexEntry {
+            key: file_path.to_owned(),
+            written_at_ms: now_ms(),
+        });
+        save_untitled_index(base_dir, &entries)?;
+    }
+    Ok(())
+}
+
+/// 删除快照；快照不存在不算错误。未命名键同步移除索引条目。
 pub fn clear_snapshot_impl(base_dir: &Path, file_path: &str) -> Result<(), String> {
     let snap = snapshot_path_for(base_dir, file_path);
     match fs::remove_file(&snap) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("无法删除快照 {}: {}", snap.display(), e)),
+    }?;
+    if file_path.starts_with(UNTITLED_KEY_PREFIX) {
+        let mut entries = load_untitled_index(base_dir);
+        let before = entries.len();
+        entries.retain(|e| e.key != file_path);
+        if entries.len() != before {
+            save_untitled_index(base_dir, &entries)?;
+        }
     }
+    Ok(())
+}
+
+/// 枚举仍存在的未命名草稿快照（启动崩溃恢复用）。索引与快照文件相互
+/// 校验：索引指向的快照缺失时自动剔除该条目（并回写索引）。
+pub fn list_untitled_drafts_impl(base_dir: &Path) -> Result<Vec<UntitledDraft>, String> {
+    let entries = load_untitled_index(base_dir);
+    let mut drafts: Vec<UntitledDraft> = Vec::new();
+    let mut surviving: Vec<UntitledIndexEntry> = Vec::new();
+    let mut pruned = false;
+    for entry in entries {
+        let snap = snapshot_path_for(base_dir, &entry.key);
+        match fs::read_to_string(&snap) {
+            Ok(content) => {
+                drafts.push(UntitledDraft {
+                    key: entry.key.clone(),
+                    content,
+                });
+                surviving.push(entry);
+            }
+            Err(_) => pruned = true,
+        }
+    }
+    if pruned {
+        save_untitled_index(base_dir, &surviving)?;
+    }
+    // 稳定顺序：按写入时间升序（最旧草稿排前）。
+    drafts.sort_by_key(|d| {
+        surviving
+            .iter()
+            .find(|e| e.key == d.key)
+            .map(|e| e.written_at_ms)
+            .unwrap_or(0)
+    });
+    Ok(drafts)
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
@@ -102,6 +205,11 @@ pub fn read_stale_snapshot(app: tauri::AppHandle, file_path: String) -> Result<O
     read_stale_snapshot_impl(&resolve_base_dir(&app), &file_path)
 }
 
+#[tauri::command]
+pub fn list_untitled_drafts(app: tauri::AppHandle) -> Result<Vec<UntitledDraft>, String> {
+    list_untitled_drafts_impl(&resolve_base_dir(&app))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,15 +224,68 @@ mod tests {
     fn hash_is_stable_and_path_form_insensitive() {
         // 同一字符串多次哈希一致（跨运行稳定是 FNV-1a 的算法属性）
         assert_eq!(stable_path_hash("C:\\a\\b.md"), stable_path_hash("C:\\a\\b.md"));
-        // 正/反斜杠与大小写差异映射到同一快照
+        // 正/反斜杠差异映射到同一快照
         assert_eq!(
             stable_path_hash("C:/Docs/Note.md"),
-            stable_path_hash("c:\\docs\\note.md")
+            stable_path_hash("C:\\Docs\\Note.md")
         );
+        // 大小写不敏感仅在 Windows（路径大小写不敏感文件系统）成立
+        if cfg!(windows) {
+            assert_eq!(
+                stable_path_hash("C:/Docs/Note.md"),
+                stable_path_hash("c:\\docs\\note.md")
+            );
+        } else {
+            assert_ne!(
+                stable_path_hash("/Docs/Note.md"),
+                stable_path_hash("/docs/note.md")
+            );
+        }
         // 不同路径哈希不同
         assert_ne!(stable_path_hash("C:\\a.md"), stable_path_hash("C:\\b.md"));
         // hex 格式
         assert_eq!(stable_path_hash("x").len(), 16);
+    }
+
+    #[test]
+    fn untitled_write_then_list_then_clear() {
+        let dir = temp_dir();
+        write_snapshot_impl(dir.path(), "untitled-a1b2c3", "草稿甲").expect("write a");
+        write_snapshot_impl(dir.path(), "untitled-d4e5f6", "草稿乙").expect("write b");
+        // 文件路径键不进索引
+        write_snapshot_impl(dir.path(), "C:\\doc.md", "正式文件").expect("write file");
+
+        let drafts = list_untitled_drafts_impl(dir.path()).expect("list");
+        assert_eq!(drafts.len(), 2);
+        assert!(drafts.iter().any(|d| d.key == "untitled-a1b2c3" && d.content == "草稿甲"));
+        assert!(drafts.iter().any(|d| d.key == "untitled-d4e5f6" && d.content == "草稿乙"));
+
+        clear_snapshot_impl(dir.path(), "untitled-a1b2c3").expect("clear");
+        let drafts = list_untitled_drafts_impl(dir.path()).expect("list after clear");
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].key, "untitled-d4e5f6");
+    }
+
+    #[test]
+    fn untitled_list_prunes_index_when_snapshot_missing() {
+        let dir = temp_dir();
+        write_snapshot_impl(dir.path(), "untitled-g7h8i9", "草稿").expect("write");
+        // 手动删掉快照文件但保留索引 → list 应剔除并回写索引
+        let snap = snapshot_path_for(dir.path(), "untitled-g7h8i9");
+        fs::remove_file(&snap).unwrap();
+        let drafts = list_untitled_drafts_impl(dir.path()).expect("list");
+        assert!(drafts.is_empty());
+        assert!(load_untitled_index(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn untitled_overwrite_same_key_keeps_single_entry() {
+        let dir = temp_dir();
+        write_snapshot_impl(dir.path(), "untitled-j1k2l3", "v1").expect("write v1");
+        write_snapshot_impl(dir.path(), "untitled-j1k2l3", "v2").expect("write v2");
+        let drafts = list_untitled_drafts_impl(dir.path()).expect("list");
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].content, "v2");
     }
 
     #[test]

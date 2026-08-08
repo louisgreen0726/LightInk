@@ -104,7 +104,14 @@ describe('新建与切换', () => {
     expect(tab.title).toBe('未命名-1');
     expect(tab.filePath).toBeNull();
     expect(tab.dirty).toBe(false);
-    expect(snapshotKeyOf(tab)).toBe('untitled-1');
+    expect(snapshotKeyOf(tab)).toMatch(/^untitled-/);
+  });
+
+  it('两个未命名标签的快照键互不相同（跨会话唯一 token）', async () => {
+    const { manager } = makeHarness();
+    const a = await manager.newTab();
+    const b = await manager.newTab();
+    expect(snapshotKeyOf(a)).not.toBe(snapshotKeyOf(b));
   });
 
   it('switchTab 只显示活动标签的宿主元素', async () => {
@@ -263,7 +270,7 @@ describe('关闭未保存标签', () => {
     expect(harness.manager.tabList).toHaveLength(0);
     expect(harness.manager.activeTabId).toBeNull();
     expect(tab.editor.destroy).toHaveBeenCalled();
-    expect(harness.deps.clearSnapshot).toHaveBeenCalledWith('untitled-1');
+    expect(harness.deps.clearSnapshot).toHaveBeenCalledWith(tab.syntheticId);
   });
 
   it('confirmClose=save 先保存再关闭；保存失败则不关闭', async () => {
@@ -313,7 +320,7 @@ describe('崩溃快照', () => {
     expect(harness.deps.writeSnapshot).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1000);
     expect(harness.deps.writeSnapshot).toHaveBeenCalledWith(
-      'untitled-1',
+      tab.syntheticId,
       '未保存的草稿',
     );
   });
@@ -328,7 +335,7 @@ describe('崩溃快照', () => {
     harness.manager.handleContentChanged(tab.id);
     vi.advanceTimersByTime(1000);
     expect(harness.deps.writeSnapshot).toHaveBeenCalledTimes(1);
-    expect(harness.deps.writeSnapshot).toHaveBeenCalledWith('untitled-1', 'v2');
+    expect(harness.deps.writeSnapshot).toHaveBeenCalledWith(tab.syntheticId, 'v2');
   });
 
   it('已保存文件编辑后的快照键是文件路径', async () => {
@@ -371,5 +378,94 @@ describe('辅助函数', () => {
   it('fileNameOf 同时兼容两种分隔符', () => {
     expect(fileNameOf('C:\\docs\\笔记.md')).toBe('笔记.md');
     expect(fileNameOf('/home/user/a.md')).toBe('a.md');
+  });
+});
+
+describe('未命名崩溃草稿恢复', () => {
+  it('recoverUntitledDrafts：恢复则以其原键开标签且保持脏标记', async () => {
+    const harness = makeHarness({
+      listUntitledDrafts: vi.fn(async () => [
+        { key: 'untitled-aa11bb22', content: '崩溃前的草稿内容' },
+      ]),
+    });
+    harness.promptRestore.mockResolvedValue(true);
+    const restored = await harness.manager.recoverUntitledDrafts();
+    expect(restored).toHaveLength(1);
+    expect(restored[0].syntheticId).toBe('untitled-aa11bb22');
+    expect(restored[0].editor.getMarkdown()).toBe('崩溃前的草稿内容');
+    expect(restored[0].dirty).toBe(true);
+    // 后续防抖快照覆盖同一键（不清除也不另起新键）
+    vi.useFakeTimers();
+    restored[0].editor.setMarkdown('继续编辑');
+    harness.manager.handleContentChanged(restored[0].id);
+    vi.advanceTimersByTime(1000);
+    expect(harness.deps.writeSnapshot).toHaveBeenCalledWith(
+      'untitled-aa11bb22',
+      '继续编辑',
+    );
+  });
+
+  it('recoverUntitledDrafts：放弃则删除该快照', async () => {
+    const harness = makeHarness({
+      listUntitledDrafts: vi.fn(async () => [
+        { key: 'untitled-cc33dd44', content: '旧草稿' },
+      ]),
+    });
+    harness.promptRestore.mockResolvedValue(false);
+    const restored = await harness.manager.recoverUntitledDrafts();
+    expect(restored).toHaveLength(0);
+    expect(harness.deps.clearSnapshot).toHaveBeenCalledWith('untitled-cc33dd44');
+  });
+
+  it('listUntitledDrafts 失败时静默返回空（不阻塞启动）', async () => {
+    const harness = makeHarness({
+      listUntitledDrafts: vi.fn(async () => {
+        throw new Error('ipc down');
+      }),
+    });
+    const restored = await harness.manager.recoverUntitledDrafts();
+    expect(restored).toEqual([]);
+  });
+});
+
+describe('保存与快照写入竞态', () => {
+  it('保存前取消待写快照并等待进行中的写入完成', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness();
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('改');
+    harness.manager.handleContentChanged(tab!.id);
+    // 防抖窗口内立即保存：不应再触发快照写入
+    await harness.manager.saveTab(tab!.id);
+    vi.advanceTimersByTime(2000);
+    expect(harness.deps.writeSnapshot).not.toHaveBeenCalled();
+    // 文件路径快照由 saveToPathFlow 经 roundtrip.clearSnapshot 清除
+    expect(harness.roundtrip.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
+  });
+
+  it('进行中的快照写入完成后才清快照（无孤儿快照）', async () => {
+    vi.useFakeTimers();
+    let resolveWrite: (() => void) | null = null;
+    const harness = makeHarness({
+      writeSnapshot: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveWrite = resolve;
+          }),
+      ),
+    });
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('改');
+    harness.manager.handleContentChanged(tab!.id);
+    vi.advanceTimersByTime(1000); // 触发 writeSnapshot（挂起中）
+    expect(harness.deps.writeSnapshot).toHaveBeenCalledTimes(1);
+
+    const savePromise = harness.manager.saveTab(tab!.id);
+    // 快照写入未完成 → 保存流程挂起在 await 上
+    await Promise.resolve();
+    expect(harness.roundtrip.clearSnapshot).not.toHaveBeenCalled();
+    resolveWrite!();
+    await savePromise;
+    expect(harness.roundtrip.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
   });
 });
