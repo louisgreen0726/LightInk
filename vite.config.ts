@@ -13,7 +13,8 @@ export default defineConfig(async () => ({
     // 字体资产一律内联为 data URI：导出的独立 HTML（T10, R5）经 file://
     // 打开时没有任何 /assets/ 基座，KaTeX @font-face 的 url() 必须随 CSS
     // 文本自包含，否则公式字体 404。本地桌面应用内联成本可接受。
-    assetsInlineLimit: (filePath: string) => /\.(?:woff2?|ttf|otf|eot)(?:\?.*)?$/.test(filePath),
+    assetsInlineLimit: (filePath: string) =>
+      /\.(?:woff2?|ttf|otf|eot)(?:\?.*)?$/.test(filePath) || undefined,
   },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {

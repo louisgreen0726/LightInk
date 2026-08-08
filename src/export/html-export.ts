@@ -101,14 +101,21 @@ const IMG_SRC_RE = /(<img\b[^>]*?\bsrc=")([^"]*)(")/gi;
 /**
  * innerHTML 序列化会把属性值里的 `&` 等字符实体编码（如 `a&amp;b.png`）。
  * 解析文件路径前需还原，否则含这些字符的文件名会被误判 missing。
+ * 单趟替换避免链式二次解码（`&amp;lt;` 只解一层为 `&lt;`，不再变 `<`）。
  */
+const ATTR_ENTITY_MAP: Readonly<Record<string, string>> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  '#39': "'",
+};
+
 function decodeAttrEntities(src: string): string {
-  return src
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  return src.replace(
+    /&(amp|lt|gt|quot|#39);/g,
+    (_whole, name: string) => ATTR_ENTITY_MAP[name] ?? _whole,
+  );
 }
 
 export interface EmbedImagesResult {
@@ -147,7 +154,8 @@ export async function embedImages(
   const embedded: string[] = [];
   const missing: string[] = [];
   for (const [src, base64] of cache) {
-    (base64 === null ? missing : embedded).push(src);
+    // 对外展示用解码后的真实文件名（encoded 形式仅用于 HTML 替换定位）。
+    (base64 === null ? missing : embedded).push(decodeAttrEntities(src));
   }
 
   const out = html.replace(

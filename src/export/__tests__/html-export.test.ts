@@ -137,7 +137,15 @@ describe('embedImages', () => {
     const result = await embedImages('<img src="assets/a&amp;b.png">', resolve);
     // resolver 收到解码后的真实路径，而非 &amp; 编码形式
     expect(resolve).toHaveBeenCalledWith('assets/a&b.png');
-    expect(result.embedded).toEqual(['assets/a&amp;b.png']);
+    expect(result.embedded).toEqual(['assets/a&b.png']);
     expect(result.html).toBe('<img src="data:image/png;base64,QUJD">');
+  });
+
+  it('链式实体不二次解码（&amp;lt; 只解一层）', async () => {
+    const resolve = vi.fn(async () => null);
+    const result = await embedImages('<img src="assets/a&amp;lt;b.png">', resolve);
+    // 磁盘字面名 a&lt;b.png：只解 &amp; → &，不再把 &lt; 解成 <
+    expect(resolve).toHaveBeenCalledWith('assets/a&lt;b.png');
+    expect(result.missing).toEqual(['assets/a&lt;b.png']);
   });
 });
