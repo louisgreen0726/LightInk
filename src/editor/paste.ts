@@ -80,6 +80,15 @@ export function buildPastePayload(text: string): PastePayload {
 }
 
 /**
+ * 剪贴板粘贴路由（R9）：给定剪贴板纯文本，判定应作为 Markdown 源解析还是作为
+ * 纯文本交默认粘贴。纯逻辑（复用 `buildPastePayload`），供 `clipboard-md` 插件与
+ * 测试使用。
+ */
+export function routeClipboardPaste(text: string): PasteKind {
+  return buildPastePayload(text).kind;
+}
+
+/**
  * Verify a payload's parsed structure actually produced structured nodes
  * (i.e. not just a single paragraph). Used in tests and as a sanity check
  * before we route the paste through the editor's structured insertion.

@@ -14,8 +14,10 @@ import {
   buildPastePayload,
   looksLikeMarkdown,
   payloadHasStructuredBlocks,
+  routeClipboardPaste,
 } from '../paste.js';
 import { collectMdastTypes } from '../parser.js';
+import { markdownClipboardData } from '../plugins/clipboard-md.js';
 
 const AI_MARKDOWN = [
   '# 项目总结',
@@ -158,5 +160,29 @@ describe('paste — payload construction', () => {
     const original = AI_MARKDOWN;
     buildPastePayload(original);
     expect(AI_MARKDOWN).toBe(original);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R9 剪贴板路由：routeClipboardPaste + markdownClipboardData
+// ---------------------------------------------------------------------------
+
+describe('R9 clipboard routing', () => {
+  it('routeClipboardPaste returns markdown for markdown sources', () => {
+    expect(routeClipboardPaste('# 标题\n\n正文')).toBe('markdown');
+    expect(routeClipboardPaste('- 项一\n- 项二')).toBe('markdown');
+    expect(routeClipboardPaste('```js\nconst x = 1;\n```')).toBe('markdown');
+    expect(routeClipboardPaste(AI_MARKDOWN)).toBe('markdown');
+  });
+
+  it('routeClipboardPaste returns plain for non-markdown text', () => {
+    expect(routeClipboardPaste('')).toBe('plain');
+    expect(routeClipboardPaste('普通纯文本段落，无标记')).toBe('plain');
+    expect(routeClipboardPaste('hello world')).toBe('plain');
+  });
+
+  it('markdownClipboardData puts the markdown source into text/plain', () => {
+    const md = '# H\n\n**b**';
+    expect(markdownClipboardData(md)).toEqual({ 'text/plain': md });
   });
 });

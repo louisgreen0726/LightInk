@@ -34,6 +34,7 @@ import {
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
+import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
@@ -113,6 +114,9 @@ export async function mountEditor(
         .use(history)
         // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
         .use(codeHighlightPlugin)
+        // T4：Markdown 源复制 / 粘贴解析（R9）。注册于图片插件之前：clipboard-md 对
+        // 非空 files（图片粘贴）直接返回 false，交 imageAssetPlugin 优先拦截。
+        .use(clipboardMdPlugin)
         // T8：LaTeX 公式即时渲染（KaTeX 按需加载 + 错误隔离，见 R8）。
         .use(mathPlugin)
         // T9：mermaid 代码块即时渲染（按需加载 + 语法错误隔离，见 R9）。
