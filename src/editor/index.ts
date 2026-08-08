@@ -41,6 +41,7 @@ import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
+import { slashMenuPlugin } from './plugins/slash-menu.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
 import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
@@ -154,6 +155,8 @@ export async function mountEditor(
         .use(codeHighlightPlugin)
         // T5：选中文字浮出格式工具条（R7）。
         .use(formatToolbarPlugin)
+        // T6：行首斜杠快速插入菜单（R11），元素集合与 R2 插入菜单同源。
+        .use(slashMenuPlugin)
         // T4：Markdown 源复制 / 粘贴解析（R9）。注册于图片插件之前：clipboard-md 对
         // 非空 files（图片粘贴）直接返回 false，交 imageAssetPlugin 优先拦截。
         .use(clipboardMdPlugin)
