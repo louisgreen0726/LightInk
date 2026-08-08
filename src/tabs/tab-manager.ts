@@ -83,6 +83,11 @@ export interface TabManagerDeps {
    * （新建标签或切换到已存在标签）时触发，对话框取消/读取失败不触发。
    */
   onFileOpened?: (filePath: string) => void;
+  /**
+   * R13：成功保存某文件后回调（按 (filePath, content) 生成版本快照）。
+   * 仅在写入磁盘成功时触发。
+   */
+  onFileSaved?: (filePath: string, content: string) => void;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   reportError?: (message: string, error: unknown) => void;
@@ -105,7 +110,7 @@ export function snapshotKeyOf(tab: Pick<TabState, 'filePath' | 'syntheticId'>): 
 const DEFAULT_DEBOUNCE_MS = 1000;
 
 export class TabManager {
-  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened'>;
+  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved'>;
   private tabs: TabState[] = [];
   private activeId: string | null = null;
   private counter = 0;
@@ -132,6 +137,7 @@ export class TabManager {
       onTabsChanged: deps.onTabsChanged,
       onActiveContentChanged: deps.onActiveContentChanged,
       onFileOpened: deps.onFileOpened,
+      onFileSaved: deps.onFileSaved,
     };
   }
 
@@ -269,6 +275,7 @@ export class TabManager {
     if (tab.syntheticId !== tab.filePath) {
       await this.deps.clearSnapshot(tab.syntheticId).catch(() => undefined);
     }
+    this.deps.onFileSaved?.(tab.filePath, content);
     this.notifyChanged();
     return true;
   }
@@ -304,6 +311,7 @@ export class TabManager {
     } catch (error) {
       this.deps.reportError('迁移暂存图片失败', error);
     }
+    this.deps.onFileSaved?.(newPath, content);
     this.notifyChanged();
     return true;
   }

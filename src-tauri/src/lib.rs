@@ -51,6 +51,10 @@ pub fn run() {
             recents::add_recent,
             recents::remove_recent,
             recents::clear_recents,
+            snapshot::create_version,
+            snapshot::list_versions,
+            snapshot::read_version,
+            snapshot::restore_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

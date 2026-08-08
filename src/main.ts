@@ -35,6 +35,7 @@ import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { ShortcutRegistry, type ShortcutAction } from './ui/shortcuts.js';
 import { countDocumentStats, createStatusBarView, type StatusBarView } from './ui/status-bar.js';
+import { showVersionsModal, type VersionMeta } from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
 
@@ -163,6 +164,8 @@ const shell = createAppShell(
       return true;
     },
     clearRecents: () => invoke('clear_recents'),
+    onShowVersions: () => showVersionsForActive(),
+    hasActiveFile: () => manager.activeTab?.filePath != null,
     onSave: () => {
       commitActiveSourceMode();
       void manager.saveActiveTab();
@@ -276,6 +279,10 @@ manager = new TabManager({
   onFileOpened: (filePath) => {
     void invoke('add_recent', { path: filePath }).catch(() => undefined);
   },
+  onFileSaved: (filePath, content) => {
+    // R13：每次成功保存自动生成一份版本快照。
+    void invoke('create_version', { filePath, content }).catch(() => undefined);
+  },
 });
 
 // T7：大纲侧栏。闭包读取活动标签的宿主/markdown；刷新由 TabManager 的
@@ -315,6 +322,34 @@ function refreshStatusBar(): void {
     return;
   }
   statusBar.setStats(countDocumentStats(md));
+}
+
+/** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
+function showVersionsForActive(): void {
+  const tab = manager.activeTab;
+  const filePath = tab?.filePath ?? null;
+  if (filePath === null) {
+    return;
+  }
+  showVersionsModal(document, {
+    list: () => invoke<VersionMeta[]>('list_versions', { filePath }),
+    read: (id) => invoke<string>('read_version', { filePath, versionId: id }),
+    restore: async (id) => {
+      const currentContent = tab?.editor.getMarkdown() ?? '';
+      const content = await invoke<string>('restore_version', {
+        filePath,
+        versionId: id,
+        currentContent,
+      });
+      tab?.editor.setMarkdown(content);
+      const activeId = manager.activeTabId;
+      if (activeId !== null) {
+        manager.handleContentChanged(activeId);
+      }
+    },
+    saveCurrent: () =>
+      invoke('create_version', { filePath, content: tab?.editor.getMarkdown() ?? '' }),
+  });
 }
 
 // T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。

@@ -18,6 +18,8 @@ function stubActions(currentThemeId = 'warm-light'): AppShellActions {
     listRecents: () => Promise.resolve([]),
     openRecent: () => Promise.resolve(false),
     clearRecents: () => Promise.resolve(),
+    onShowVersions: noop,
+    hasActiveFile: () => false,
     onSave: noop,
     onSaveAs: noop,
     onExportHtml: noop,
@@ -54,6 +56,12 @@ describe('buildMenus 生产结构', () => {
 
   it('文件菜单含「最近打开…」入口（R12）', () => {
     expect(file?.items.some((i) => i.id === 'file-recents' && i.label === '最近打开…')).toBe(true);
+  });
+
+  it('文件菜单含「版本历史…」入口，无活动文件时禁用（R13）', () => {
+    const item = file?.items.find((i) => i.id === 'file-versions');
+    expect(item?.label).toBe('版本历史…');
+    expect(item?.enabled?.()).toBe(false); // stub hasActiveFile → false
   });
 
   it('非分隔项不带 separator 且有非空 label（无空白按钮）', () => {

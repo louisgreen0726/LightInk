@@ -35,6 +35,10 @@ export interface AppShellActions {
   openRecent(path: string): Promise<boolean>;
   /** R12：清空最近打开列表。 */
   clearRecents(): Promise<void>;
+  /** R13：打开活动文件版本历史弹层。 */
+  onShowVersions(): void;
+  /** R13：是否存在已保存的活动文件（决定「版本历史」是否可用）。 */
+  hasActiveFile(): boolean;
   onSave(): void;
   onSaveAs(): void;
   onExportHtml(): void;
@@ -130,6 +134,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         menuItem('file-save', '保存', actions.onSave, 'Ctrl+S'),
         menuItem('file-save-as', '另存为', actions.onSaveAs, 'Ctrl+Shift+S'),
         separator('file-sep2'),
+        menuItem('file-versions', '版本历史…', actions.onShowVersions, '', () => actions.hasActiveFile()),
         menuItem('file-export-html', '导出 HTML', actions.onExportHtml),
         menuItem('file-export-pdf', '导出 PDF', actions.onExportPdf),
       ],
