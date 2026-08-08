@@ -383,6 +383,20 @@ describe('buildMathDecorations', () => {
     expect(rendered).toHaveLength(1);
     expect(doc.textBetween(rendered[0]!.from, rendered[0]!.to)).toBe('$E=mc^2$');
   });
+
+  it('code-marked `$` acts as a barrier and never swallows adjacent real math', () => {
+    // 场景：code 内含未闭合 `$a`，紧邻真实公式 `$b$` —— 屏障语义下真实
+    // 公式必须仍然渲染（code 内的 $ 不参与跨段配对）。
+    const text1 = codeSchema.text('前缀 ');
+    const codeText = codeSchema.text('$a', [codeSchema.marks['code']!.create()]);
+    const text2 = codeSchema.text(' $b$ 后缀');
+    const para = codeSchema.nodes['paragraph']!.create(null, [text1, codeText, text2]);
+    const doc = codeSchema.nodes['doc']!.create(null, [para]);
+    const found = buildMathDecorations(doc, katex).find();
+    const rendered = found.filter((d) => decoClass(d) === 'lightink-math-inline-source');
+    expect(rendered).toHaveLength(1);
+    expect(doc.textBetween(rendered[0]!.from, rendered[0]!.to)).toBe('$b$');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -395,26 +395,36 @@ function scanMathInTextblock(
   node: PMNode,
 ): Array<{ type: 'inline' | 'block'; latex: string; from: number; to: number }> {
   const text = node.textBetween(0, node.content.size, '\n', '\n');
-  // 收集 inline code（code mark）覆盖的文本区间（与 textBetween 的
-  // 叶节点 1 字符占位对齐：非文本叶子计 1）。
-  const excluded: Array<readonly [number, number]> = [];
+  // 按 code mark 把文本切为若干非 code 段，逐段扫描（与 MDAST 层的
+  // barrier-flush 语义一致：inline code 充当屏障，其内的 `$` 不会被当作
+  // 定界符参与跨段配对）。
+  const segments: Array<{ type: 'inline' | 'block'; latex: string; from: number; to: number }> = [];
+  let chunkStart: number | null = null;
   let offset = 0;
+  const flush = (end: number): void => {
+    if (chunkStart !== null && end > chunkStart) {
+      segments.push(...scanTextMath(text.slice(chunkStart, end), chunkStart));
+    }
+    chunkStart = null;
+  };
   node.forEach((child) => {
     if (child.isText && child.text !== undefined) {
       const size = child.text.length;
-      if (child.marks.some((m) => m.type.name === 'code')) {
-        excluded.push([offset, offset + size] as const);
+      const isCode = child.marks.some((m) => m.type.name === 'code');
+      if (isCode) {
+        flush(offset);
+      } else if (chunkStart === null) {
+        chunkStart = offset;
       }
       offset += size;
     } else {
-      // 非文本叶子（hardBreak/image 等）与 textBetween 的 1 字符占位对齐
+      // 非文本叶子（hardBreak/image 等）在 textBetween 中占 1 字符；它不构成
+      // 屏障（跨 hardBreak 的 $$ 块公式需保持可匹配），只随占位前进偏移。
       offset += 1;
     }
   });
-  return scanTextMath(text, 0).filter((seg) => {
-    if (excluded.length === 0) return true;
-    return !excluded.some(([s, e]) => seg.from < e && seg.to > s);
-  });
+  flush(offset);
+  return segments;
 }
 
 /**
