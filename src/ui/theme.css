@@ -292,6 +292,12 @@ body {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
 }
 
+/* hidden 属性必须真正隐藏面板：作者源 .lightink-menu-panel{display:flex} 会压过 UA 级联的
+   [hidden]{display:none}，故以等起源、更高特异性（0,2,0 > 0,1,0）显式覆盖（修复 P1）。 */
+.lightink-menu-panel[hidden] {
+  display: none;
+}
+
 .lightink-menu-item {
   display: block;
   width: 100%;
