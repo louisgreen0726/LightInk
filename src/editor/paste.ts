@@ -1,0 +1,99 @@
+/**
+ * Markdown paste handler.
+ *
+ * When a user pastes plain text into the editor we need to decide:
+ *   - paste it as plain text (current paragraph), or
+ *   - parse it as markdown and replace selection with a structured block.
+ *
+ * The heuristic in `looksLikeMarkdown` covers the common markers
+ * (headings, bullet markers, ordered lists, blockquote, fenced code, tables,
+ * task list ` [ ]` / ` [x]`, horizontal rules). The function is intentionally
+ * a fast O(n) scan — once any marker matches we return true, no need to
+ * validate the whole document.
+ */
+
+import { collectMdastTypes, parseDocument } from './parser.js';
+import type { ParsedDocument } from './types.js';
+
+export type PasteKind = 'markdown' | 'plain';
+
+/** Markers used by the markdown detector. Order matters for readability only. */
+const HEADING_MARKER = /(^|\n)#{1,6}\s+\S/;
+const BULLET_MARKER = /(^|\n)\s*[-*+]\s+\S/;
+const ORDERED_MARKER = /(^|\n)\s*\d+\.\s+\S/;
+const BLOCKQUOTE_MARKER = /(^|\n)>\s+\S/;
+const FENCED_CODE_MARKER = /(^|\n)```/;
+const TABLE_MARKER = /(^|\n)\|.+\|.+\n\s*\|?\s*[-:|\s]+\|/;
+const TASK_MARKER = /(^|\n)\s*[-*+]\s+\[[ xX]\]\s+\S/;
+const HR_MARKER = /(^|\n)(-{3,}|\*{3,}|_{3,})(\s*$|\n)/;
+const LINK_MARKER = /\[[^\]\n]{1,200}\]\([^)\n]{1,400}\)/;
+const IMAGE_MARKER = /!\[[^\]\n]{0,200}\]\([^)\n]{0,400}\)/;
+const STRIKETHROUGH_MARKER = /~~[^~\n]{1,400}~~/;
+const INLINE_EMPHASIS_MARKER = /(^|\W)(\*\*[^*\n]{1,400}\*\*|\*[^*\n]{1,400}\*|`[^`\n]{1,400}`)/;
+
+/**
+ * Cheap, allocation-light check: does this text look like markdown we want
+ * to render rather than drop in as plain text?
+ */
+export function looksLikeMarkdown(text: string): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  if (HEADING_MARKER.test(text)) return true;
+  if (BULLET_MARKER.test(text)) return true;
+  if (ORDERED_MARKER.test(text)) return true;
+  if (BLOCKQUOTE_MARKER.test(text)) return true;
+  if (FENCED_CODE_MARKER.test(text)) return true;
+  if (TABLE_MARKER.test(text)) return true;
+  if (TASK_MARKER.test(text)) return true;
+  if (HR_MARKER.test(text)) return true;
+  if (IMAGE_MARKER.test(text)) return true;
+  if (STRIKETHROUGH_MARKER.test(text)) return true;
+  if (INLINE_EMPHASIS_MARKER.test(text)) return true;
+  // Link markers are very common in prose; only enable for short samples.
+  if (text.length <= 4096 && LINK_MARKER.test(text)) return true;
+  return false;
+}
+
+export interface PastePayload {
+  readonly kind: PasteKind;
+  readonly text: string;
+  /**
+   * Parsed document. Only populated when `kind === 'markdown'`.
+   * Undefined for plain-text pastes (the consumer should fall back to the
+   * text body).
+   */
+  readonly parsed?: ParsedDocument;
+}
+
+/**
+ * Build a paste payload from raw clipboard text. Detects whether to treat
+ * the paste as markdown or as plain text, and in the markdown case attaches
+ * a pre-parsed `ParsedDocument` so the consumer can call
+ * `editor.setMarkdown()` or replace the selection without re-parsing.
+ */
+export function buildPastePayload(text: string): PastePayload {
+  const normalized = typeof text === 'string' ? text : String(text ?? '');
+  if (!looksLikeMarkdown(normalized)) {
+    return { kind: 'plain', text: normalized };
+  }
+  const parsed = parseDocument(normalized);
+  return { kind: 'markdown', text: normalized, parsed };
+}
+
+/**
+ * Verify a payload's parsed structure actually produced structured nodes
+ * (i.e. not just a single paragraph). Used in tests and as a sanity check
+ * before we route the paste through the editor's structured insertion.
+ */
+export function payloadHasStructuredBlocks(payload: PastePayload): boolean {
+  if (payload.kind !== 'markdown' || !payload.parsed) return false;
+  const types = collectMdastTypes(payload.parsed.root);
+  // A bare plain-text document would yield at most `paragraph` + `text` nodes.
+  return types.some(
+    (t) =>
+      t !== 'root' &&
+      t !== 'paragraph' &&
+      t !== 'text' &&
+      t !== 'break' &&
+      t !== 'html',
+  );
+}
