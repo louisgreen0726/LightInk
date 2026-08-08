@@ -362,36 +362,46 @@ def check_cold_start_and_memory(
                 notes,
             )
 
-        # Recipe: sample after 3-5s idle.
-        time.sleep(SETTLE_S)
-        mem = tree_memory(read_process_table(), proc.pid)
-        idle_priv_mb = mem.priv_bytes / MB
-        idle_ws_mb = mem.ws_bytes / MB
-        app_priv_mb = mem.root_priv_bytes / MB
+        # Recipe: sample after 3-5s idle. 若进程已提前退出（cold start 判
+        # FAIL），死进程采样会得到 vacuous 的 0MB 通过——改为明确判 FAIL
+        # 并不再喂给万字文档检查的 idle 基线。
+        if proc.poll() is not None:
+            idle = CheckResult(
+                "idle editing memory <= 150MB (tree private bytes @ 4s idle)",
+                False,
+                "app exited before sampling window; idle memory inconclusive",
+                notes,
+            )
+            idle_priv_mb = 0.0  # 标记不可用，调用方不得用于合并计算
+        else:
+            time.sleep(SETTLE_S)
+            mem = tree_memory(read_process_table(), proc.pid)
+            idle_priv_mb = mem.priv_bytes / MB
+            idle_ws_mb = mem.ws_bytes / MB
+            app_priv_mb = mem.root_priv_bytes / MB
 
-        # Informational steady-state sample.
-        time.sleep(STEADY_EXTRA_S)
-        steady = tree_memory(read_process_table(), proc.pid)
-        steady_priv_mb = steady.priv_bytes / MB
+            # Informational steady-state sample.
+            time.sleep(STEADY_EXTRA_S)
+            steady = tree_memory(read_process_table(), proc.pid)
+            steady_priv_mb = steady.priv_bytes / MB
 
-        idle = CheckResult(
-            "idle editing memory <= 150MB (tree private bytes @ 4s idle)",
-            idle_priv_mb <= IDLE_RSS_BUDGET_MB,
-            f"tree private = {idle_priv_mb:.1f}MB "
-            f"(app exe {app_priv_mb:.1f}MB + WebView2 runtime "
-            f"{idle_priv_mb - app_priv_mb:.1f}MB, {mem.proc_count} procs); "
-            f"tree working-set = {idle_ws_mb:.1f}MB (info only, includes "
-            f"shared runtime pages); steady-state private @ +10s = "
-            f"{steady_priv_mb:.1f}MB",
-            [
-                "assertion metric: private bytes (memory unique to this app "
-                "instance); working-set sum double-counts shared WebView2 "
-                "runtime pages and is reported for information only",
-                f"steady-state creeps to {steady_priv_mb:.1f}MB as WebView2 "
-                "caches warm; reducing renderer memory would require src/** "
-                "changes outside T11 scope",
-            ],
-        )
+            idle = CheckResult(
+                "idle editing memory <= 150MB (tree private bytes @ 4s idle)",
+                idle_priv_mb <= IDLE_RSS_BUDGET_MB,
+                f"tree private = {idle_priv_mb:.1f}MB "
+                f"(app exe {app_priv_mb:.1f}MB + WebView2 runtime "
+                f"{idle_priv_mb - app_priv_mb:.1f}MB, {mem.proc_count} procs); "
+                f"tree working-set = {idle_ws_mb:.1f}MB (info only, includes "
+                f"shared runtime pages); steady-state private @ +10s = "
+                f"{steady_priv_mb:.1f}MB",
+                [
+                    "assertion metric: private bytes (memory unique to this app "
+                    "instance); working-set sum double-counts shared WebView2 "
+                    "runtime pages and is reported for information only",
+                    "reducing renderer memory would require src/** "
+                    "changes outside T11 scope",
+                ],
+            )
     finally:
         kill_tree(proc.pid)
         try:
@@ -456,6 +466,21 @@ def check_big_doc(idle_priv_mb: float) -> CheckResult:
             pass
 
     heap_mb = data["heapDelta"] / MB
+    if idle_priv_mb <= 0.0:
+        # idle 采样不可得（进程提前退出）：仅评估 parser 堆增量本身，
+        # 不做合并断言，避免死进程的 0MB 基线低估总占用。
+        return CheckResult(
+            "10k-word doc memory <= 300MB",
+            heap_mb <= DOC_TOTAL_BUDGET_MB,
+            f"doc {actual_words} words / {data['chars']} chars; "
+            f"parser heap delta {heap_mb:.1f}MB; "
+            f"idle baseline unavailable (app exited early) — heap-only check",
+            [
+                "approximation: same unified+remark-parse+remark-gfm pipeline as "
+                "src/editor/parser.ts, measured in Node; full E2E doc-load RSS "
+                "needs interactive verification",
+            ],
+        )
     combined_mb = idle_priv_mb + heap_mb
     return CheckResult(
         "10k-word doc memory <= 300MB",
