@@ -35,6 +35,7 @@ import {
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
+import { mathPlugin } from './plugins/math.js';
 import type { EditorInstance, MountOptions } from './types.js';
 
 interface MountState {
@@ -106,7 +107,9 @@ export async function mountEditor(
         .use(gfm)
         .use(history)
         // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
-        .use(codeHighlightPlugin);
+        .use(codeHighlightPlugin)
+        // T8：LaTeX 公式即时渲染（KaTeX 按需加载 + 错误隔离，见 R8）。
+        .use(mathPlugin);
       // T4：注入图片落盘回调时拦截粘贴/拖拽图片 → 落盘 → 插入相对引用。
       if (options.assetSaver !== undefined) {
         editor.use(
