@@ -267,6 +267,8 @@ describe('大纲与 TabManager 接线', () => {
       getMarkdown() {
         return state.content;
       },
+      getSelection: () => null,
+      getLinkAtCursor: () => null,
       destroy: vi.fn(async () => undefined),
     };
   }

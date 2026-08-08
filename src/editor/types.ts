@@ -86,6 +86,19 @@ export interface MountOptions {
   readonly assetsDir?: string;
 }
 
+/** 当前选区的位置摘要（R7/R3 选区访问器）。 */
+export interface SelectionSummary {
+  readonly from: number;
+  readonly to: number;
+  readonly empty: boolean;
+}
+
+/** 光标处链接的信息（R7/R3 链接查询）。 */
+export interface CursorLink {
+  readonly href: string;
+  readonly text: string;
+}
+
 /** Public handle returned from `mountEditor`. */
 export interface EditorInstance {
   /** Promise that resolves once the underlying ProseMirror editor is created. */
@@ -94,6 +107,16 @@ export interface EditorInstance {
   setMarkdown(markdown: string): void;
   /** Read current editor contents as markdown (best-effort serialization). */
   getMarkdown(): string;
+  /**
+   * 当前选区摘要（{from,to,empty}）。编辑器未就绪时返回 null。
+   * 供 R3 上下文菜单启用/禁用与动作使用。
+   */
+  getSelection(): SelectionSummary | null;
+  /**
+   * 光标处的链接（href + 文本）。光标不在链接上或编辑器未就绪时返回 null。
+   * 供 R3 链接的打开/复制地址使用。
+   */
+  getLinkAtCursor(): CursorLink | null;
   /** Tear the editor down (removes DOM, nulls listeners). */
   destroy(): Promise<void>;
 }

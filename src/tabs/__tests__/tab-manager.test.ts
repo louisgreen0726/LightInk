@@ -33,6 +33,8 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     getMarkdown() {
       return state.content;
     },
+    getSelection: () => null,
+    getLinkAtCursor: () => null,
     destroy: vi.fn(async () => undefined),
   };
 }

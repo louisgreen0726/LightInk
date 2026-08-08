@@ -1,0 +1,160 @@
+/**
+ * `format-toolbar` — 选中文字浮出格式工具条（R7），`$prose` 插件。
+ *
+ * 设计（02-technical-solution.md R7）：订阅选区更新，工具条是一个 **PM 文本管理之外**
+ * 的 div（append 到 document.body，position:fixed），用 `view.coordsAtPos` 定位到选区
+ * 起点上方（放不下则下方），提供加粗/斜体/删除线/行内代码/链接；点击用 PM 事务变更
+ * 选区 marks；空选区/失焦即隐藏。
+ *
+ * PM mark 名（经 $markSchema id 核实）：strong / emphasis / strike_through / inlineCode / link。
+ *
+ * 纯逻辑 `FORMAT_TOOLS`（工具目录）与 `placeToolbar`（放置决策）headless 可测；
+ * DOM/PM 装配属编辑器集成面（同既有插件，仅断言工厂形态）。
+ */
+
+import { $prose } from '@milkdown/utils';
+import { Plugin, PluginKey } from '@milkdown/prose/state';
+import { toggleMark } from '@milkdown/prose/commands';
+import type { EditorView } from '@milkdown/prose/view';
+
+const PLUGIN_KEY = new PluginKey('lightink-format-toolbar');
+
+export type FormatToolId = 'bold' | 'italic' | 'strikethrough' | 'code' | 'link';
+
+export interface FormatTool {
+  readonly id: FormatToolId;
+  readonly label: string;
+  readonly title: string;
+  /** 对应的 PM schema mark 名；link 特殊处理（带 href 属性）。 */
+  readonly markName: string;
+}
+
+/** 工具条按钮目录（顺序即渲染顺序）。markName 与 Milkdown schema 一致。 */
+export const FORMAT_TOOLS: readonly FormatTool[] = [
+  { id: 'bold', label: 'B', title: '加粗', markName: 'strong' },
+  { id: 'italic', label: 'I', title: '斜体', markName: 'emphasis' },
+  { id: 'strikethrough', label: 'S', title: '删除线', markName: 'strike_through' },
+  { id: 'code', label: '</>', title: '行内代码', markName: 'inlineCode' },
+  { id: 'link', label: '🔗', title: '链接', markName: 'link' },
+];
+
+export interface ToolbarPlacement {
+  readonly top: number;
+  readonly left: number;
+}
+
+/**
+ * 纯逻辑：给定选区起点屏幕坐标、工具条尺寸、视口尺寸，计算「不遮挡选区」的放置点。
+ * 上方优先（top - height - gap）；上方放不下则翻到选区起点下方（top + gap）；
+ * 水平居中于起点并夹在视口内。
+ */
+export function placeToolbar(
+  anchor: { top: number; left: number },
+  size: { width: number; height: number },
+  viewport: { width: number; height: number },
+  gap = 6,
+): ToolbarPlacement {
+  const above = anchor.top - size.height - gap;
+  const top = above >= 0 ? above : anchor.top + gap;
+  let left = anchor.left - size.width / 2;
+  const maxLeft = viewport.width - gap - size.width;
+  if (left < gap) left = gap;
+  if (left > maxLeft) left = Math.max(gap, maxLeft);
+  return { top, left };
+}
+
+/** 创建工具条 DOM（按钮按 FORMAT_TOOLS 渲染，data-tool 标记动作）。仅挂载态调用。 */
+function createToolbarElement(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'lightink-format-toolbar';
+  el.setAttribute('role', 'toolbar');
+  el.setAttribute('aria-label', '格式工具条');
+  el.style.display = 'none';
+  el.style.position = 'fixed';
+  el.style.zIndex = '1000';
+  el.style.display = 'none';
+  for (const tool of FORMAT_TOOLS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `lightink-format-tool lightink-format-tool--${tool.id}`;
+    btn.textContent = tool.label;
+    btn.title = tool.title;
+    btn.setAttribute('aria-label', tool.title);
+    btn.dataset['tool'] = tool.id;
+    el.appendChild(btn);
+  }
+  return el;
+}
+
+/** 应用某个格式工具到当前选区（mark 切换 / link 包裹）。 */
+function applyFormatTool(view: EditorView, id: FormatToolId): void {
+  const tool = FORMAT_TOOLS.find((t) => t.id === id);
+  if (tool === undefined) return;
+  const markType = view.state.schema.marks[tool.markName];
+  if (markType === undefined) return;
+  const { from, to } = view.state.selection;
+  if (tool.markName === 'link') {
+    const href =
+      typeof prompt === 'function' ? (prompt('链接地址（https://…）') ?? '') : '';
+    if (href === '') return;
+    view.dispatch(view.state.tr.addMark(from, to, markType.create({ href })));
+    return;
+  }
+  toggleMark(markType)(view.state, (tr) => view.dispatch(tr));
+}
+
+/** 依据当前选区同步工具条显隐与位置。 */
+function syncToolbar(view: EditorView, toolbar: HTMLElement): void {
+  const { selection } = view.state;
+  if (selection.empty || selection.from === selection.to) {
+    toolbar.style.display = 'none';
+    return;
+  }
+  // 先显示以测得尺寸（display:none 时 getBoundingClientRect 为 0）。
+  toolbar.style.display = '';
+  const anchor = view.coordsAtPos(selection.from);
+  const rect = toolbar.getBoundingClientRect();
+  const placement = placeToolbar(
+    { top: anchor.top, left: anchor.left },
+    { width: rect.width, height: rect.height },
+    { width: window.innerWidth, height: window.innerHeight },
+  );
+  toolbar.style.top = `${placement.top}px`;
+  toolbar.style.left = `${placement.left}px`;
+}
+
+export const formatToolbarPlugin = $prose(() => {
+  return new Plugin({
+    key: PLUGIN_KEY,
+    view(view: EditorView) {
+      const toolbar = createToolbarElement();
+      const onClick = (event: Event): void => {
+        const target = event.target;
+        const btn =
+          target instanceof HTMLElement ? target.closest<HTMLButtonElement>('button[data-tool]') : null;
+        if (btn === null) return;
+        const id = btn.dataset['tool'] as FormatToolId | undefined;
+        if (id === undefined) return;
+        applyFormatTool(view, id);
+      };
+      const onHide = (): void => {
+        toolbar.style.display = 'none';
+      };
+      toolbar.addEventListener('click', onClick);
+      view.dom.addEventListener('blur', onHide, true);
+      document.body.appendChild(toolbar);
+      syncToolbar(view, toolbar);
+
+      return {
+        update() {
+          syncToolbar(view, toolbar);
+        },
+        destroy() {
+          toolbar.removeEventListener('click', onClick);
+          view.dom.removeEventListener('blur', onHide, true);
+          toolbar.remove();
+        },
+      };
+    },
+  });
+});

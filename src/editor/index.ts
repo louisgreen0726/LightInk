@@ -20,6 +20,7 @@
 
 import {
   defaultValueCtx,
+  editorViewCtx,
   Editor as MilkdownEditor,
   EditorStatus,
   rootCtx,
@@ -35,11 +36,14 @@ import {
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
+import { formatToolbarPlugin } from './plugins/format-toolbar.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
-import type { EditorInstance, MountOptions } from './types.js';
+import type { EditorView } from '@milkdown/prose/view';
+import type { Mark } from '@milkdown/prose/model';
+import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
 
 interface MountState {
   editor: MilkdownEditor | null;
@@ -64,6 +68,40 @@ function isDevEnvironment(): boolean {
 /** True when the Milkdown editor has finished creating and has a live view. */
 function isCreated(state: MountState): boolean {
   return state.editor !== null && state.editor.status === EditorStatus.Created;
+}
+
+/** 取得底层 ProseMirror EditorView（编辑器未就绪或异常时返回 null）。 */
+function getView(state: MountState): EditorView | null {
+  if (!isCreated(state)) return null;
+  try {
+    return state.editor!.action((ctx) => ctx.get(editorViewCtx));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析光标处的链接（R7/R3）。取 `$from` 处的 link mark，并向前/向后展开到该 mark
+ * 覆盖的完整文本范围，返回 href 与链接文本；无链接返回 null。
+ */
+function resolveCursorLink(view: EditorView): CursorLink | null {
+  const { $from } = view.state.selection;
+  const link = $from.marks().find((mark: Mark) => mark.type.name === 'link');
+  if (link === undefined) return null;
+  const href = typeof link.attrs['href'] === 'string' ? (link.attrs['href'] as string) : '';
+  const doc = view.state.doc;
+  const same = (mark: Mark): boolean =>
+    mark.type === link.type && mark.attrs['href'] === link.attrs['href'];
+  let from = $from.pos;
+  while (from > 0 && doc.resolve(from - 1).marks().some(same)) {
+    from -= 1;
+  }
+  let to = $from.pos;
+  while (to < doc.content.size && doc.resolve(to).marks().some(same)) {
+    to += 1;
+  }
+  const text = doc.textBetween(from, to, '');
+  return { href, text };
 }
 
 /**
@@ -114,6 +152,8 @@ export async function mountEditor(
         .use(history)
         // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
         .use(codeHighlightPlugin)
+        // T5：选中文字浮出格式工具条（R7）。
+        .use(formatToolbarPlugin)
         // T4：Markdown 源复制 / 粘贴解析（R9）。注册于图片插件之前：clipboard-md 对
         // 非空 files（图片粘贴）直接返回 false，交 imageAssetPlugin 优先拦截。
         .use(clipboardMdPlugin)
@@ -177,6 +217,17 @@ export async function mountEditor(
         return live;
       }
       return state.cachedMarkdown;
+    },
+    getSelection(): SelectionSummary | null {
+      const view = getView(state);
+      if (view === null) return null;
+      const { from, to, empty } = view.state.selection;
+      return { from, to, empty };
+    },
+    getLinkAtCursor(): CursorLink | null {
+      const view = getView(state);
+      if (view === null) return null;
+      return resolveCursorLink(view);
     },
     async destroy(): Promise<void> {
       try {
