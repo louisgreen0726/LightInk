@@ -371,13 +371,50 @@ function docHasMath(doc: PMNode): boolean {
   let found = false;
   doc.descendants((node) => {
     if (found) return false;
+    // 代码块内容永远不当公式扫描（R8：公式只作用于正文）
+    if (node.type.name === 'code_block') return false;
     if (!node.isTextblock) return true;
-    if (scanTextMath(node.textBetween(0, node.content.size, '\n', '\n')).length > 0) {
+    if (scanMathInTextblock(node).length > 0) {
       found = true;
     }
     return false;
   });
   return found;
+}
+
+/**
+ * 在 textblock 内扫描公式段，排除 inline code（code mark）覆盖的区间。
+ * 返回段的 from/to 为「textblock 内文本偏移」，由调用方加 pos+1 换算为
+ * 文档位置。
+ *
+ * 已知取舍：remark 在解析期把 `\$` 解码为字面 `$`，PM 文本层看不到转义
+ * 反斜杠，故源码 `\$x$` 在本层会被当作公式渲染；严格语义需源码级映射，
+ * 当前按 PM 层近似接受（罕见的刻意转义场景）。
+ */
+function scanMathInTextblock(
+  node: PMNode,
+): Array<{ type: 'inline' | 'block'; latex: string; from: number; to: number }> {
+  const text = node.textBetween(0, node.content.size, '\n', '\n');
+  // 收集 inline code（code mark）覆盖的文本区间（与 textBetween 的
+  // 叶节点 1 字符占位对齐：非文本叶子计 1）。
+  const excluded: Array<readonly [number, number]> = [];
+  let offset = 0;
+  node.forEach((child) => {
+    if (child.isText && child.text !== undefined) {
+      const size = child.text.length;
+      if (child.marks.some((m) => m.type.name === 'code')) {
+        excluded.push([offset, offset + size] as const);
+      }
+      offset += size;
+    } else {
+      // 非文本叶子（hardBreak/image 等）与 textBetween 的 1 字符占位对齐
+      offset += 1;
+    }
+  });
+  return scanTextMath(text, 0).filter((seg) => {
+    if (excluded.length === 0) return true;
+    return !excluded.some(([s, e]) => seg.from < e && seg.to > s);
+  });
 }
 
 /**
@@ -394,11 +431,16 @@ export function buildMathDecorations(doc: PMNode, katex: KatexRenderer | null): 
   if (katex === null) return DecorationSet.empty;
   const decorations: Decoration[] = [];
   doc.descendants((node, pos) => {
+    // 代码块内容永远不当公式渲染（R8：公式只作用于正文）
+    if (node.type.name === 'code_block') return false;
     if (!node.isTextblock) return true;
-    // textblock 内文本从 pos+1 开始；leaf 节点（hardBreak/image 等）以
-    // 单字符占位，保证「文本下标 ↔ 文档位置」一一对应。
-    const text = node.textBetween(0, node.content.size, '\n', '\n');
-    const segments = scanTextMath(text, pos + 1);
+    // textblock 内文本从 pos+1 开始；扫描时排除 inline code（code mark）
+    // 区间（leaf 节点以单字符占位，保证「文本下标 ↔ 文档位置」一一对应）。
+    const segments = scanMathInTextblock(node).map((seg) => ({
+      ...seg,
+      from: seg.from + pos + 1,
+      to: seg.to + pos + 1,
+    }));
     for (const seg of segments) {
       const displayMode = seg.type === 'block';
       const outcome = tryRenderKatex(seg.latex, displayMode, katex);

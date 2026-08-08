@@ -266,6 +266,19 @@ const testSchema = new Schema({
   },
 });
 
+// 含 code_block 与 code mark 的最小 schema，用于 PM 层排除回归测试。
+const codeSchema = new Schema({
+  nodes: {
+    doc: { content: 'block+' },
+    paragraph: { group: 'block', content: 'text*' },
+    code_block: { group: 'block', content: 'text*', code: true },
+    text: {},
+  },
+  marks: {
+    code: {},
+  },
+});
+
 function paraDoc(...paragraphs: string[]) {
   return testSchema.nodes['doc']!.create(
     null,
@@ -340,6 +353,35 @@ describe('buildMathDecorations', () => {
     const found = buildMathDecorations(doc, katex).find();
     expect(found.some((d) => decoClass(d) === 'lightink-math-error')).toBe(true);
     expect(found.some((d) => decoClass(d) === '')).toBe(false);
+  });
+
+  it('skips code_block content entirely at the PM layer', () => {
+    const codeBlock = codeSchema.nodes['code_block']!.create(
+      null,
+      codeSchema.text('echo "$HOME 与 $x$"'),
+    );
+    const para = codeSchema.nodes['paragraph']!.create(
+      null,
+      codeSchema.text('正文公式 $E=mc^2$ 完'),
+    );
+    const doc = codeSchema.nodes['doc']!.create(null, [codeBlock, para]);
+    const found = buildMathDecorations(doc, katex).find();
+    // 只有正文段落的公式被装饰，代码块内的 $…$ 完全不产生 decoration。
+    const rendered = found.filter((d) => decoClass(d) === 'lightink-math-inline-source');
+    expect(rendered).toHaveLength(1);
+    expect(doc.textBetween(rendered[0]!.from, rendered[0]!.to)).toBe('$E=mc^2$');
+  });
+
+  it('skips inline code (code mark) ranges inside a paragraph', () => {
+    const text1 = codeSchema.text('正文 ');
+    const codeText = codeSchema.text('$not_math$', [codeSchema.marks['code']!.create()]);
+    const text2 = codeSchema.text(' 与 $E=mc^2$ 完');
+    const para = codeSchema.nodes['paragraph']!.create(null, [text1, codeText, text2]);
+    const doc = codeSchema.nodes['doc']!.create(null, [para]);
+    const found = buildMathDecorations(doc, katex).find();
+    const rendered = found.filter((d) => decoClass(d) === 'lightink-math-inline-source');
+    expect(rendered).toHaveLength(1);
+    expect(doc.textBetween(rendered[0]!.from, rendered[0]!.to)).toBe('$E=mc^2$');
   });
 });
 
