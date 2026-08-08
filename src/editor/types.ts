@@ -123,6 +123,11 @@ export interface EditorInstance {
    */
   getLinkAtCursor(): CursorLink | null;
   /**
+   * 右键坐标 (clientX/clientY) 处的链接（href + 文本）。坐标处无链接或编辑器未就绪时
+   * 返回 null。供 R3 右键上下文菜单的打开/复制地址使用——按右键位置而非文本光标判断。
+   */
+  getLinkAtPoint(x: number, y: number): CursorLink | null;
+  /**
    * 在当前选区上切换某个 mark（如 'strong'/'emphasis'/'strike_through'/'inlineCode'）。
    * 无选区或未就绪时为空操作。供 R3 上下文菜单格式操作使用。
    */

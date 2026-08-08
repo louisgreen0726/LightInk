@@ -269,6 +269,7 @@ describe('大纲与 TabManager 接线', () => {
       },
       getSelection: () => null,
       getLinkAtCursor: () => null,
+      getLinkAtPoint: () => null,
       toggleMark: () => undefined,
       setLink: () => undefined,
       destroy: vi.fn(async () => undefined),

@@ -133,7 +133,7 @@ export class SourceView {
     wrapper.style.position = 'absolute';
     wrapper.style.inset = '0';
     wrapper.style.zIndex = '10';
-    wrapper.style.background = '#ffffff';
+    wrapper.style.background = 'var(--lightink-bg)';
     wrapper.style.overflow = 'hidden';
 
     const pre = doc.createElement('pre');
@@ -141,7 +141,7 @@ export class SourceView {
     pre.style.inset = '0';
     pre.style.overflow = 'auto';
     pre.style.pointerEvents = 'none';
-    pre.style.color = '#333333';
+    pre.style.color = 'var(--lightink-fg)';
     applySourceMetrics(pre);
 
     const code = doc.createElement('code');
@@ -156,7 +156,7 @@ export class SourceView {
     textarea.style.overflow = 'auto';
     textarea.style.background = 'transparent';
     textarea.style.color = 'transparent';
-    textarea.style.caretColor = '#333333';
+    textarea.style.caretColor = 'var(--lightink-fg)';
     textarea.style.outline = 'none';
     textarea.style.resize = 'none';
     applySourceMetrics(textarea);

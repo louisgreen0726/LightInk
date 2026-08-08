@@ -84,27 +84,33 @@ function getView(state: MountState): EditorView | null {
 }
 
 /**
- * 解析光标处的链接（R7/R3）。取 `$from` 处的 link mark，并向前/向后展开到该 mark
- * 覆盖的完整文本范围，返回 href 与链接文本；无链接返回 null。
+ * 解析指定文档位置处的链接（R3/R7/R14）。取该位置的 link mark，并向前/向后
+ * 展开到该 mark 覆盖的完整文本范围，返回 href 与链接文本；无链接返回 null。
+ * 供「光标处链接」(resolveCursorLink) 与「右键坐标处链接」(getLinkAtPoint) 共用。
  */
-function resolveCursorLink(view: EditorView): CursorLink | null {
-  const { $from } = view.state.selection;
-  const link = $from.marks().find((mark: Mark) => mark.type.name === 'link');
+function resolveLinkAt(view: EditorView, pos: number): CursorLink | null {
+  const $pos = view.state.doc.resolve(pos);
+  const link = $pos.marks().find((mark: Mark) => mark.type.name === 'link');
   if (link === undefined) return null;
   const href = typeof link.attrs['href'] === 'string' ? (link.attrs['href'] as string) : '';
   const doc = view.state.doc;
   const same = (mark: Mark): boolean =>
     mark.type === link.type && mark.attrs['href'] === link.attrs['href'];
-  let from = $from.pos;
+  let from = pos;
   while (from > 0 && doc.resolve(from - 1).marks().some(same)) {
     from -= 1;
   }
-  let to = $from.pos;
+  let to = pos;
   while (to < doc.content.size && doc.resolve(to).marks().some(same)) {
     to += 1;
   }
   const text = doc.textBetween(from, to, '');
   return { href, text };
+}
+
+/** 解析文本光标处的链接（R7/R3）。 */
+function resolveCursorLink(view: EditorView): CursorLink | null {
+  return resolveLinkAt(view, view.state.selection.from);
 }
 
 /**
@@ -237,6 +243,16 @@ export async function mountEditor(
       const view = getView(state);
       if (view === null) return null;
       return resolveCursorLink(view);
+    },
+    getLinkAtPoint(x: number, y: number): CursorLink | null {
+      // R3 右键链接：按右键坐标（clientX/clientY）解析文档位置再查 link mark，
+      // 而非文本光标位置（左键链接已触发 R14 跳转，光标几乎不在链接上）。
+      // posAtCoords 用法与 src/editor/plugins/image.ts 落点定位一致。
+      const view = getView(state);
+      if (view === null) return null;
+      const coords = view.posAtCoords({ left: x, top: y });
+      if (coords === null) return null;
+      return resolveLinkAt(view, coords.pos);
     },
     toggleMark(markName: string): void {
       const view = getView(state);

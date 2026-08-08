@@ -447,7 +447,7 @@ function showEditorContextMenu(x: number, y: number): void {
   if (tab === null) return;
   const sel = tab.editor.getSelection();
   const hasSelection = sel !== null && !sel.empty;
-  const link = tab.editor.getLinkAtCursor();
+  const link = tab.editor.getLinkAtPoint(x, y);
   const hasLink = link !== null;
   const items = buildEditorContextMenuItems(
     { hasSelection, hasLink },
@@ -475,7 +475,9 @@ function showEditorContextMenu(x: number, y: number): void {
         if (href !== '') tab.editor.setLink(href);
       },
       openLink: () => {
-        if (link !== null) window.open(link.href, '_blank', 'noopener');
+        // 与左键 linkNavigationPlugin 同路径：classifyLink 分类后分派到
+        // open_in_browser / openFile / open_path_default，覆盖 external/本地.md/本地文件。
+        if (link !== null) handleLinkNavigation(link.href);
       },
       copyLinkAddress: () => {
         if (link !== null) void navigator.clipboard?.writeText(link.href);
@@ -501,17 +503,11 @@ function showTabContextMenu(tabId: string, x: number, y: number): void {
       }
     },
     revealInFiles: () => {
-      // 「在文件管理器中显示」依赖 opener/shell 能力（与 R14 共用）；命令未就绪时静默。
+      // 「在文件管理器中显示」走 opener reveal_path_in_files（lib.rs 已注册，与 R14 链接
+      // 分类的 opener 能力同源）。能力未注册时忽略，避免阻塞右键菜单。
       const path = tab?.filePath;
       if (path === null || path === undefined) return;
-      void (async () => {
-        try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('reveal_path_in_files', { path });
-        } catch {
-          // 能力未注册（R14 接通前）：忽略。
-        }
-      })();
+      void invoke('reveal_path_in_files', { path }).catch(() => undefined);
     },
   });
   createContextMenu(items, { x, y });
