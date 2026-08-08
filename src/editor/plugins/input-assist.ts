@@ -4,10 +4,16 @@
  *      配对字符时包裹选中内容（选区保持内部文本）。单个 transaction 完成插入+选区 →
  *      撤销一步即可完全还原。
  *   b) 空列表项/任务列表项回车 → lift 退出列表（`liftListItem`）。
- *   c) 表格内 Tab → `goToNextCell` 跳格；末格 Tab 自动追加新行（库内置行为）。
+ *   c) 表格内 Tab → `goToNextCell` 跳格；末格正向 Tab 自动追加新行并选中新行首格
+ *      （`addRow` + `TableMap.positionAt`，单个 transaction，撤销一步还原）。
  *
  * 列表/任务列表的「回车续接同级项」由 commonmark/gfm preset 默认提供；本插件仅在
  * 空项回车时 lift 退出（早于 preset 的 Enter 处理），其余回车返回 false 交由 preset。
+ *
+ * 关于末格补行：`goToNextCell(1)` 在表格末格返回 false 且不补行（prosemirror-tables 的
+ * `findNextCell` 在末格返回 null）。故末格正向 Tab 由 `appendRowAndSelectFirst` 显式补行：
+ * 以 `addRow` 在当前行之后插入新行，再用新表的 `TableMap.positionAt` 定位新行首格，
+ * 复用 `goToNextCell` 同款的 `TextSelection.between($cell, moveCellForward($cell))` 选区。
  *
  * 纯逻辑 `planPairInput` 可 headless 测试；列表/表格行为复用 prosemirror-schema-list
  * 与 prosemirror-tables 的成熟命令（经 @milkdown/prose 重导出），确保结构有效。
@@ -16,7 +22,14 @@
 import { $prose } from '@milkdown/utils';
 import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import { liftListItem } from '@milkdown/prose/schema-list';
-import { goToNextCell } from '@milkdown/prose/tables';
+import {
+  addRow,
+  goToNextCell,
+  isInTable,
+  moveCellForward,
+  selectedRect,
+  TableMap,
+} from '@milkdown/prose/tables';
 import type { EditorView } from '@milkdown/prose/view';
 import type { NodeType } from '@milkdown/prose/model';
 
@@ -78,6 +91,29 @@ function maybeExitListItem(view: EditorView): boolean {
   return false;
 }
 
+/**
+ * 表格末格正向 Tab → 追加新行并选中新行首格，单个 transaction 提交（撤销一步还原）。
+ *
+ * 用 `addRow` 在当前行（rect.bottom）之后插入新行；`tableStart` 在补行后不变，故用
+ * `tr.doc.nodeAt(tableStart - 1)` 取得新表节点，经 `TableMap.positionAt(rect.bottom, 0)`
+ * 定位新行首格的绝对位置，并以 `goToNextCell` 同款的 `TextSelection.between` 选区。
+ * 调用方需保证当前已在表内末格、正向 Tab 且 `goToNextCell` 已失败。
+ */
+function appendRowAndSelectFirst(view: EditorView): boolean {
+  const state = view.state;
+  const rect = selectedRect(state);
+  const tr = addRow(state.tr, rect, rect.bottom);
+  const newTable = tr.doc.nodeAt(rect.tableStart - 1);
+  if (newTable === null) {
+    return false;
+  }
+  const cellPos = rect.tableStart + TableMap.get(newTable).positionAt(rect.bottom, 0, newTable);
+  const $cell = tr.doc.resolve(cellPos);
+  tr.setSelection(TextSelection.between($cell, moveCellForward($cell))).scrollIntoView();
+  view.dispatch(tr);
+  return true;
+}
+
 /** 配对输入 + 列表退出 + 表格 Tab 插件。 */
 export const inputAssistPlugin = $prose(() => {
   return new Plugin({
@@ -101,8 +137,14 @@ export const inputAssistPlugin = $prose(() => {
           }
         }
         if (event.key === 'Tab') {
-          const go = goToNextCell(event.shiftKey ? -1 : 1);
-          if (go(view.state, (tr) => view.dispatch(tr))) {
+          // 跳格：goToNextCell 在末格返回 false（不补行）。
+          if (goToNextCell(event.shiftKey ? -1 : 1)(view.state, (tr) => view.dispatch(tr))) {
+            event.preventDefault();
+            return true;
+          }
+          // 末格、正向 Tab 且仍在表内 → 显式追加新行并选中新行首格。
+          // Shift+Tab（反向）在首格维持现状（返回 false 交默认处理）。
+          if (!event.shiftKey && isInTable(view.state) && appendRowAndSelectFirst(view)) {
             event.preventDefault();
             return true;
           }
