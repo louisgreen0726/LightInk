@@ -1,20 +1,28 @@
 /**
  * `source-view` — 整窗 WYSIWYG ↔ Markdown 源码模式切换（R10）。
  *
- * 设计（02-technical-solution.md R10）：单窗格切换。源码态把编辑区替换为纯文本视图，
- * 内容以 `getMarkdown()`/`setMarkdown()` 字符串往返；因数学为 decoration-only 模型，
- * 往返的是原始 Markdown 源（含原始 LaTeX），故行内/块级数学、表格两模式往返无丢失。
+ * 设计（02-technical-solution.md R10）：单窗格切换。源码态把编辑区替换为带语法高亮的
+ * 纯文本视图，内容以 `getMarkdown()`/`setMarkdown()` 字符串往返；因数学为 decoration-only
+ * 模型，往返的是原始 Markdown 源（含原始 LaTeX），故行内/块级数学、表格两模式往返无丢失。
  * 任意时刻单窗格、无并排（R18 约束）。
  *
  * 分层：
  *   - `SourceModeController`（纯逻辑、headless 可测）：管理模式态 + 以
  *     `getMarkdown/setMarkdown` 字符串往返；`enterSource` 取快照、`exitSource` 写回。
- *   - `SourceView`（DOM 层、挂载态）：在标签宿主上叠加一个等宽 `<textarea>` 显示源码，
- *     进入时隐藏既有子节点、退出时还原并把 textarea 文本写回编辑器。
- *
- * 「带语法高亮」的实时高亮需要 CodeMirror 级组件（超出本任务依赖面）；MVP 以等宽
- * textarea 提供可编辑源码视图，实时高亮列为后续打磨项（见 concerns）。
+ *   - `SourceView`（DOM 层、挂载态）：在标签宿主上覆盖一个「透明 textarea + 背后高亮
+ *     pre/code」的叠加层——textarea 负责可编辑输入（透明文字、可见光标），pre/code 经
+ *     highlight.js（markdown 语法，复用 code-highlight 的 highlightCode + 共享 hljs 单例）
+ *     提供语法高亮，二者按相同字体度量对齐、滚动同步。
  */
+
+import hljs from 'highlight.js/lib/core';
+import hljsMarkdown from 'highlight.js/lib/languages/markdown';
+
+import { highlightCode } from './plugins/code-highlight.js';
+
+// 共享 hljs 单例（与 code-highlight.ts 同一实例）注册 markdown 语法，使 highlightCode
+// 能高亮 Markdown 源。仅注册一次。
+hljs.registerLanguage('markdown', hljsMarkdown);
 
 /** 编辑模式。 */
 export type EditorMode = 'wysiwyg' | 'source';
@@ -70,22 +78,37 @@ export class SourceModeController {
   }
 }
 
+/** textarea 与 pre 共享的字体度量（必须一致以保证高亮层与输入层逐行对齐）。 */
+function applySourceMetrics(el: HTMLElement): void {
+  el.style.boxSizing = 'border-box';
+  el.style.margin = '0';
+  el.style.border = 'none';
+  el.style.padding = '8px';
+  el.style.fontFamily = 'monospace';
+  el.style.fontSize = '14px';
+  el.style.lineHeight = '1.5';
+  el.style.whiteSpace = 'pre-wrap';
+  el.style.wordBreak = 'break-word';
+}
+
+/** 把 Markdown 源高亮为 HTML（末尾加换行使最后一行行高与 textarea 对齐）。 */
+function renderHighlightedSource(source: string): string {
+  return `${highlightCode('markdown', source)}\n`;
+}
+
 /**
- * DOM 层：在宿主上叠加等宽 textarea 实现源码视图。进入时隐藏宿主既有子节点并追加
- * textarea（值为 Markdown 快照）；退出时把 textarea 文本写回编辑器并还原子节点显隐。
- * 属挂载态行为（同既有插件，仅断言工厂形态）；纯逻辑往返由 SourceModeController 覆盖。
+ * DOM 层：在宿主上覆盖「透明 textarea + 背后高亮 pre/code」叠加层实现可编辑的带高亮
+ * 源码视图。进入时把宿主置为定位上下文并覆盖一层不透明背景（隐藏背后编辑器、避免宿主
+ * 塌陷）；退出时把 textarea 文本写回编辑器并移除叠加层。属挂载态行为（同既有插件，仅
+ * 断言工厂形态）；纯逻辑往返由 SourceModeController 覆盖。
  */
 export class SourceView {
   private readonly controller: SourceModeController;
+  private wrapper: HTMLDivElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
-  /** 进入时被隐藏的子节点，退出时还原。 */
-  private hiddenChildren: HTMLElement[] = [];
+  private savedHostPosition = '';
 
-  constructor(
-    private readonly host: HTMLElement,
-    roundtrip: SourceRoundtrip,
-    private readonly doc: Document = document,
-  ) {
+  constructor(private readonly host: HTMLElement, roundtrip: SourceRoundtrip) {
     this.controller = new SourceModeController(roundtrip);
   }
 
@@ -93,43 +116,81 @@ export class SourceView {
     return this.controller.isSourceMode();
   }
 
-  /** 当前 textarea 文本（源码态供保存/大纲同步；非源码态返回空串）。 */
   private currentText(): string {
     return this.textarea?.value ?? '';
   }
 
   /** 进入源码模式。 */
   enter(): void {
-    if (this.controller.isSourceMode()) return;
+    if (this.controller.isSourceMode() || this.wrapper !== null) return;
     const text = this.controller.enterSource();
-    const textarea = this.doc.createElement('textarea');
+    const doc = this.host.ownerDocument;
+
+    const wrapper = doc.createElement('div');
+    wrapper.className = 'lightink-source-overlay';
+    wrapper.style.position = 'absolute';
+    wrapper.style.inset = '0';
+    wrapper.style.zIndex = '10';
+    wrapper.style.background = '#ffffff';
+    wrapper.style.overflow = 'hidden';
+
+    const pre = doc.createElement('pre');
+    pre.style.position = 'absolute';
+    pre.style.inset = '0';
+    pre.style.overflow = 'auto';
+    pre.style.pointerEvents = 'none';
+    pre.style.color = '#333333';
+    applySourceMetrics(pre);
+
+    const code = doc.createElement('code');
+    code.className = 'hljs language-markdown';
+    code.innerHTML = renderHighlightedSource(text);
+    pre.appendChild(code);
+
+    const textarea = doc.createElement('textarea');
     textarea.className = 'lightink-source-editor';
+    textarea.style.position = 'absolute';
+    textarea.style.inset = '0';
+    textarea.style.overflow = 'auto';
+    textarea.style.background = 'transparent';
+    textarea.style.color = 'transparent';
+    textarea.style.caretColor = '#333333';
+    textarea.style.outline = 'none';
+    textarea.style.resize = 'none';
+    applySourceMetrics(textarea);
     textarea.value = text;
     textarea.spellcheck = false;
-    // 隐藏既有子节点（编辑器 DOM），退出时还原。
-    this.hiddenChildren = [];
-    for (const child of Array.from(this.host.children)) {
-      const el = child as HTMLElement;
-      if (el.style.display !== 'none') {
-        el.style.display = 'none';
-        this.hiddenChildren.push(el);
-      }
-    }
-    this.host.appendChild(textarea);
+
+    const onInput = (): void => {
+      code.innerHTML = renderHighlightedSource(textarea.value);
+    };
+    const onScroll = (): void => {
+      pre.scrollTop = textarea.scrollTop;
+      pre.scrollLeft = textarea.scrollLeft;
+    };
+    textarea.addEventListener('input', onInput);
+    textarea.addEventListener('scroll', onScroll);
+
+    wrapper.appendChild(pre);
+    wrapper.appendChild(textarea);
+
+    this.savedHostPosition = this.host.style.position;
+    this.host.style.position = 'relative';
+    this.host.appendChild(wrapper);
+
+    this.wrapper = wrapper;
     this.textarea = textarea;
     textarea.focus();
   }
 
   /** 退出源码模式，把 textarea 文本写回编辑器。 */
   exit(): void {
-    if (!this.controller.isSourceMode() || this.textarea === null) return;
+    if (!this.controller.isSourceMode() || this.wrapper === null) return;
     this.controller.exitSource(this.currentText());
-    this.textarea.remove();
+    this.wrapper.remove();
+    this.wrapper = null;
     this.textarea = null;
-    for (const child of this.hiddenChildren) {
-      child.style.display = '';
-    }
-    this.hiddenChildren = [];
+    this.host.style.position = this.savedHostPosition;
   }
 
   /** 切换模式。 */

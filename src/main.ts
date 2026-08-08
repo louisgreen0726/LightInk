@@ -183,10 +183,22 @@ async function confirmClose(tab: { title: string }): Promise<CloseChoice> {
 }
 
 function renderTabBar(): void {
+  pruneSourceViews();
   shell.renderTabBar(manager.tabList, manager.activeTabId, {
     onSwitch: (id) => manager.switchTab(id),
     onClose: (id) => void manager.closeTab(id),
   });
+}
+
+/** 清理已关闭标签的 SourceView（避免持有已 detach 的 host/editor 引用）。 */
+function pruneSourceViews(): void {
+  const live = new Set(manager.tabList.map((t) => t.id));
+  for (const id of [...sourceViews.keys()]) {
+    if (!live.has(id)) {
+      sourceViews.get(id)?.destroy();
+      sourceViews.delete(id);
+    }
+  }
 }
 
 manager = new TabManager({
@@ -264,8 +276,14 @@ function commitActiveSourceMode(): void {
 const shortcuts = new ShortcutRegistry({
   new: () => void manager.newTab(),
   open: () => void manager.openFile(),
-  save: () => void manager.saveActiveTab(),
-  'save-as': saveActiveAs,
+  save: () => {
+    commitActiveSourceMode();
+    void manager.saveActiveTab();
+  },
+  'save-as': () => {
+    commitActiveSourceMode();
+    void saveActiveAs();
+  },
   'toggle-theme': () => {
     themeService.toggle();
   },

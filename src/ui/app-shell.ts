@@ -135,7 +135,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem('view-theme', '切换主题', actions.onToggleTheme, 'Ctrl+J'),
         menuItem('view-outline', '大纲显隐', actions.onToggleOutline, 'Ctrl+Shift+L'),
-        // 源码模式由 T7/R10 接通，T1 阶段禁用。
+        // T7/R10 已接通：整窗源码模式。
         menuItem('view-source-mode', '源码模式', actions.onToggleSourceMode, 'Ctrl+/', () => true),
       ],
     },
