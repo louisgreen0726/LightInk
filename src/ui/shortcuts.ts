@@ -1,0 +1,154 @@
+/**
+ * `shortcuts` — 极简 UI 的键盘快捷键注册表（T6, R11）。
+ *
+ * 核心操作单快捷键直达：
+ *   Ctrl+N 新建 / Ctrl+O 打开 / Ctrl+S 保存 / Ctrl+Shift+S 另存为 /
+ *   Ctrl+J 切换主题。
+ *
+ * 键位说明：
+ *   - Ctrl+T 在多数浏览器/WebView 中是保留键（新建标签页），避开；
+ *   - Ctrl+J 在无浏览器外壳的 Tauri WebView2 中无默认行为，用作主题切换；
+ *   - 监听挂在 document 的捕获阶段，优先于编辑器/页面默认行为（如 WebView
+ *     的 Ctrl+S 保存网页弹窗），命中后 preventDefault。
+ *   - Milkdown 默认 keymap 不含上述组合（Mod-B/Mod-I 等不冲突），因此
+ *     全部快捷键在编辑器内同样生效（保存尤其必须在任意焦点下可用）。
+ *   - 无修饰键的组合（未来扩展）在可编辑目标（input/textarea/
+ *     contentEditable）中被忽略，避免抢占文本输入。
+ *
+ * 可测试性：`handleKeyDown` 接受结构化事件对象，node 环境下直接以
+ * fake 事件驱动，无需真实 DOM。
+ */
+
+export type ShortcutAction = 'new' | 'open' | 'save' | 'save-as' | 'toggle-theme';
+
+export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
+  new: 'Ctrl+N',
+  open: 'Ctrl+O',
+  save: 'Ctrl+S',
+  'save-as': 'Ctrl+Shift+S',
+  'toggle-theme': 'Ctrl+J',
+};
+
+/** 结构化键盘事件（兼容 DOM KeyboardEvent 的结构子集）。 */
+export interface KeyboardEventLike {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  target?: unknown;
+  preventDefault(): void;
+}
+
+interface ParsedCombo {
+  key: string;
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+}
+
+/** 解析 "Ctrl+Shift+S" 风格的组合键描述。 */
+export function parseCombo(combo: string): ParsedCombo {
+  const parts = combo.split('+').map((p) => p.trim().toLowerCase());
+  const parsed: ParsedCombo = { key: '', ctrl: false, shift: false, alt: false };
+  for (const part of parts) {
+    if (part === 'ctrl' || part === 'cmd' || part === 'meta') {
+      parsed.ctrl = true;
+    } else if (part === 'shift') {
+      parsed.shift = true;
+    } else if (part === 'alt') {
+      parsed.alt = true;
+    } else {
+      parsed.key = part;
+    }
+  }
+  return parsed;
+}
+
+/** 事件是否命中组合键（Ctrl 与 macOS Cmd/meta 等价对待）。 */
+export function matchEvent(event: KeyboardEventLike, combo: string): boolean {
+  const c = parseCombo(combo);
+  const ctrl = event.ctrlKey || event.metaKey;
+  return (
+    ctrl === c.ctrl &&
+    event.shiftKey === c.shift &&
+    event.altKey === c.alt &&
+    event.key.toLowerCase() === c.key
+  );
+}
+
+/** 目标是否为可编辑元素（结构化判定，兼容 fake）。 */
+export function isEditableTarget(target: unknown): boolean {
+  if (target === null || typeof target !== 'object') {
+    return false;
+  }
+  const el = target as { tagName?: unknown; isContentEditable?: unknown };
+  if (el.isContentEditable === true) {
+    return true;
+  }
+  const tag = typeof el.tagName === 'string' ? el.tagName.toUpperCase() : '';
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
+export type ShortcutHandlers = Partial<Record<ShortcutAction, () => void>>;
+
+interface ListenerTarget {
+  addEventListener(type: string, listener: (e: unknown) => void, capture?: boolean): void;
+  removeEventListener(type: string, listener: (e: unknown) => void, capture?: boolean): void;
+}
+
+export class ShortcutRegistry {
+  private readonly handlers: ShortcutHandlers;
+  private readonly combos: Readonly<Record<ShortcutAction, string>>;
+  private readonly listener: (e: unknown) => void;
+
+  constructor(
+    handlers: ShortcutHandlers,
+    combos: Readonly<Record<ShortcutAction, string>> = DEFAULT_SHORTCUTS,
+  ) {
+    this.handlers = handlers;
+    this.combos = combos;
+    this.listener = (e) => {
+      this.handleKeyDown(e as KeyboardEventLike);
+    };
+  }
+
+  /** 返回动作当前绑定的组合键描述（用于按钮 tooltip 等）。 */
+  comboOf(action: ShortcutAction): string {
+    return this.combos[action];
+  }
+
+  /**
+   * 处理一次 keydown：命中已注册组合则 preventDefault 并派发处理器。
+   * 返回 true 表示已处理。无修饰键组合在可编辑目标内被忽略。
+   */
+  handleKeyDown(event: KeyboardEventLike): boolean {
+    for (const action of Object.keys(this.handlers) as ShortcutAction[]) {
+      const handler = this.handlers[action];
+      if (handler === undefined) {
+        continue;
+      }
+      const combo = this.combos[action];
+      if (!matchEvent(event, combo)) {
+        continue;
+      }
+      const parsed = parseCombo(combo);
+      if (!parsed.ctrl && !parsed.alt && isEditableTarget(event.target)) {
+        continue;
+      }
+      event.preventDefault();
+      handler();
+      return true;
+    }
+    return false;
+  }
+
+  /** 捕获阶段监听，优先于 WebView/编辑器默认行为。 */
+  attach(target: ListenerTarget): void {
+    target.addEventListener('keydown', this.listener, true);
+  }
+
+  detach(target: ListenerTarget): void {
+    target.removeEventListener('keydown', this.listener, true);
+  }
+}

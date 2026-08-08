@@ -1,0 +1,120 @@
+/*
+ * LightInk 主题令牌（T6）。唯一 owner：前端主题服务（src/theme/theme-service.ts）。
+ *
+ * 内置主题：
+ *   - warm-light：默认护眼浅色，暖纸色背景（非纯白）；
+ *   - dark：深色。
+ *
+ * 自定义主题 = 用户 CSS 文件，由 ThemeService 注入 <style> 覆盖下列令牌
+ * （:root 上的 warm-light 令牌作为自定义主题未定义项的回退）。
+ */
+
+:root,
+[data-theme="warm-light"] {
+  color-scheme: light;
+
+  --lightink-bg: #f7f3ea; /* 暖纸色，护眼、非纯白 */
+  --lightink-bg-elevated: #fdfaf2;
+  --lightink-fg: #3f3a32;
+  --lightink-muted: #8a8171;
+  --lightink-accent: #b0703c;
+  --lightink-accent-soft: #e9dcc4;
+  --lightink-border: #ddd2bd;
+  --lightink-code-bg: #efe8d7;
+  --lightink-code-fg: #4a4438;
+  --lightink-selection: rgba(176, 112, 60, 0.18);
+
+  /* 语法高亮令牌（hljs-* 类映射见文件底部，两主题配色各自协调） */
+  --lightink-syntax-keyword: #9a4d6e;
+  --lightink-syntax-comment: #96907f;
+  --lightink-syntax-string: #5f7a3d;
+  --lightink-syntax-number: #b0703c;
+  --lightink-syntax-function: #38618f;
+  --lightink-syntax-title: #38618f;
+  --lightink-syntax-attr: #7a6a3a;
+  --lightink-syntax-builtin: #6b5ca5;
+  --lightink-syntax-literal: #b0703c;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --lightink-bg: #242220;
+  --lightink-bg-elevated: #2c2a27;
+  --lightink-fg: #d9d2c3;
+  --lightink-muted: #8d8678;
+  --lightink-accent: #d19a5b;
+  --lightink-accent-soft: #3d372e;
+  --lightink-border: #453f36;
+  --lightink-code-bg: #2b2823;
+  --lightink-code-fg: #cfc6b2;
+  --lightink-selection: rgba(209, 154, 91, 0.25);
+
+  --lightink-syntax-keyword: #d18ba6;
+  --lightink-syntax-comment: #7d7768;
+  --lightink-syntax-string: #a3b86b;
+  --lightink-syntax-number: #d19a5b;
+  --lightink-syntax-function: #7ea8d1;
+  --lightink-syntax-title: #7ea8d1;
+  --lightink-syntax-attr: #c2ab6a;
+  --lightink-syntax-builtin: #b39ddb;
+  --lightink-syntax-literal: #d19a5b;
+}
+
+/* hljs 类 → 主题令牌映射：T5 的 code-highlight 只输出 hljs-* 类名，
+ * 颜色统一由这里按当前主题令牌提供（自定义主题覆盖令牌即改变高亮）。 */
+.hljs {
+  color: var(--lightink-code-fg);
+  background: transparent;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-name,
+.hljs-section,
+.hljs-tag {
+  color: var(--lightink-syntax-keyword);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--lightink-syntax-comment);
+  font-style: italic;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-meta .hljs-string {
+  color: var(--lightink-syntax-string);
+}
+.hljs-number {
+  color: var(--lightink-syntax-number);
+}
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: var(--lightink-syntax-literal);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-function .hljs-title {
+  color: var(--lightink-syntax-function);
+}
+.hljs-title.class_,
+.hljs-type {
+  color: var(--lightink-syntax-title);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: var(--lightink-syntax-attr);
+}
+.hljs-built_in,
+.hljs-builtin-name {
+  color: var(--lightink-syntax-builtin);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
