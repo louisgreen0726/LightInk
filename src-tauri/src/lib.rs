@@ -4,6 +4,7 @@ mod asset;
 mod cli;
 mod export;
 mod file;
+mod recents;
 mod snapshot;
 
 use tauri::{Emitter, Manager};
@@ -46,6 +47,10 @@ pub fn run() {
             asset::migrate_staging_assets,
             export::read_image_base64,
             cli::take_pending_file,
+            recents::list_recents,
+            recents::add_recent,
+            recents::remove_recent,
+            recents::clear_recents,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

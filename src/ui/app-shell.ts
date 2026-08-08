@@ -29,6 +29,12 @@ export interface AppShellActions {
   // 文件
   onNew(): void;
   onOpen(): void;
+  /** R12：列出最近打开文件路径（MRU 序）。 */
+  listRecents(): Promise<string[]>;
+  /** R12：打开某个最近文件；返回是否成功打开（false=文件缺失等）。 */
+  openRecent(path: string): Promise<boolean>;
+  /** R12：清空最近打开列表。 */
+  clearRecents(): Promise<void>;
   onSave(): void;
   onSaveAs(): void;
   onExportHtml(): void;
@@ -119,6 +125,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem('file-new', '新建', actions.onNew, 'Ctrl+N'),
         menuItem('file-open', '打开', actions.onOpen, 'Ctrl+O'),
+        menuItem('file-recents', '最近打开…', () => undefined),
         separator('file-sep1'),
         menuItem('file-save', '保存', actions.onSave, 'Ctrl+S'),
         menuItem('file-save-as', '另存为', actions.onSaveAs, 'Ctrl+Shift+S'),
@@ -215,6 +222,14 @@ export function createAppShell(
       cheatsheetItem.action = () => showCheatsheet(options.shortcutBindings());
     }
   }
+  // R12：文件菜单「最近打开…」弹出最近文件列表。
+  const fileMenu = menus.find((m) => m.id === 'file');
+  if (fileMenu !== undefined) {
+    const recentsItem = fileMenu.items.find((i) => i.id === 'file-recents');
+    if (recentsItem !== undefined) {
+      recentsItem.action = () => showRecents();
+    }
+  }
   const menuBar = createMenuBar({ menus });
   toolbar.appendChild(menuBar.element);
 
@@ -251,6 +266,87 @@ export function createAppShell(
     close.addEventListener('click', dismiss);
     document.addEventListener('keydown', onKey);
     document.body.appendChild(overlay);
+    close.focus();
+  }
+
+  // R12：最近打开文件列表弹层。动态读取 actions.listRecents，逐行点击调用
+  // actions.openRecent；「清空」调用 actions.clearRecents 并刷新为空态。
+  function showRecents(): void {
+    void actions
+      .listRecents()
+      .then((paths) => renderRecents(paths))
+      .catch(() => undefined);
+  }
+
+  function renderRecents(paths: string[]): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'lightink-modal-overlay';
+    const dialog = document.createElement('div');
+    dialog.className = 'lightink-modal-dialog';
+    const title = document.createElement('div');
+    title.className = 'lightink-modal-title';
+    title.textContent = '最近打开';
+    const list = document.createElement('div');
+    list.className = 'lightink-recents-list';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'lightink-modal-close';
+    close.textContent = '关闭';
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'lightink-recents-clear';
+    clearBtn.textContent = '清空';
+
+    const renderRows = (items: readonly string[]): void => {
+      list.replaceChildren();
+      clearBtn.disabled = items.length === 0;
+      if (items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'lightink-recents-empty';
+        empty.textContent = '暂无最近打开的文件';
+        list.appendChild(empty);
+        return;
+      }
+      for (const path of items) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'lightink-recents-item';
+        row.textContent = path;
+        row.addEventListener('click', () => {
+          dismiss();
+          void actions.openRecent(path);
+        });
+        list.appendChild(row);
+      }
+    };
+    clearBtn.addEventListener('click', () => {
+      void actions.clearRecents().then(() => renderRows([]));
+    });
+
+    const footer = document.createElement('div');
+    footer.className = 'lightink-recents-footer';
+    footer.append(clearBtn, close);
+    dialog.append(title, list, footer);
+    overlay.appendChild(dialog);
+
+    function dismiss(): void {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+    }
+    function onKey(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        dismiss();
+      }
+    }
+    overlay.addEventListener('pointerdown', (event) => {
+      if (event.target === overlay) {
+        dismiss();
+      }
+    });
+    close.addEventListener('click', dismiss);
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
+    renderRows(paths);
     close.focus();
   }
 

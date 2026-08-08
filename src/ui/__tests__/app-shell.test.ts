@@ -15,6 +15,9 @@ function stubActions(currentThemeId = 'warm-light'): AppShellActions {
   return {
     onNew: noop,
     onOpen: noop,
+    listRecents: () => Promise.resolve([]),
+    openRecent: () => Promise.resolve(false),
+    clearRecents: () => Promise.resolve(),
     onSave: noop,
     onSaveAs: noop,
     onExportHtml: noop,
@@ -47,6 +50,10 @@ describe('buildMenus 生产结构', () => {
   it('文件/编辑菜单的分隔项带 separator:true（P2[blocking] 回归）', () => {
     expect(file?.items.filter((i) => i.separator === true).length).toBeGreaterThanOrEqual(2);
     expect(edit?.items.some((i) => i.separator === true)).toBe(true);
+  });
+
+  it('文件菜单含「最近打开…」入口（R12）', () => {
+    expect(file?.items.some((i) => i.id === 'file-recents' && i.label === '最近打开…')).toBe(true);
   });
 
   it('非分隔项不带 separator 且有非空 label（无空白按钮）', () => {

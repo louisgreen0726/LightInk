@@ -148,6 +148,21 @@ const shell = createAppShell(
   {
     onNew: () => void manager.newTab(),
     onOpen: () => void manager.openFile(),
+    listRecents: () => invoke<string[]>('list_recents'),
+    openRecent: async (path) => {
+      const tab = await manager.openFile(path);
+      if (tab === null) {
+        // 文件缺失/不可读：移除该最近条目并提示。
+        void invoke('remove_recent', { path }).catch(() => undefined);
+        void dialogMessage(
+          `无法打开「${path}」：文件可能已被移动或删除。已从最近打开中移除。`,
+          { title: '轻墨 LightInk', kind: 'warning' },
+        );
+        return false;
+      }
+      return true;
+    },
+    clearRecents: () => invoke('clear_recents'),
     onSave: () => {
       commitActiveSourceMode();
       void manager.saveActiveTab();
@@ -257,6 +272,9 @@ manager = new TabManager({
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
     refreshStatusBar();
+  },
+  onFileOpened: (filePath) => {
+    void invoke('add_recent', { path: filePath }).catch(() => undefined);
   },
 });
 

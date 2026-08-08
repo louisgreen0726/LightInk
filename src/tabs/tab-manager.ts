@@ -78,6 +78,11 @@ export interface TabManagerDeps {
    * 关闭活动标签且无后继（活动变为 null）。
    */
   onActiveContentChanged?: () => void;
+  /**
+   * R12：成功打开某个文件路径后回调（按路径记录到最近打开）。仅在确已打开
+   * （新建标签或切换到已存在标签）时触发，对话框取消/读取失败不触发。
+   */
+  onFileOpened?: (filePath: string) => void;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   reportError?: (message: string, error: unknown) => void;
@@ -100,7 +105,7 @@ export function snapshotKeyOf(tab: Pick<TabState, 'filePath' | 'syntheticId'>): 
 const DEFAULT_DEBOUNCE_MS = 1000;
 
 export class TabManager {
-  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged'>;
+  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened'>;
   private tabs: TabState[] = [];
   private activeId: string | null = null;
   private counter = 0;
@@ -126,6 +131,7 @@ export class TabManager {
       ...deps,
       onTabsChanged: deps.onTabsChanged,
       onActiveContentChanged: deps.onActiveContentChanged,
+      onFileOpened: deps.onFileOpened,
     };
   }
 
@@ -203,6 +209,7 @@ export class TabManager {
     const existing = this.tabs.find((t) => t.filePath === opened.path);
     if (existing !== undefined) {
       this.switchTab(existing.id);
+      this.deps.onFileOpened?.(opened.path);
       return existing;
     }
 
@@ -229,6 +236,9 @@ export class TabManager {
       initialMarkdown: content,
       // 恢复的内容与磁盘不同 → 通过比较自然得到 dirty = true。
       lastSavedMarkdown: opened.content,
+    }).then((tab) => {
+      this.deps.onFileOpened?.(opened.path);
+      return tab;
     });
   }
 
