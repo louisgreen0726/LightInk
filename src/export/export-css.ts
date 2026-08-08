@@ -5,8 +5,11 @@
  *   - `tokens.css` 经 `?raw` 原样读入：`[data-theme]` 令牌 + hljs 语法高亮
  *     映射全部在此，导出文档带上同一 `data-theme` 属性即与编辑器配色一致
  *     （含语法高亮）；自定义主题 CSS 由调用方经 `buildExportCss(extra)` 追加；
- *   - `katex.min.css` 经 `?inline` 由 Vite 内联（含 KaTeX 字体的 data URI），
- *     公式在独立 HTML 中离线可用；
+ *   - `katex.min.css` 经 `?inline` 由 Vite 内联；其中 @font-face 引用的
+ *     KaTeX 字体由 vite.config.ts 的 `build.assetsInlineLimit` 回调强制
+ *     内联为 data URI（woff2/ttf 超过默认 4KB 上限，不设该回调时字体仍是
+ *     独立文件、独立 HTML 经 file:// 打开会 404），公式在独立 HTML 中
+ *     离线可用；
  *   - `EXPORT_BASE_CSS` 是编辑器内容排版的精简复刻（正文/代码块/引用/表格/
  *     图片等，取自 src/ui/theme.css 的 `.lightink-tab-host` 部分并把作用域
  *     换成 `body`），应用外壳样式（工具栏/标签栏）不进入导出文档。

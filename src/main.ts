@@ -7,7 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { ask, confirm, save } from '@tauri-apps/plugin-dialog';
+import { ask, confirm, message as dialogMessage, save } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
 import { buildExportCss } from './export/export-css.js';
@@ -95,6 +95,9 @@ const exportDeps: ExportServiceDeps = {
   reportError: (message, error) => {
     // eslint-disable-next-line no-console
     console.error(`[lightink/export] ${message}`, error);
+    // 导出是用户主动触发的动作：失败必须可见（不静默 console-only）。
+    const detail = error instanceof Error ? error.message : String(error ?? '');
+    void dialogMessage(`${message}\n${detail}`, { title: '导出失败', kind: 'error' });
   },
 };
 

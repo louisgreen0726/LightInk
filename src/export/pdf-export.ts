@@ -39,8 +39,8 @@ export function runPrint(html: string, print: (html: string) => void): void {
 
 /**
  * 生产打印实现：隐藏 iframe 写入打印 HTML，加载完成后调 print()。
- * iframe 保留在页面上（打印对话框是模态的，立即 remove 可能在某些
- * WebView 上取消打印）；下次调用先移除旧 iframe。
+ * 打印对话框为模态，立即 remove 可能取消打印，故用 afterprint 监听 +
+ * 超时兜底清理，避免隐藏 iframe 常驻 DOM；下次调用也会先移除旧 iframe。
  */
 export function printViaHiddenIframe(doc: Document, html: string): void {
   doc.querySelectorAll('iframe.lightink-print-frame').forEach((el) => el.remove());
@@ -49,11 +49,21 @@ export function printViaHiddenIframe(doc: Document, html: string): void {
   frame.style.cssText =
     'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
   frame.srcdoc = html;
+
+  let cleaned = false;
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
+    frame.remove();
+  };
   frame.addEventListener(
     'load',
     () => {
       frame.contentWindow?.focus();
       frame.contentWindow?.print();
+      // 打印对话框关闭后清理；部分 WebView 不派发 afterprint，超时兜底。
+      frame.contentWindow?.addEventListener('afterprint', cleanup, { once: true });
+      setTimeout(cleanup, 60_000);
     },
     { once: true },
   );

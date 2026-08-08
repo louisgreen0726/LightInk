@@ -98,6 +98,19 @@ export function isEmbeddableImageSrc(src: string): boolean {
 /** 匹配 <img> 标签内的双引号 src（innerHTML 序列化产物恒为双引号）。 */
 const IMG_SRC_RE = /(<img\b[^>]*?\bsrc=")([^"]*)(")/gi;
 
+/**
+ * innerHTML 序列化会把属性值里的 `&` 等字符实体编码（如 `a&amp;b.png`）。
+ * 解析文件路径前需还原，否则含这些字符的文件名会被误判 missing。
+ */
+function decodeAttrEntities(src: string): string {
+  return src
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 export interface EmbedImagesResult {
   /** 相对图片已改写为 data URI 后的 HTML。 */
   readonly html: string;
@@ -123,7 +136,8 @@ export async function embedImages(
   for (const src of uniqueRelSrcs) {
     let base64: string | null = null;
     try {
-      base64 = await resolve(src);
+      // resolver 需要真实文件路径：先还原 innerHTML 序列化时的实体编码。
+      base64 = await resolve(decodeAttrEntities(src));
     } catch {
       base64 = null;
     }

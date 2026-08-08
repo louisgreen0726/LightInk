@@ -131,4 +131,13 @@ describe('embedImages', () => {
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(result.html.match(/data:image\/png;base64,QUJD/g)).toHaveLength(2);
   });
+
+  it('实体编码的 src（innerHTML 序列化产物）先解码再交给 resolver', async () => {
+    const resolve = vi.fn(async () => 'QUJD');
+    const result = await embedImages('<img src="assets/a&amp;b.png">', resolve);
+    // resolver 收到解码后的真实路径，而非 &amp; 编码形式
+    expect(resolve).toHaveBeenCalledWith('assets/a&b.png');
+    expect(result.embedded).toEqual(['assets/a&amp;b.png']);
+    expect(result.html).toBe('<img src="data:image/png;base64,QUJD">');
+  });
 });
