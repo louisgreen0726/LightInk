@@ -51,9 +51,10 @@ export function describePastedImage(
 }
 
 /**
- * Markdown fragment for an image asset. Used by `paste.ts` when the paste
- * contains an `![alt](url)` shape: re-renders with the canonical URL so the
- * editor's stored source matches the `ImageAsset.url`.
+ * Markdown fragment for an image asset. Currently unwired — T4 will route
+ * pasted image content through this once paste/asset persistence lands.
+ * Re-renders with the canonical URL so the editor's stored source matches
+ * the `ImageAsset.url`.
  */
 export function imageMarkdownSnippet(asset: ImageAsset): string {
   const titlePart =

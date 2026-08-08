@@ -67,39 +67,11 @@ export function normalizeTaskItem(
 
 /**
  * Walk a parsed MDAST tree and collect the normalized task items it contains
- * in source order. Walks into `list` children so deeply-nested task items are
- * found too — the single-parent-loop version misses them because remark puts
- * all `listItem` nodes two levels under the root.
- *
- * Iterative DFS with children pushed in reverse so popping retrieves them in
- * the original source order.
+ * in source order. Recursively descends into `list` children so nested task
+ * items are found too.
  */
 export function collectTaskItems(root: MdastRoot): NormalizedTaskItem[] {
   const out: NormalizedTaskItem[] = [];
-  const stack: Array<{ type?: string; children?: unknown }> = [
-    root as unknown as { type?: string; children?: unknown },
-  ];
-  while (stack.length > 0) {
-    // Pop yields the most recently pushed child. Because we push children in
-    // reverse order, the effective traversal is left-to-right pre-order,
-    // matching source order.
-    const node = stack.pop();
-    if (node === undefined) break;
-    const children = node.children;
-    if (!Array.isArray(children)) continue;
-    // Push in reverse so the first child is processed first.
-    for (let i = children.length - 1; i >= 0; i--) {
-      const child = children[i];
-      if (child === null || typeof child !== 'object') continue;
-      stack.push(child as { type?: string; children?: unknown });
-    }
-    // Only emit when the node we're *visiting* (i.e. about to push children
-    // of) is a task-list item. Note we check this AFTER pushing children so
-    // the iteration above isn't perturbed — restore parent-first order by
-    // simply emitting before the children push.
-  }
-  // The above loop has no per-node emit. Re-walk to collect in source order:
-  out.length = 0;
   function visit(node: unknown): void {
     if (node === null || typeof node !== 'object') return;
     const obj = node as { type?: string; children?: unknown };

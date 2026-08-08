@@ -149,37 +149,6 @@ export function findNode(
   return undefined;
 }
 
-/**
- * Every syntax kind an MDAST parse may yield under our schema set, indexed by
- * literal MDAST type. Tests use this to assert "any node of category X is
- * covered by the schema". Keep aligned with `mdastTypeToSyntaxKind`.
- */
-export const SCHEMA_COVERAGE: Record<MdastType, SyntaxKind | undefined> = {
-  root: undefined,
-  paragraph: 'paragraph',
-  heading: 'heading-1',
-  text: 'text',
-  emphasis: 'emphasis',
-  strong: 'strong',
-  delete: 'strikethrough',
-  inlineCode: 'inline-code',
-  code: 'code-block',
-  blockquote: 'blockquote',
-  list: 'bullet-list',
-  listItem: undefined,
-  table: 'table',
-  tableRow: undefined,
-  tableCell: undefined,
-  link: 'link',
-  image: 'image',
-  thematicBreak: 'thematic-break',
-  break: undefined,
-  html: undefined,
-  definition: undefined,
-  footnoteDefinition: undefined,
-  footnoteReference: undefined,
-};
-
 /** Assert that a node is a specific MDAST type — narrows in `tsc`. */
 export function isMdastType<T extends MdastType>(
   node: RootContent,

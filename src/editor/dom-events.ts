@@ -42,37 +42,11 @@ export function attachCursorListeners(
   const canAttach =
     typeof document !== 'undefined' &&
     typeof container.addEventListener === 'function';
-  let snapshot: CursorSnapshot = initCursor();
 
-  const focusListener = (event: Event): void => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const blockEl = target.closest<HTMLElement>('[data-block-id]');
-    if (blockEl === null) {
-      const next = applyTransition(snapshot, blurAll(snapshot));
-      snapshot = next;
-      return;
-    }
-    const id = blockEl.dataset.blockId;
-    if (typeof id !== 'string' || id.length === 0) return;
-    const transition: CursorTransition = focusBlock(snapshot, id);
-    snapshot = transition.to;
-  };
-
-  const blurListener = (): void => {
-    const transition = blurAll(snapshot);
-    snapshot = transition.to;
-  };
-
-  if (canAttach) {
-    container.addEventListener('focusin', focusListener);
-    container.addEventListener('focusout', blurListener);
-  }
-
-  return {
+  const binding: CursorEventBinding = {
     container,
     focusedBlockId: null,
-    snapshot,
+    snapshot: initCursor(),
     dispose: () => {
       if (canAttach) {
         container.removeEventListener('focusin', focusListener);
@@ -80,6 +54,35 @@ export function attachCursorListeners(
       }
     },
   };
+
+  const focusListener = (event: Event): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const blockEl = target.closest<HTMLElement>('[data-block-id]');
+    if (blockEl === null) {
+      binding.snapshot = applyTransition(binding.snapshot, blurAll(binding.snapshot));
+      binding.focusedBlockId = binding.snapshot.focused;
+      return;
+    }
+    const id = blockEl.dataset.blockId;
+    if (typeof id !== 'string' || id.length === 0) return;
+    const transition: CursorTransition = focusBlock(binding.snapshot, id);
+    binding.snapshot = transition.to;
+    binding.focusedBlockId = transition.to.focused;
+  };
+
+  const blurListener = (): void => {
+    const transition = blurAll(binding.snapshot);
+    binding.snapshot = transition.to;
+    binding.focusedBlockId = transition.to.focused;
+  };
+
+  if (canAttach) {
+    container.addEventListener('focusin', focusListener);
+    container.addEventListener('focusout', blurListener);
+  }
+
+  return binding;
 }
 
 /**

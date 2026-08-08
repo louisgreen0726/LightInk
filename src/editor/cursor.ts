@@ -63,7 +63,7 @@ export function focusBlock(
     nextModes.set(snapshot.focused, 'rendered');
     affected.push(snapshot.focused);
   }
-  if (id !== null && id !== snapshot.focused) {
+  if (id !== snapshot.focused) {
     nextModes.set(id, 'source');
     affected.push(id);
   }

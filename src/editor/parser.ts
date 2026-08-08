@@ -30,11 +30,6 @@ export function getProcessor(): Processor<MdastRoot> {
   return cachedProcessor;
 }
 
-/** Reset the cached processor — exposed for tests only. */
-export function __resetProcessorCacheForTests(): void {
-  cachedProcessor = null;
-}
-
 /** Parse a markdown string to MDAST. Throws on malformed input. */
 export function parseMarkdownToMdast(source: string): MdastRoot {
   if (typeof source !== 'string') {

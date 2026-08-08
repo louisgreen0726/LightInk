@@ -6,19 +6,30 @@
  *     `commonmark` + `gfm` presets. Together they cover every R1 node kind
  *     (headings, lists, task lists, blockquote, code, tables, links, images,
  *     emphasis, strong, strikethrough, hr) without bespoke schemas.
- *   - Reading/writing markdown content is delegated to the downstream
- *     `@milkdown/transformer` + `@milkdown/plugin-history` combo via
- *     `editor.action(ctx => ...)`. Until those plugins land in a later
- *     task, `getMarkdown`/`setMarkdown` fall back to the call-supplied
- *     `initialMarkdown` so the API surface stays stable.
+ *   - `mountEditor` binds the caller-supplied `container` via `rootCtx` and
+ *     seeds the document via `defaultValueCtx` so the editor DOM lives inside
+ *     the host element and starts with `initialMarkdown` rendered.
+ *   - Reading/writing markdown content goes through the live ProseMirror
+ *     document via `@milkdown/utils` `getMarkdown` / `replaceAll`. A cached
+ *     fallback is kept for the pre-`Created` window (e.g. headless callers
+ *     that `setMarkdown` before `ready` resolves).
  *   - The returned `EditorInstance` exposes a Promise-friendly interface so
  *     the rest of the app (file IO, tabs, autosave) can plug in during
  *     later tasks.
  */
 
-import { Editor as MilkdownEditor, EditorStatus } from '@milkdown/core';
+import {
+  defaultValueCtx,
+  Editor as MilkdownEditor,
+  EditorStatus,
+  rootCtx,
+} from '@milkdown/core';
 import { commonmark } from '@milkdown/preset-commonmark';
 import { gfm } from '@milkdown/preset-gfm';
+import {
+  getMarkdown as milkdownGetMarkdown,
+  replaceAll,
+} from '@milkdown/utils';
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import type { EditorInstance, MountOptions } from './types.js';
@@ -28,7 +39,7 @@ interface MountState {
   cursorBinding: CursorEventBinding | null;
   mounted: boolean;
   /** Last markdown supplied via `setMarkdown`, used as the fallback
-   *  serializer source until the transformer plugin is wired up. */
+   *  serializer source when the editor hasn't reached `Created` yet. */
   cachedMarkdown: string;
 }
 
@@ -41,6 +52,11 @@ function isDevEnvironment(): boolean {
   } catch {
     return false;
   }
+}
+
+/** True when the Milkdown editor has finished creating and has a live view. */
+function isCreated(state: MountState): boolean {
+  return state.editor !== null && state.editor.status === EditorStatus.Created;
 }
 
 /**
@@ -76,6 +92,13 @@ export async function mountEditor(
   const ready = new Promise<void>((resolve, reject) => {
     try {
       const editor = MilkdownEditor.make()
+        .config((ctx) => {
+          // Bind the editor DOM into the caller's container (defaults to
+          // document.body otherwise) and seed the document with the
+          // initial markdown so the editor isn't empty on mount.
+          ctx.set(rootCtx, container);
+          ctx.set(defaultValueCtx, state.cachedMarkdown);
+        })
         .use(commonmark)
         .use(gfm);
       state.editor = editor;
@@ -104,20 +127,26 @@ export async function mountEditor(
     }
   });
 
-  function dispatchMarkdown(action: (current: string) => string): string {
-    const previous = state.cachedMarkdown;
-    const next = action(previous);
-    state.cachedMarkdown = next;
-    return next;
-  }
-
   return {
     ready,
     setMarkdown(markdown: string): void {
       const value = typeof markdown === 'string' ? markdown : String(markdown ?? '');
-      dispatchMarkdown(() => value);
+      if (isCreated(state)) {
+        // Replace the live ProseMirror document.
+        state.editor!.action(replaceAll(value, false));
+        state.cachedMarkdown = value;
+      } else {
+        // Editor not created yet — keep the fallback so getMarkdown still
+        // returns something sensible for headless callers.
+        state.cachedMarkdown = value;
+      }
     },
     getMarkdown(): string {
+      if (isCreated(state)) {
+        const live = state.editor!.action(milkdownGetMarkdown());
+        state.cachedMarkdown = live;
+        return live;
+      }
       return state.cachedMarkdown;
     },
     async destroy(): Promise<void> {
