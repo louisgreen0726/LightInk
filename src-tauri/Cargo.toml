@@ -23,3 +23,14 @@ tempfile = "3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)'] }
+
+# T11: release binary size/performance tuning. `lto` + a single codegen unit
+# favour smaller/faster binaries at the cost of longer release compiles;
+# `opt-level = "s"` prioritises installer size (a stated R13 outcome);
+# `strip` removes symbols from the shipped binary (debug info is not needed
+# in the installer; keep debug builds untouched for development).
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

@@ -7,3 +7,6 @@ dist
 # Rust / Tauri build artifacts
 src-tauri/target
 src-tauri/gen
+
+# Python cache (scripts/ perf tooling)
+__pycache__/
