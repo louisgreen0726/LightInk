@@ -32,6 +32,7 @@ import {
   getMarkdown as milkdownGetMarkdown,
   replaceAll,
 } from '@milkdown/utils';
+import { toggleMark } from '@milkdown/prose/commands';
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
@@ -231,6 +232,21 @@ export async function mountEditor(
       const view = getView(state);
       if (view === null) return null;
       return resolveCursorLink(view);
+    },
+    toggleMark(markName: string): void {
+      const view = getView(state);
+      if (view === null) return;
+      const markType = view.state.schema.marks[markName];
+      if (markType === undefined) return;
+      toggleMark(markType)(view.state, (tr) => view.dispatch(tr));
+    },
+    setLink(href: string): void {
+      const view = getView(state);
+      if (view === null) return;
+      const linkType = view.state.schema.marks['link'];
+      if (linkType === undefined) return;
+      const { from, to } = view.state.selection;
+      view.dispatch(view.state.tr.addMark(from, to, linkType.create({ href })));
     },
     async destroy(): Promise<void> {
       try {

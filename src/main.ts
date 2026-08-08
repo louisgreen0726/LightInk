@@ -11,6 +11,11 @@ import { ask, confirm, message as dialogMessage, save } from '@tauri-apps/plugin
 
 import { mountEditor } from './editor/index.js';
 import { SourceView } from './editor/source-view.js';
+import {
+  buildEditorContextMenuItems,
+  buildTabContextMenuItems,
+  createContextMenu,
+} from './ui/context-menu.js';
 import { insertElementMarkdown, type InsertElementId } from './editor/insert-commands.js';
 import { buildExportCss } from './export/export-css.js';
 import {
@@ -307,6 +312,94 @@ const shortcuts = new ShortcutRegistry({
   'toggle-source-mode': () => toggleActiveSourceMode(),
 });
 shortcuts.attach(document);
+
+// T8/R3：右键上下文菜单（编辑区 + 标签页）。
+function showEditorContextMenu(x: number, y: number): void {
+  const tab = manager.activeTab;
+  if (tab === null) return;
+  const sel = tab.editor.getSelection();
+  const hasSelection = sel !== null && !sel.empty;
+  const link = tab.editor.getLinkAtCursor();
+  const hasLink = link !== null;
+  const items = buildEditorContextMenuItems(
+    { hasSelection, hasLink },
+    {
+      cut: () => document.execCommand('cut'),
+      copy: () => document.execCommand('copy'),
+      paste: () => {
+        void navigator.clipboard?.readText().then((text) => {
+          if (typeof text === 'string' && text !== '') {
+            document.execCommand('insertText', false, text);
+          }
+        });
+      },
+      pastePlain: () => {
+        void navigator.clipboard?.readText().then((text) => {
+          if (typeof text === 'string' && text !== '') {
+            document.execCommand('insertText', false, text);
+          }
+        });
+      },
+      bold: () => tab.editor.toggleMark('strong'),
+      italic: () => tab.editor.toggleMark('emphasis'),
+      link: () => {
+        const href = typeof prompt === 'function' ? (prompt('链接地址（https://…）') ?? '') : '';
+        if (href !== '') tab.editor.setLink(href);
+      },
+      openLink: () => {
+        if (link !== null) window.open(link.href, '_blank', 'noopener');
+      },
+      copyLinkAddress: () => {
+        if (link !== null) void navigator.clipboard?.writeText(link.href);
+      },
+    },
+  );
+  createContextMenu(items, { x, y });
+}
+
+function showTabContextMenu(tabId: string, x: number, y: number): void {
+  const tab = manager.tabList.find((t) => t.id === tabId) ?? null;
+  const hasFile = tab !== null && tab.filePath !== null;
+  const items = buildTabContextMenuItems({ hasFile }, {
+    close: () => void manager.closeTab(tabId),
+    closeOthers: () => {
+      for (const other of manager.tabList) {
+        if (other.id !== tabId) void manager.closeTab(other.id);
+      }
+    },
+    copyPath: () => {
+      if (tab?.filePath !== null && tab?.filePath !== undefined) {
+        void navigator.clipboard?.writeText(tab.filePath);
+      }
+    },
+    revealInFiles: () => {
+      // 「在文件管理器中显示」依赖 opener/shell 能力（与 R14 共用）；命令未就绪时静默。
+      const path = tab?.filePath;
+      if (path === null || path === undefined) return;
+      void (async () => {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('reveal_path_in_files', { path });
+        } catch {
+          // 能力未注册（R14 接通前）：忽略。
+        }
+      })();
+    },
+  });
+  createContextMenu(items, { x, y });
+}
+
+shell.editorArea.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  showEditorContextMenu(event.clientX, event.clientY);
+});
+shell.tabBar.addEventListener('contextmenu', (event) => {
+  const target = event.target;
+  const btn = target instanceof HTMLElement ? target.closest<HTMLElement>('[data-tab-id]') : null;
+  if (btn === null || btn.dataset.tabId === undefined) return;
+  event.preventDefault();
+  showTabContextMenu(btn.dataset.tabId, event.clientX, event.clientY);
+});
 
 const SHORTCUT_LABELS: Readonly<Record<ShortcutAction, string>> = {
   new: '新建',

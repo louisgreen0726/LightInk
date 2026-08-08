@@ -35,6 +35,8 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     },
     getSelection: () => null,
     getLinkAtCursor: () => null,
+    toggleMark: () => undefined,
+    setLink: () => undefined,
     destroy: vi.fn(async () => undefined),
   };
 }

@@ -117,6 +117,16 @@ export interface EditorInstance {
    * 供 R3 链接的打开/复制地址使用。
    */
   getLinkAtCursor(): CursorLink | null;
+  /**
+   * 在当前选区上切换某个 mark（如 'strong'/'emphasis'/'strike_through'/'inlineCode'）。
+   * 无选区或未就绪时为空操作。供 R3 上下文菜单格式操作使用。
+   */
+  toggleMark(markName: string): void;
+  /**
+   * 用链接 mark 包裹当前选区（href 来自调用方，通常由 prompt 取得）。
+   * 无选区或未就绪时为空操作。供 R3 上下文菜单链接操作使用。
+   */
+  setLink(href: string): void;
   /** Tear the editor down (removes DOM, nulls listeners). */
   destroy(): Promise<void>;
 }

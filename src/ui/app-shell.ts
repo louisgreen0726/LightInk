@@ -229,6 +229,7 @@ export function createAppShell(
       ...tabs.map((tab) => {
         const btn = document.createElement('button');
         btn.className = 'lightink-tab';
+        btn.dataset.tabId = tab.id;
         if (tab.id === activeId) {
           btn.classList.add('active');
         }
