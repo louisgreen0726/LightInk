@@ -107,6 +107,8 @@ export class SourceView {
   private wrapper: HTMLDivElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
   private savedHostPosition = '';
+  /** 最近一次同步到编辑器的文本（用于跳过无变化的冗余 setMarkdown/解析）。 */
+  private lastSynced = '';
 
   constructor(private readonly host: HTMLElement, roundtrip: SourceRoundtrip) {
     this.controller = new SourceModeController(roundtrip);
@@ -163,6 +165,9 @@ export class SourceView {
 
     const onInput = (): void => {
       code.innerHTML = renderHighlightedSource(textarea.value);
+      // 即时同步（target 阶段，先于 host 的 handleContentChanged 冒泡）：让背后编辑器
+      // 跟随 textarea，使脏标记/崩溃快照/导出/大纲等所有读取 editor 的站点都读到最新源码。
+      this.syncIfChanged();
     };
     const onScroll = (): void => {
       pre.scrollTop = textarea.scrollTop;
@@ -180,6 +185,7 @@ export class SourceView {
 
     this.wrapper = wrapper;
     this.textarea = textarea;
+    this.lastSynced = text;
     textarea.focus();
   }
 
@@ -205,6 +211,16 @@ export class SourceView {
   /** 源码态下把当前 textarea 文本同步回编辑器（不退出）。 */
   syncToEditor(): void {
     this.controller.syncSource(this.currentText());
+    this.lastSynced = this.currentText();
+  }
+
+  /** 仅当 textarea 文本相对上次同步有变化时才 setMarkdown（跳过冗余解析）。 */
+  private syncIfChanged(): void {
+    const value = this.currentText();
+    if (value !== this.lastSynced) {
+      this.controller.syncSource(value);
+      this.lastSynced = value;
+    }
   }
 
   destroy(): void {

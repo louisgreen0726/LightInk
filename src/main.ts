@@ -148,8 +148,14 @@ const shell = createAppShell(
       commitActiveSourceMode();
       void saveActiveAs();
     },
-    onExportHtml: () => void exportActiveTabHtml(exportDeps),
-    onExportPdf: () => void exportActiveTabPdf(exportDeps),
+    onExportHtml: () => {
+      commitActiveSourceMode();
+      void exportActiveTabHtml(exportDeps);
+    },
+    onExportPdf: () => {
+      commitActiveSourceMode();
+      void exportActiveTabPdf(exportDeps);
+    },
     onUndo: () => dispatchEditorCombo('Ctrl+Z'),
     onRedo: () => dispatchEditorCombo('Ctrl+Shift+Z'),
     onCut: () => document.execCommand('cut'),
@@ -186,16 +192,19 @@ function renderTabBar(): void {
   pruneSourceViews();
   shell.renderTabBar(manager.tabList, manager.activeTabId, {
     onSwitch: (id) => manager.switchTab(id),
-    onClose: (id) => void manager.closeTab(id),
+    onClose: (id) => {
+      // 关闭前提交该标签的源码态编辑，避免 closeTab 保存分支写旧值/丢 textarea 编辑。
+      commitSourceMode(id);
+      void manager.closeTab(id);
+    },
   });
 }
 
-/** 清理已关闭标签的 SourceView（避免持有已 detach 的 host/editor 引用）。 */
+/** 清理已关闭标签的 SourceView（宿主已由 detachHost 移除；仅删 Map 项，不对已销毁编辑器写回）。 */
 function pruneSourceViews(): void {
   const live = new Set(manager.tabList.map((t) => t.id));
   for (const id of [...sourceViews.keys()]) {
     if (!live.has(id)) {
-      sourceViews.get(id)?.destroy();
       sourceViews.delete(id);
     }
   }
@@ -266,7 +275,11 @@ function toggleActiveSourceMode(): void {
 function commitActiveSourceMode(): void {
   const tab = manager.activeTab;
   if (tab === null) return;
-  const view = sourceViews.get(tab.id);
+  commitSourceMode(tab.id);
+}
+/** 按标签 id 提交其源码态编辑（同步到编辑器，不退出源码模式）。 */
+function commitSourceMode(tabId: string): void {
+  const view = sourceViews.get(tabId);
   if (view !== undefined && view.isSourceMode) {
     view.syncToEditor();
   }
