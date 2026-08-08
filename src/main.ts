@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ask, confirm, message as dialogMessage, save } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
+import { SourceView } from './editor/source-view.js';
 import { insertElementMarkdown, type InsertElementId } from './editor/insert-commands.js';
 import { buildExportCss } from './export/export-css.js';
 import {
@@ -139,8 +140,14 @@ const shell = createAppShell(
   {
     onNew: () => void manager.newTab(),
     onOpen: () => void manager.openFile(),
-    onSave: () => void manager.saveActiveTab(),
-    onSaveAs: saveActiveAs,
+    onSave: () => {
+      commitActiveSourceMode();
+      void manager.saveActiveTab();
+    },
+    onSaveAs: () => {
+      commitActiveSourceMode();
+      void saveActiveAs();
+    },
     onExportHtml: () => void exportActiveTabHtml(exportDeps),
     onExportPdf: () => void exportActiveTabPdf(exportDeps),
     onUndo: () => dispatchEditorCombo('Ctrl+Z'),
@@ -153,8 +160,8 @@ const shell = createAppShell(
       themeService.toggle();
     },
     onToggleOutline: () => outline.toggleCollapse(),
-    // 源码模式由 T7/R10 接通，T1 阶段菜单项禁用，回调占位。
-    onToggleSourceMode: () => undefined,
+    // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
+    onToggleSourceMode: () => toggleActiveSourceMode(),
   },
   { shortcutBindings: getShortcutBindings },
 );
@@ -231,6 +238,28 @@ outline = createOutlineView({
 });
 shell.outlineSidebar.appendChild(outline.root);
 
+// T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。
+const sourceViews = new Map<string, SourceView>();
+function toggleActiveSourceMode(): void {
+  const tab = manager.activeTab;
+  if (tab === null) return;
+  let view = sourceViews.get(tab.id);
+  if (view === undefined) {
+    view = new SourceView(tab.hostElement, tab.editor);
+    sourceViews.set(tab.id, view);
+  }
+  view.toggle();
+}
+/** 源码态下把活动标签的 textarea 源码同步回编辑器（供保存/大纲读取一致）。 */
+function commitActiveSourceMode(): void {
+  const tab = manager.activeTab;
+  if (tab === null) return;
+  const view = sourceViews.get(tab.id);
+  if (view !== undefined && view.isSourceMode) {
+    view.syncToEditor();
+  }
+}
+
 // 快捷键：捕获阶段注册，保存等操作在编辑器内同样生效。
 const shortcuts = new ShortcutRegistry({
   new: () => void manager.newTab(),
@@ -244,6 +273,7 @@ const shortcuts = new ShortcutRegistry({
   'insert-link': () => insertElement('link'),
   'insert-image': () => insertElement('image'),
   'toggle-outline': () => outline.toggleCollapse(),
+  'toggle-source-mode': () => toggleActiveSourceMode(),
 });
 shortcuts.attach(document);
 

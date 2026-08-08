@@ -136,7 +136,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         menuItem('view-theme', '切换主题', actions.onToggleTheme, 'Ctrl+J'),
         menuItem('view-outline', '大纲显隐', actions.onToggleOutline, 'Ctrl+Shift+L'),
         // 源码模式由 T7/R10 接通，T1 阶段禁用。
-        menuItem('view-source-mode', '源码模式', actions.onToggleSourceMode, 'Ctrl+/', () => false),
+        menuItem('view-source-mode', '源码模式', actions.onToggleSourceMode, 'Ctrl+/', () => true),
       ],
     },
     { id: 'help', label: '帮助', items: [menuItem('help-cheatsheet', '快捷键速查', () => undefined)] },
