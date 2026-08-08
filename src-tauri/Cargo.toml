@@ -17,12 +17,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)', 'cfg(desktop)'] }
 
 # T11: release binary size/performance tuning. `lto` + a single codegen unit
 # favour smaller/faster binaries at the cost of longer release compiles;

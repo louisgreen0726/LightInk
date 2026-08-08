@@ -457,11 +457,29 @@ function getShortcutBindings(): CheatBinding[] {
 }
 
 async function bootstrap(): Promise<void> {
-  // 先恢复崩溃遗留的未命名草稿，再决定是否新建初始标签。
-  const restored = await manager.recoverUntitledDrafts();
-  if (restored.length === 0 && manager.tabList.length === 0) {
+  // 先恢复崩溃遗留的未命名草稿（其副作用：为每个恢复草稿开标签）。
+  await manager.recoverUntitledDrafts();
+  // R1：取出启动/关联文件（首实例 argv 经后端 take_pending_file；命令未就绪时静默）。
+  const pendingFile = await invoke<string | null>('take_pending_file').catch(() => null);
+  if (pendingFile !== null) {
+    await manager.openFile(pendingFile);
+  }
+  // 无标签（无恢复草稿、无启动文件）则新建欢迎标签。
+  if (manager.tabList.length === 0) {
     await manager.newTab('# 轻墨 LightInk\n\n开始书写。\n');
   }
+  // R1：监听第二实例的 open-file 信号（单实例转发），取出待打开文件开新标签。
+  import('@tauri-apps/api/event')
+    .then(({ listen }) => {
+      void listen('open-file', () => {
+        void invoke<string | null>('take_pending_file')
+          .then((path) => {
+            if (path !== null) void manager.openFile(path);
+          })
+          .catch(() => undefined);
+      });
+    })
+    .catch(() => undefined);
 }
 
 bootstrap().catch((err: unknown) => {
