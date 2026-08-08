@@ -6,10 +6,20 @@
  * （接线保持 T3 语义不变：宿主元素、崩溃快照、恢复流程）→ 快捷键注册。
  */
 
-import { ask, confirm } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { ask, confirm, save } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
-import { readFile } from './file/file-service.js';
+import { buildExportCss } from './export/export-css.js';
+import {
+  exportActiveTabHtml,
+  exportActiveTabPdf,
+  serializeEditorContent,
+  type ExportServiceDeps,
+  type ExportTabSnapshot,
+} from './export/export-service.js';
+import { printViaHiddenIframe } from './export/pdf-export.js';
+import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager } from './tabs/tab-manager.js';
 import type { CloseChoice } from './tabs/types.js';
@@ -44,6 +54,50 @@ function saveActiveAs(): void {
   }
 }
 
+// T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
+// src/export/ 下（可 headless 测试）。
+function activeExportSnapshot(): ExportTabSnapshot | null {
+  const tab = manager.activeTab;
+  if (tab === null) {
+    return null;
+  }
+  return {
+    title: tab.title,
+    filePath: tab.filePath,
+    sessionId: tab.syntheticId,
+    contentHtml: serializeEditorContent(tab.hostElement),
+  };
+}
+
+/** 自定义主题激活时读取注入槽的 CSS，一并内嵌进导出文档。 */
+function currentCustomThemeCss(): string {
+  return document.getElementById('lightink-custom-theme')?.textContent ?? '';
+}
+
+const exportDeps: ExportServiceDeps = {
+  getActiveSnapshot: activeExportSnapshot,
+  getTheme: () => document.documentElement.getAttribute('data-theme') ?? 'warm-light',
+  getCssText: () => buildExportCss(currentCustomThemeCss()),
+  readImageBase64: (docPath, sessionId, relPath) =>
+    invoke<string>('read_image_base64', { docPath, sessionId, relPath }),
+  showHtmlSaveDialog: async (defaultPath) => {
+    const selected = await save({
+      defaultPath,
+      filters: [
+        { name: 'HTML', extensions: ['html', 'htm'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    return typeof selected === 'string' ? selected : null;
+  },
+  writeFile,
+  printHtml: (html) => printViaHiddenIframe(document, html),
+  reportError: (message, error) => {
+    // eslint-disable-next-line no-console
+    console.error(`[lightink/export] ${message}`, error);
+  },
+};
+
 const shell = createAppShell(app, {
   onNew: () => void manager.newTab(),
   onOpen: () => void manager.openFile(),
@@ -52,6 +106,8 @@ const shell = createAppShell(app, {
   onToggleTheme: () => {
     themeService.toggle();
   },
+  onExportHtml: () => void exportActiveTabHtml(exportDeps),
+  onExportPdf: () => void exportActiveTabPdf(exportDeps),
 });
 
 /** 关闭未保存标签的三选一确认（dialog 插件两步询问，临时方案）。 */

@@ -1,0 +1,154 @@
+/**
+ * export-service 编排测试：活动标签快照 → 内嵌图片 → 保存/打印分支。
+ * 全部依赖经 ExportServiceDeps 注入 fake，node 环境直测。
+ */
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  defaultExportFileName,
+  exportActiveTabHtml,
+  exportActiveTabPdf,
+  serializeEditorContent,
+  type ExportServiceDeps,
+  type ExportTabSnapshot,
+} from '../export-service.js';
+import { PRINT_CSS } from '../pdf-export.js';
+
+const SNAPSHOT: ExportTabSnapshot = {
+  title: '笔记.md',
+  filePath: 'C:\\docs\\笔记.md',
+  sessionId: 'untitled-ab12',
+  contentHtml:
+    '<h1>标题</h1><p><img src="assets/a.png" alt="图"></p>' +
+    '<img src="https://example.com/ext.png">',
+};
+
+function makeDeps(overrides: Partial<ExportServiceDeps> = {}) {
+  const deps: ExportServiceDeps = {
+    getActiveSnapshot: () => SNAPSHOT,
+    getTheme: () => 'warm-light',
+    getCssText: () => '/* fake-css */',
+    readImageBase64: vi.fn(async () => 'QUJD'),
+    showHtmlSaveDialog: vi.fn(async () => 'C:\\out\\笔记.html'),
+    writeFile: vi.fn(async () => undefined),
+    printHtml: vi.fn(),
+    reportError: vi.fn(),
+    ...overrides,
+  };
+  return deps;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('serializeEditorContent', () => {
+  it('优先取 .ProseMirror 内容，缺失时回退宿主 innerHTML', () => {
+    const host = {
+      querySelector: (sel: string) =>
+        sel === '.ProseMirror' ? { innerHTML: '<p>正文</p>' } : null,
+      innerHTML: '<div>宿主</div>',
+    };
+    expect(serializeEditorContent(host)).toBe('<p>正文</p>');
+    const bare = { querySelector: () => null, innerHTML: '<div>宿主</div>' };
+    expect(serializeEditorContent(bare)).toBe('<div>宿主</div>');
+  });
+});
+
+describe('defaultExportFileName', () => {
+  it('去掉原扩展名加 .html；空主干回退「未命名」', () => {
+    expect(defaultExportFileName('笔记.md')).toBe('笔记.html');
+    expect(defaultExportFileName('未命名-1')).toBe('未命名-1.html');
+    expect(defaultExportFileName('.md')).toBe('未命名.html');
+  });
+});
+
+describe('exportActiveTabHtml', () => {
+  it('对话框选定路径 → 写入装配好的独立 HTML（图片已内嵌）', async () => {
+    const deps = makeDeps();
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(true);
+    expect(deps.showHtmlSaveDialog).toHaveBeenCalledWith('笔记.html');
+    expect(deps.writeFile).toHaveBeenCalledTimes(1);
+    const [path, html] = vi.mocked(deps.writeFile).mock.calls[0];
+    expect(path).toBe('C:\\out\\笔记.html');
+    expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
+    expect(html).toContain('<meta charset="utf-8">');
+    expect(html).toContain('data-theme="warm-light"');
+    expect(html).toContain('/* fake-css */');
+    expect(html).toContain('<h1>标题</h1>');
+    // 相对图片已内嵌为 data URI；绝对 URL 保留且未触达 resolver。
+    expect(html).toContain('src="data:image/png;base64,QUJD"');
+    expect(html).toContain('src="https://example.com/ext.png"');
+    expect(deps.readImageBase64).toHaveBeenCalledTimes(1);
+    expect(deps.readImageBase64).toHaveBeenCalledWith(
+      'C:\\docs\\笔记.md',
+      null,
+      'assets/a.png',
+    );
+  });
+
+  it('未保存文档的图片按会话暂存目录解析（传 sessionId）', async () => {
+    const deps = makeDeps({
+      getActiveSnapshot: () => ({ ...SNAPSHOT, filePath: null }),
+    });
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(true);
+    expect(deps.readImageBase64).toHaveBeenCalledWith(null, 'untitled-ab12', 'assets/a.png');
+  });
+
+  it('用户取消对话框 → 不写文件', async () => {
+    const deps = makeDeps({ showHtmlSaveDialog: vi.fn(async () => null) });
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(false);
+    expect(deps.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('无活动标签 → false 并上报', async () => {
+    const deps = makeDeps({ getActiveSnapshot: () => null });
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(false);
+    expect(deps.reportError).toHaveBeenCalledOnce();
+    expect(deps.showHtmlSaveDialog).not.toHaveBeenCalled();
+  });
+
+  it('写入失败 → false 并上报', async () => {
+    const deps = makeDeps({
+      writeFile: vi.fn(async () => {
+        throw '磁盘错误';
+      }),
+    });
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(false);
+    expect(deps.reportError).toHaveBeenCalledOnce();
+  });
+
+  it('图片读取失败不阻断导出：保留原 src 并上报警告', async () => {
+    const deps = makeDeps({
+      readImageBase64: vi.fn(async () => {
+        throw new Error('io');
+      }),
+    });
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(true);
+    const [, html] = vi.mocked(deps.writeFile).mock.calls[0];
+    expect(html).toContain('src="assets/a.png"');
+    expect(deps.reportError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('exportActiveTabPdf', () => {
+  it('装配打印 HTML（含打印样式与内嵌图片）并触发 print', async () => {
+    const deps = makeDeps();
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(true);
+    expect(deps.printHtml).toHaveBeenCalledTimes(1);
+    const html = vi.mocked(deps.printHtml).mock.calls[0][0];
+    expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
+    expect(html).toContain(PRINT_CSS);
+    expect(html).toContain('src="data:image/png;base64,QUJD"');
+    // PDF 走打印管线，不弹保存对话框、不写文件。
+    expect(deps.showHtmlSaveDialog).not.toHaveBeenCalled();
+    expect(deps.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('无活动标签 → false 且不触发 print', async () => {
+    const deps = makeDeps({ getActiveSnapshot: () => null });
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(false);
+    expect(deps.printHtml).not.toHaveBeenCalled();
+  });
+});

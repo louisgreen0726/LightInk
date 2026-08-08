@@ -26,6 +26,10 @@ export interface AppShellActions {
   onSave(): void;
   onSaveAs(): void;
   onToggleTheme(): void;
+  /** T10：导出当前标签为独立 HTML（R5）。 */
+  onExportHtml(): void;
+  /** T10：导出当前标签为 PDF（系统打印对话框，R5）。 */
+  onExportPdf(): void;
 }
 
 export interface AppShell {
@@ -46,6 +50,7 @@ export interface AppShell {
 const COMMANDS: ReadonlyArray<{
   action: keyof AppShellActions;
   label: string;
+  /** 快捷键提示；空串表示无快捷键（tooltip 只显示标签）。 */
   shortcut: string;
 }> = [
   { action: 'onNew', label: '新建', shortcut: 'Ctrl+N' },
@@ -53,6 +58,9 @@ const COMMANDS: ReadonlyArray<{
   { action: 'onSave', label: '保存', shortcut: 'Ctrl+S' },
   { action: 'onSaveAs', label: '另存为', shortcut: 'Ctrl+Shift+S' },
   { action: 'onToggleTheme', label: '主题', shortcut: 'Ctrl+J' },
+  // T10（R5/R11）：导出入口与既有命令同排，一次点击触发。
+  { action: 'onExportHtml', label: '导出 HTML', shortcut: '' },
+  { action: 'onExportPdf', label: '导出 PDF', shortcut: '' },
 ];
 
 export function createAppShell(root: HTMLElement, actions: AppShellActions): AppShell {
@@ -75,7 +83,7 @@ export function createAppShell(root: HTMLElement, actions: AppShellActions): App
     btn.className = 'lightink-command';
     btn.dataset.action = cmd.action;
     btn.textContent = cmd.label;
-    btn.title = `${cmd.label}（${cmd.shortcut}）`;
+    btn.title = cmd.shortcut === '' ? cmd.label : `${cmd.label}（${cmd.shortcut}）`;
     btn.addEventListener('click', () => actions[cmd.action]());
     toolbar.appendChild(btn);
   }
