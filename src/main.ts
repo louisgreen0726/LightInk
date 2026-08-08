@@ -173,6 +173,14 @@ const shell = createAppShell(
     onToggleTheme: () => {
       themeService.toggle();
     },
+    onApplyTheme: (themeId) => {
+      themeService.apply(themeId);
+    },
+    getCurrentThemeId: () => themeService.currentThemeId,
+    onReloadCustomTheme: () => {
+      void themeService.reloadCustomThemeFile();
+    },
+    canReloadCustomTheme: () => themeService.customThemePath !== null,
     onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),

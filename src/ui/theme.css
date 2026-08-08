@@ -248,9 +248,42 @@ body {
 
 .lightink-tab-host blockquote {
   margin: 0;
-  padding-left: 14px;
-  border-left: 3px solid var(--lightink-border);
+  padding: 2px 14px;
+  border-left: 3px solid var(--lightink-accent-soft);
   color: var(--lightink-muted);
+  background: var(--lightink-bg-elevated);
+  border-radius: 0 4px 4px 0;
+}
+
+/* 表格：此前缺失的表格样式（R15）。复用既有令牌，所有主题自动获得一致的表格观感。 */
+.lightink-tab-host table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 0.95em;
+}
+
+.lightink-tab-host th,
+.lightink-tab-host td {
+  border: 1px solid var(--lightink-border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.lightink-tab-host thead th {
+  background: var(--lightink-bg-elevated);
+  font-weight: 600;
+}
+
+.lightink-tab-host tbody tr:nth-child(even) td {
+  background: var(--lightink-bg-elevated);
+}
+
+.lightink-tab-host caption {
+  caption-side: bottom;
+  color: var(--lightink-muted);
+  font-size: 0.88em;
+  padding-top: 4px;
 }
 
 .lightink-tab-host a {

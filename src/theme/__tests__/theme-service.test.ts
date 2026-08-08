@@ -80,10 +80,26 @@ describe('ThemeService 内置主题', () => {
     expect(h.attrs.get('data-theme')).toBe('warm-light');
   });
 
-  it('列出内置主题：warm-light 与 dark', () => {
+  it('列出全部内置预设主题（R15：6 套，浅/深各三）', () => {
     const h = makeHarness();
-    expect(h.service.builtinThemes().map((t) => t.id)).toEqual(['warm-light', 'dark']);
+    expect(h.service.builtinThemes().map((t) => t.id)).toEqual([
+      'warm-light',
+      'cool-light',
+      'sepia',
+      'dark',
+      'midnight',
+      'forest',
+    ]);
     expect(BUILTIN_THEMES.some((t) => t.id === 'warm-light')).toBe(true);
+  });
+
+  it('每个内置主题 id 均可 apply 并切换 data-theme', () => {
+    const h = makeHarness();
+    for (const theme of BUILTIN_THEMES) {
+      h.service.apply(theme.id);
+      expect(h.attrs.get('data-theme')).toBe(theme.id);
+      expect(h.store.get(THEME_STORAGE_KEY)).toBe(theme.id);
+    }
   });
 
   it('恢复上次保存的合法主题', () => {

@@ -10,6 +10,7 @@
 
 import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
+import { BUILTIN_THEMES, type BuiltinThemeId } from '../theme/theme-service.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 
@@ -42,6 +43,14 @@ export interface AppShellActions {
   onInsertElement(id: InsertElementId): void;
   // 视图
   onToggleTheme(): void;
+  /** 应用某个内置预设主题（视图菜单逐项列出全部预设）。 */
+  onApplyTheme(themeId: BuiltinThemeId): void;
+  /** 当前主题 id（内置 id 或 'custom'），用于菜单标记当前项。 */
+  getCurrentThemeId(): string;
+  /** 热重载自定义主题文件（R15：接通既有 reloadCustomThemeFile）。 */
+  onReloadCustomTheme(): void;
+  /** 是否存在可重载的自定义主题文件。 */
+  canReloadCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
 }
@@ -135,7 +144,28 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       id: 'view',
       label: '视图',
       items: [
-        menuItem('view-theme', '切换主题', actions.onToggleTheme, 'Ctrl+J'),
+        menuItem('view-theme-toggle', '切换主题（浅/深）', actions.onToggleTheme, 'Ctrl+J'),
+        separator('view-theme-sep1'),
+        // R15：逐项列出全部预设主题，当前主题禁用（不可重复选择）。
+        ...BUILTIN_THEMES.map((theme) =>
+          menuItem(
+            `view-theme-${theme.id}`,
+            theme.label,
+            () => actions.onApplyTheme(theme.id),
+            '',
+            () => actions.getCurrentThemeId() !== theme.id,
+          ),
+        ),
+        separator('view-theme-sep2'),
+        // R15：热重载自定义主题文件（无自定义文件时禁用）。
+        menuItem(
+          'view-reload-custom-theme',
+          '重新加载自定义主题',
+          actions.onReloadCustomTheme,
+          '',
+          () => actions.canReloadCustomTheme(),
+        ),
+        separator('view-theme-sep3'),
         menuItem('view-outline', '大纲显隐', actions.onToggleOutline, 'Ctrl+Shift+L'),
         // T7/R10 已接通：整窗源码模式。
         menuItem('view-source-mode', '源码模式', actions.onToggleSourceMode, 'Ctrl+/', () => true),

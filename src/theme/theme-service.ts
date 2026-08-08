@@ -2,8 +2,9 @@
  * `ThemeService` — 主题系统唯一 owner（T6, R6）。
  *
  * 职责：
- *   - 内置主题：warm-light（默认护眼浅色）/ dark，令牌定义在 tokens.css，
- *     通过 `<html data-theme="...">` 属性切换；
+ *   - 内置主题：6 套预设（warm-light 默认护眼浅色 / cool-light 冷调浅色 /
+ *     sepia 复古褐黄 / dark 护眼深色 / midnight 午夜深蓝 / forest 墨绿深色），
+ *     令牌定义在 tokens.css，通过 `<html data-theme="...">` 属性切换；
  *   - 首次启动默认 warm-light（按 Recipe 明确不跟随系统偏好），上次选择
  *     持久化到 localStorage（键 `lightink.theme`）；
  *   - 自定义主题：一份用户 CSS 文本，注入专用 <style>（热替换 = 重新设置
@@ -17,17 +18,27 @@
  * vitest 在 node 环境下以 fake 替换即可，无需 DOM。
  */
 
-export type BuiltinThemeId = 'warm-light' | 'dark';
+export type BuiltinThemeId =
+  | 'warm-light'
+  | 'cool-light'
+  | 'sepia'
+  | 'dark'
+  | 'midnight'
+  | 'forest';
 
 export interface BuiltinTheme {
   id: BuiltinThemeId;
   label: string;
 }
 
-/** 内置主题列表（顺序即切换顺序）。 */
+/** 内置主题列表（顺序即视图菜单展示顺序）。浅/深各三套，配色定义见 tokens.css。 */
 export const BUILTIN_THEMES: readonly BuiltinTheme[] = [
   { id: 'warm-light', label: '护眼浅色' },
-  { id: 'dark', label: '深色' },
+  { id: 'cool-light', label: '冷调浅色' },
+  { id: 'sepia', label: '复古褐黄' },
+  { id: 'dark', label: '护眼深色' },
+  { id: 'midnight', label: '午夜深蓝' },
+  { id: 'forest', label: '墨绿深色' },
 ];
 
 /** 首次启动的默认主题（Recipe：默认暖色护眼，非纯白背景）。 */
@@ -82,7 +93,14 @@ export function createStyleTagSlot(doc: Document): CustomStyleSlot {
 }
 
 function isBuiltinThemeId(value: string | null): value is BuiltinThemeId {
-  return value === 'warm-light' || value === 'dark';
+  return (
+    value === 'warm-light' ||
+    value === 'cool-light' ||
+    value === 'sepia' ||
+    value === 'dark' ||
+    value === 'midnight' ||
+    value === 'forest'
+  );
 }
 
 export class ThemeService {

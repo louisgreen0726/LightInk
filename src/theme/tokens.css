@@ -1,9 +1,13 @@
 /*
- * LightInk 主题令牌（T6）。唯一 owner：前端主题服务（src/theme/theme-service.ts）。
+ * LightInk 主题令牌（T6, R15）。唯一 owner：前端主题服务（src/theme/theme-service.ts）。
  *
- * 内置主题：
+ * 内置主题（6 套，浅/深各三）：
  *   - warm-light：默认护眼浅色，暖纸色背景（非纯白）；
- *   - dark：深色。
+ *   - cool-light：冷调浅色，冷灰蓝背景；
+ *   - sepia：复古褐黄，更深的暖褐；
+ *   - dark：护眼深色（暖炭灰）；
+ *   - midnight：午夜深蓝（冷调深色）；
+ *   - forest：墨绿深色（冷绿深色）。
  *
  * 自定义主题 = 用户 CSS 文件，由 ThemeService 注入 <style> 覆盖下列令牌
  * （:root 上的 warm-light 令牌作为自定义主题未定义项的回退）。
@@ -59,6 +63,110 @@
   --lightink-syntax-attr: #c2ab6a;
   --lightink-syntax-builtin: #b39ddb;
   --lightink-syntax-literal: #d19a5b;
+}
+
+/* 冷调浅色：冷灰蓝背景、蓝色强调。 */
+[data-theme="cool-light"] {
+  color-scheme: light;
+
+  --lightink-bg: #f3f5f8;
+  --lightink-bg-elevated: #ffffff;
+  --lightink-fg: #2f3742;
+  --lightink-muted: #7a8696;
+  --lightink-accent: #3a7bd5;
+  --lightink-accent-soft: #dfe7f3;
+  --lightink-border: #d3dae3;
+  --lightink-code-bg: #e8edf3;
+  --lightink-code-fg: #36404c;
+  --lightink-selection: rgba(58, 123, 213, 0.16);
+
+  --lightink-syntax-keyword: #9c4474;
+  --lightink-syntax-comment: #8b95a3;
+  --lightink-syntax-string: #2f7d5b;
+  --lightink-syntax-number: #b06a3c;
+  --lightink-syntax-function: #2f5fa6;
+  --lightink-syntax-title: #2f5fa6;
+  --lightink-syntax-attr: #7a5a8a;
+  --lightink-syntax-builtin: #5a4fb0;
+  --lightink-syntax-literal: #b06a3c;
+}
+
+/* 复古褐黄：更深的暖纸 / 褐色，旧书质感。 */
+[data-theme="sepia"] {
+  color-scheme: light;
+
+  --lightink-bg: #efe2c8;
+  --lightink-bg-elevated: #f6ecd6;
+  --lightink-fg: #43352a;
+  --lightink-muted: #95806a;
+  --lightink-accent: #9a5a2b;
+  --lightink-accent-soft: #e6d3a8;
+  --lightink-border: #d8c298;
+  --lightink-code-bg: #e4d4b0;
+  --lightink-code-fg: #4a3c2c;
+  --lightink-selection: rgba(154, 90, 43, 0.18);
+
+  --lightink-syntax-keyword: #8a3d5a;
+  --lightink-syntax-comment: #9a8a6f;
+  --lightink-syntax-string: #6a7a35;
+  --lightink-syntax-number: #9a5a2b;
+  --lightink-syntax-function: #3a5a8a;
+  --lightink-syntax-title: #3a5a8a;
+  --lightink-syntax-attr: #7a5a2a;
+  --lightink-syntax-builtin: #5a4a95;
+  --lightink-syntax-literal: #9a5a2b;
+}
+
+/* 午夜深蓝：冷调深色，蓝色强调。 */
+[data-theme="midnight"] {
+  color-scheme: dark;
+
+  --lightink-bg: #1b1f27;
+  --lightink-bg-elevated: #232833;
+  --lightink-fg: #c8d0dc;
+  --lightink-muted: #7a8493;
+  --lightink-accent: #6fa8dc;
+  --lightink-accent-soft: #2c3647;
+  --lightink-border: #353d4a;
+  --lightink-code-bg: #232a35;
+  --lightink-code-fg: #c2cad6;
+  --lightink-selection: rgba(111, 168, 220, 0.22);
+
+  --lightink-syntax-keyword: #d18ba6;
+  --lightink-syntax-comment: #6a7484;
+  --lightink-syntax-string: #a3c97a;
+  --lightink-syntax-number: #e0a060;
+  --lightink-syntax-function: #82b8e6;
+  --lightink-syntax-title: #82b8e6;
+  --lightink-syntax-attr: #cbb86a;
+  --lightink-syntax-builtin: #b39ddb;
+  --lightink-syntax-literal: #e0a060;
+}
+
+/* 墨绿深色：冷绿深色，绿色强调。 */
+[data-theme="forest"] {
+  color-scheme: dark;
+
+  --lightink-bg: #1c2220;
+  --lightink-bg-elevated: #242b28;
+  --lightink-fg: #cbd6cf;
+  --lightink-muted: #7c8a82;
+  --lightink-accent: #6fae7d;
+  --lightink-accent-soft: #2c3833;
+  --lightink-border: #384540;
+  --lightink-code-bg: #232b28;
+  --lightink-code-fg: #c0ccc5;
+  --lightink-selection: rgba(111, 174, 125, 0.22);
+
+  --lightink-syntax-keyword: #d59a9a;
+  --lightink-syntax-comment: #6f7d75;
+  --lightink-syntax-string: #b7c97a;
+  --lightink-syntax-number: #d6b06a;
+  --lightink-syntax-function: #7fb0c4;
+  --lightink-syntax-title: #7fb0c4;
+  --lightink-syntax-attr: #c2b06a;
+  --lightink-syntax-builtin: #b39ddb;
+  --lightink-syntax-literal: #d6b06a;
 }
 
 /* hljs 类 → 主题令牌映射：T5 的 code-highlight 只输出 hljs-* 类名，
