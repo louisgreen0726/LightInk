@@ -1057,9 +1057,12 @@ body.lightink-outline-resizing * {
   color: var(--lightink-accent);
 }
 
-/* 源码模式选区（R10）：textarea 文字透明（高亮层在背后渲染），全局 18%
+/* 源码模式选区（R10/R15）：textarea 文字透明（高亮层在背后渲染），全局 18%
    透明度的 selection 洗色几乎不可见，用户感知为「无法选中」——用更强的
-   accent 洗色让选中范围明确可读（文字仍由背后高亮层透出）。 */
+   accent 色让选中范围明确可读。R15：selection-strong 必须为不透明实色
+   （半透明会逐 token 与底层语法色混合出不均色块）；实色会遮住背后高亮层
+   字形，故 ::selection 同时指定前景色，由 textarea 把选中文字以主题前景色
+   重绘（未选中文字仍由背后高亮层透出，语法色不变）。 */
 .lightink-source-editor {
   user-select: text;
   scrollbar-width: thin;
@@ -1068,6 +1071,7 @@ body.lightink-outline-resizing * {
 
 .lightink-source-editor::selection {
   background: var(--lightink-selection-strong);
+  color: var(--lightink-fg);
 }
 
 /* 源码叠加层的高亮 pre 位于 .lightink-tab-host 内：中和代码块外壳样式

@@ -15,6 +15,9 @@
  * 令牌约定：
  *   - --lightink-selection：常规选区洗色；
  *   - --lightink-selection-strong：源码模式选区（透明文字 textarea 叠加高亮层）。
+ *     必须是不透明实色（color-mix）：半透明洗刷会逐 token 与底层 hljs 语法色
+ *     混合出不同颜色，且被高亮层字形镂空显得块状断裂；实色保证任意底层内容上
+ *     选区颜色一致。选中文字由 textarea 的 ::selection 前景色重绘（见 theme.css）。
  *
  * 自定义主题 = 用户 CSS 文件，由 ThemeService 注入 <style> 覆盖下列令牌
  * （:root 上的 warm-light 令牌作为自定义主题未定义项的回退）。
@@ -36,7 +39,7 @@
   --lightink-code-bg: #f7f3ea;
   --lightink-code-fg: #2c2923;
   --lightink-selection: rgba(154, 88, 40, 0.2);
-  --lightink-selection-strong: rgba(154, 88, 40, 0.38);
+  --lightink-selection-strong: color-mix(in srgb, var(--lightink-accent) 38%, var(--lightink-bg));
   --lightink-danger: #a83a2e;
   --lightink-overlay: rgba(47, 43, 36, 0.36);
   --lightink-shadow: 0 4px 16px rgba(47, 43, 36, 0.1);
@@ -90,7 +93,7 @@
   --lightink-code-bg: #eef2f6;
   --lightink-code-fg: #1f2530;
   --lightink-selection: rgba(42, 102, 173, 0.18);
-  --lightink-selection-strong: rgba(42, 102, 173, 0.35);
+  --lightink-selection-strong: color-mix(in srgb, var(--lightink-accent) 35%, var(--lightink-bg));
   --lightink-danger: #b03a30;
   --lightink-overlay: rgba(36, 42, 51, 0.36);
   --lightink-shadow: 0 4px 16px rgba(36, 42, 51, 0.1);
@@ -137,7 +140,7 @@
   --lightink-code-bg: #25221c;
   --lightink-code-fg: #d6ccb6;
   --lightink-selection: rgba(212, 160, 102, 0.28);
-  --lightink-selection-strong: rgba(212, 160, 102, 0.45);
+  --lightink-selection-strong: color-mix(in srgb, var(--lightink-accent) 45%, var(--lightink-bg));
   --lightink-danger: #d4786a;
   --lightink-overlay: rgba(0, 0, 0, 0.5);
   --lightink-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
@@ -184,7 +187,7 @@
   --lightink-code-bg: #1a2029;
   --lightink-code-fg: #c8d0db;
   --lightink-selection: rgba(126, 175, 223, 0.26);
-  --lightink-selection-strong: rgba(126, 175, 223, 0.42);
+  --lightink-selection-strong: color-mix(in srgb, var(--lightink-accent) 42%, var(--lightink-bg));
   --lightink-danger: #d07878;
   --lightink-overlay: rgba(0, 0, 0, 0.5);
   --lightink-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
