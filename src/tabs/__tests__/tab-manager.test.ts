@@ -630,4 +630,54 @@ describe('R13 外部文件变更检测', () => {
     expect(confirmReload).not.toHaveBeenCalled();
     expect(tab!.editor.getMarkdown()).toBe('original'); // 不自动改动内容
   });
+
+  it('聚焦双通道并发触发只弹一次冲突对话框（守卫在首个 await 前同步置位）', async () => {
+    let baselineDone = false;
+    let pendingResolve: ((v: { mtime_ms: number; size: number }) => void) | null = null;
+    const statFile = vi.fn((_path: string) => {
+      if (!baselineDone) {
+        return Promise.resolve({ mtime_ms: 1000, size: 5 });
+      }
+      // 检测期 stat 挂起：模拟两个并发调用都在等待磁盘结果。
+      return new Promise<{ mtime_ms: number; size: number }>((resolve) => {
+        pendingResolve = resolve;
+      });
+    });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'keep');
+    const harness = makeHarness({ statFile, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    baselineDone = true;
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    const first = harness.manager.checkActiveExternalChange();
+    const second = harness.manager.checkActiveExternalChange(); // DOM focus + Tauri 焦点双通道
+    pendingResolve!({ mtime_ms: 2000, size: 9 });
+    await Promise.all([first, second]);
+    expect(confirmConflict).toHaveBeenCalledTimes(1);
+    expect(tab!.dirty).toBe(true); // keep：保留内存脏态
+  });
+
+  it('stat 失败的一次性可见提示：每段不可读期只提示一次，恢复可读后重置', async () => {
+    let fail = false;
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const statFile = vi.fn(async () => {
+      if (fail) throw new Error('gone');
+      return stat.fn();
+    });
+    const notify = vi.fn();
+    const harness = makeHarness({ statFile, notifyExternalUnreadable: notify });
+    readFileFn(harness).mockResolvedValue('original');
+    await harness.manager.openFile('C:\\a.md');
+    fail = true;
+    await harness.manager.checkActiveExternalChange();
+    await harness.manager.checkActiveExternalChange(); // 同一段不可读期：不重复提示
+    expect(notify).toHaveBeenCalledTimes(1);
+    fail = false; // 恢复可读 → 重置一次性标志
+    await harness.manager.checkActiveExternalChange();
+    expect(notify).toHaveBeenCalledTimes(1);
+    fail = true; // 新的不可读期 → 再提示一次
+    await harness.manager.checkActiveExternalChange();
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
 });

@@ -326,4 +326,25 @@ describe('TabManager.autosaveDirtyTabs', () => {
     expect(a.dirty).toBe(false);
     expect(b.dirty).toBe(false);
   });
+
+  it('冲突去重：同一外部变更只弹一次（keep 后下 tick 静默跳过），磁盘再变会再提示', async () => {
+    const harness = makeHarness();
+    const tab = await openDirtyFileTab(harness, '/docs/dup.md', '内存编辑');
+    harness.statFile.mockResolvedValue({ mtime_ms: 2000, size: 0 });
+
+    await harness.manager.autosaveDirtyTabs(); // 首次：弹冲突（keep），不写盘
+    expect(harness.confirmExternalConflict).toHaveBeenCalledTimes(1);
+    expect(harness.roundtrip.writeFile).not.toHaveBeenCalled();
+    expect(tab.dirty).toBe(true);
+
+    await harness.manager.autosaveDirtyTabs(); // 同一磁盘态：静默跳过，不重弹
+    expect(harness.confirmExternalConflict).toHaveBeenCalledTimes(1);
+    expect(tab.dirty).toBe(true);
+
+    harness.statFile.mockResolvedValue({ mtime_ms: 3000, size: 1 }); // 磁盘再次外部变更
+    await harness.manager.autosaveDirtyTabs(); // 新磁盘态：再次提示
+    expect(harness.confirmExternalConflict).toHaveBeenCalledTimes(2);
+    expect(harness.roundtrip.writeFile).not.toHaveBeenCalled();
+    expect(tab.dirty).toBe(true);
+  });
 });

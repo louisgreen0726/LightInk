@@ -518,7 +518,7 @@ shell = createAppShell(
     onFind: () => openFindPanel(),
     // T6/R10：全选（双模式）；含未保存新标签在内的任意活动文档均可用。
     onSelectAll: () => selectAllActive(),
-    hasActiveDocument: () => manager.activeTab !== null,
+    hasActiveDocument: () => manager?.activeTab != null,
     onInsertElement: insertElement,
     onToggleTheme: () => {
       themeService.toggle();
@@ -770,6 +770,14 @@ manager = new TabManager({
     void invoke('create_version', { filePath, content }).catch(() => undefined);
   },
   onLinkNavigate: (href) => handleLinkNavigation(href),
+  // R13：轮询发现活动文件被删/不可读时的一次性可见提示（TabManager 按不可读期去重）。
+  notifyExternalUnreadable: (tab) => {
+    const message =
+      i18n.locale === 'en'
+        ? `The file is unreadable or was deleted externally:\n${tab.filePath ?? tab.title}`
+        : `文件不可读或已被外部删除：\n${tab.filePath ?? tab.title}`;
+    void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
+  },
   confirmLinkOpen: (href) =>
     showOpenLinkConfirm(document, href, {
       title: i18n.t('dialog.link.openTitle'),

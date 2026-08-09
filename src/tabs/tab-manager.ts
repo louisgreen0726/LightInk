@@ -85,6 +85,11 @@ export interface TabManagerDeps {
   confirmExternalConflict?: (
     tab: Pick<TabState, 'title' | 'filePath'>,
   ) => Promise<ExternalConflictChoice>;
+  /**
+   * R13：轮询发现活动文件不可读/已被删除时的一次性可见提示（每段不可读期
+   * 只触发一次，恢复可读后重置）。缺省保持 console-only（reportError）。
+   */
+  notifyExternalUnreadable?: (tab: Pick<TabState, 'title' | 'filePath'>) => void;
   /** 文件/对话框流程依赖（生产为真实 Tauri 调用）。 */
   roundtrip?: RoundtripDeps;
   writeSnapshot?: (key: string, content: string) => Promise<void>;
@@ -165,6 +170,7 @@ type TabManagerOptionalUi =
   | 'confirmLinkOpen'
   | 'confirmExternalReload'
   | 'confirmExternalConflict'
+  | 'notifyExternalUnreadable'
   | 'formatUntitledTitle'
   | 'formatUntitledRestoredTitle';
 
@@ -180,6 +186,17 @@ export class TabManager {
   private snapshotWrites = new Map<string, Promise<void>>();
   /** R13：外部变更弹窗进行中标志，避免轮询/保存前重复堆叠弹窗。 */
   private externalDialogOpen = false;
+  /**
+   * R13：外部变更检测进行中标志——必须在首个 await 之前同步置位。窗口聚焦时
+   * DOM focus 与 Tauri onFocusChanged 双通道成对触发，若只在弹窗前置
+   * externalDialogOpen，两个并发调用都会通过入口检查、各自 await stat 后
+   * 堆叠重复弹窗（Delivery Review P2[blocking]）。
+   */
+  private externalCheckRunning = false;
+  /** R14：autosave 已提示过冲突的磁盘态（按 tab），同一外部变更只弹一次。 */
+  private autosaveConflictPrompted = new Map<string, string>();
+  /** R13：stat 失败（文件被删/不可读）已做可见提示的 tab，恢复可读后重置。 */
+  private externalUnreadableNotified = new Set<string>();
 
   constructor(deps: TabManagerDeps) {
     this.deps = {
@@ -208,6 +225,7 @@ export class TabManager {
       confirmLinkOpen: deps.confirmLinkOpen,
       confirmExternalReload: deps.confirmExternalReload,
       confirmExternalConflict: deps.confirmExternalConflict,
+      notifyExternalUnreadable: deps.notifyExternalUnreadable,
     };
   }
 
@@ -422,6 +440,8 @@ export class TabManager {
       }
     }
     this.cancelPendingSnapshot(id);
+    this.autosaveConflictPrompted.delete(id);
+    this.externalUnreadableNotified.delete(id);
     await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
       this.deps.reportError('清除快照失败', error);
     });
@@ -666,54 +686,71 @@ export class TabManager {
 
   /**
    * R13 检测入口：由窗口聚焦 + 定时轮询（main.ts）调用，检查活动文件是否被
-   * 外部修改并按脏态分派提示。弹窗进行中（externalDialogOpen）时跳过避免堆叠。
+   * 外部修改并按脏态分派提示。弹窗进行中（externalDialogOpen）或上一次检测
+   * 仍在进行（externalCheckRunning，聚焦双通道并发）时跳过避免堆叠。
    *   - 无路径 / 无基线 → 跳过（未保存过不检测）；
-   *   - stat 失败 → 提示文件不可读/已删除，不自动动作（R13 失败行为）；
+   *   - stat 失败 → 上报错误 + 一次性可见提示（每段不可读期只提示一次，
+   *     恢复可读后重置），不自动动作（R13 失败行为）；
    *   - 未脏 + 磁盘更新 → 提示「可重新加载」(reload/ignore)；
    *   - 已脏 + 磁盘更新 → 冲突对话框 (reload/keep/overwrite)。
    */
   async checkActiveExternalChange(): Promise<void> {
-    if (this.externalDialogOpen) return;
-    const tab = this.activeTab;
-    if (tab === null || tab.filePath === null || tab.lastSavedMtime === null) {
-      return;
-    }
-    let disk: FileStat;
+    // 同步置位必须在首个 await 之前：DOM focus 与 Tauri onFocusChanged 成对
+    // 触发时，后到的调用在入口即被拦下，不会各自 await stat 后堆叠弹窗。
+    if (this.externalDialogOpen || this.externalCheckRunning) return;
+    this.externalCheckRunning = true;
     try {
-      disk = await this.deps.statFile(tab.filePath);
-    } catch (error) {
-      this.deps.reportError(`文件不可读或已被删除: ${tab.filePath}`, error);
-      return;
-    }
-    if (!isDiskNewer(tab.lastSavedMtime, disk)) {
-      return;
-    }
-    this.externalDialogOpen = true;
-    try {
-      if (!tab.dirty) {
-        const choice = (await this.deps.confirmExternalReload?.(tab)) ?? 'ignore';
-        if (choice === 'reload') {
-          await this.reloadFromDisk(tab);
-        } else {
-          // 忽略：以当前磁盘态为基线，避免每次轮询重复弹窗（接受内容分歧）。
-          tab.lastSavedMtime = disk;
+      const tab = this.activeTab;
+      if (tab === null || tab.filePath === null || tab.lastSavedMtime === null) {
+        return;
+      }
+      let disk: FileStat;
+      try {
+        disk = await this.deps.statFile(tab.filePath);
+        // 恢复可读：重置一次性提示标志（下段不可读期可再提示）。
+        this.externalUnreadableNotified.delete(tab.id);
+      } catch (error) {
+        this.deps.reportError(`文件不可读或已被删除: ${tab.filePath}`, error);
+        // stat 失败的可观察提示（Delivery Review P2[advisory]）：每段不可读期
+        // 只浮出一次，避免 3s 轮询重复打扰；未注入时保持 console-only。
+        if (!this.externalUnreadableNotified.has(tab.id)) {
+          this.externalUnreadableNotified.add(tab.id);
+          this.deps.notifyExternalUnreadable?.(tab);
         }
         return;
       }
-      const choice = (await this.deps.confirmExternalConflict?.(tab)) ?? 'keep';
-      if (choice === 'reload') {
-        await this.reloadFromDisk(tab);
-      } else if (choice === 'overwrite') {
-        // 用户明确选择覆盖：先把基线对齐到当前磁盘态，避免 saveTab 内的
-        // 保存前闸门重复弹窗；saveTab 写入后会再以写后 stat 刷新基线。
-        tab.lastSavedMtime = disk;
-        await this.saveTab(tab.id);
-      } else {
-        // 保留内存脏态，但更新基线避免重复弹窗；用户后续主动保存会再经保存前闸门。
-        tab.lastSavedMtime = disk;
+      if (!isDiskNewer(tab.lastSavedMtime, disk)) {
+        return;
+      }
+      this.externalDialogOpen = true;
+      try {
+        if (!tab.dirty) {
+          const choice = (await this.deps.confirmExternalReload?.(tab)) ?? 'ignore';
+          if (choice === 'reload') {
+            await this.reloadFromDisk(tab);
+          } else {
+            // 忽略：以当前磁盘态为基线，避免每次轮询重复弹窗（接受内容分歧）。
+            tab.lastSavedMtime = disk;
+          }
+          return;
+        }
+        const choice = (await this.deps.confirmExternalConflict?.(tab)) ?? 'keep';
+        if (choice === 'reload') {
+          await this.reloadFromDisk(tab);
+        } else if (choice === 'overwrite') {
+          // 用户明确选择覆盖：先把基线对齐到当前磁盘态，避免 saveTab 内的
+          // 保存前闸门重复弹窗；saveTab 写入后会再以写后 stat 刷新基线。
+          tab.lastSavedMtime = disk;
+          await this.saveTab(tab.id);
+        } else {
+          // 保留内存脏态，但更新基线避免重复弹窗；用户后续主动保存会再经保存前闸门。
+          tab.lastSavedMtime = disk;
+        }
+      } finally {
+        this.externalDialogOpen = false;
       }
     } finally {
-      this.externalDialogOpen = false;
+      this.externalCheckRunning = false;
     }
   }
 
@@ -722,17 +759,40 @@ export class TabManager {
    * 「已有路径且脏」的 tab 走与手动保存完全相同的 saveTab 流——保存前
    * mtime 闸门发现外部变更即弹 R13 冲突对话框并中止写入，绝不静默覆盖；
    * 无路径 tab 跳过（不触发另存为对话框，继续靠崩溃快照）；写失败保持
-   * 脏标记，下个 tick 自然再试。外部变更弹窗进行中跳过本次 tick，避免
-   * 弹窗堆叠；顺序 await 保证多个脏 tab 的冲突提示不并发。
+   * 脏标记，下个 tick 自然再试。外部变更弹窗/检测进行中跳过本次 tick，
+   * 避免弹窗堆叠；顺序 await 保证多个脏 tab 的冲突提示不并发。
+   *
+   * 冲突去重（T10 review P2[advisory]）：autosave 每 30s 重试同一保存流，
+   * 若用户在某次冲突弹窗选了「保留内存」，不加去重则每 tick 重弹同一对话框。
+   * 这里按 tab 记录已提示过的磁盘态（mtime:size），同一外部变更只弹一次；
+   * 磁盘再变（新 mtime/size）时会再次提示。不能用更新基线的方式去重——
+   * 否则后续手动保存的保存前闸门会被绕过（R13 核心禁令）。
    */
   async autosaveDirtyTabs(): Promise<void> {
-    if (this.externalDialogOpen) {
+    if (this.externalDialogOpen || this.externalCheckRunning) {
       return;
     }
     for (const tab of [...this.tabs]) {
-      if (tab.filePath !== null && tab.dirty) {
-        await this.saveTab(tab.id);
+      if (tab.filePath === null || !tab.dirty) {
+        continue;
       }
+      if (tab.lastSavedMtime !== null) {
+        try {
+          const disk = await this.deps.statFile(tab.filePath);
+          if (isDiskNewer(tab.lastSavedMtime, disk)) {
+            const key = `${disk.mtime_ms}:${disk.size}`;
+            if (this.autosaveConflictPrompted.get(tab.id) === key) {
+              continue; // 同一外部变更已提示过且用户选择保留内存：本次静默跳过。
+            }
+            this.autosaveConflictPrompted.set(tab.id, key);
+          } else {
+            this.autosaveConflictPrompted.delete(tab.id);
+          }
+        } catch {
+          // stat 失败：交 saveTab 的保存前闸门按既有语义处理（不吞错误路径）。
+        }
+      }
+      await this.saveTab(tab.id);
     }
   }
 
