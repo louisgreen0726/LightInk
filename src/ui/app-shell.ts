@@ -404,46 +404,7 @@ export function createAppShell(
     }
   });
 
-  // Keep tabs chrome open while a tab context menu is up (opened from main).
-  tabBar.addEventListener('contextmenu', (event) => {
-    const target = event.target;
-    const tabBtn =
-      target instanceof HTMLElement ? target.closest<HTMLElement>('[data-tab-id]') : null;
-    if (tabBtn === null) {
-      return;
-    }
-    setTabsHold(true);
-    const release = (ev: Event): void => {
-      const node = ev.target;
-      if (node instanceof Node) {
-        if (tabBar.contains(node)) {
-          return;
-        }
-        if (node instanceof Element && node.closest('.lightink-context-menu') !== null) {
-          return;
-        }
-      }
-      setTabsHold(false);
-      document.removeEventListener('pointerdown', release, true);
-      document.removeEventListener('keydown', onKey, true);
-    };
-    const onKey = (ev: KeyboardEvent): void => {
-      if (ev.key === 'Escape') {
-        release(ev);
-      }
-    };
-    const attach =
-      typeof setTimeout === 'undefined'
-        ? (fn: () => void) => {
-            fn();
-            return 0;
-          }
-        : (fn: () => void) => setTimeout(fn, 0);
-    attach(() => {
-      document.addEventListener('pointerdown', release, true);
-      document.addEventListener('keydown', onKey, true);
-    });
-  });
+  // Tab context-menu hold is owned by main via setTabsHold + createContextMenu onClose.
 
   syncMenuChrome();
   syncTabsChrome();

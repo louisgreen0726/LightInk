@@ -128,3 +128,125 @@ describe('createContextMenu (factory shape)', () => {
     expect(typeof createContextMenu).toBe('function');
   });
 });
+
+describe('createContextMenu onClose lifecycle', () => {
+  class FakeEl {
+    className = '';
+    style: Record<string, string> = {};
+    children: FakeEl[] = [];
+    parent: FakeEl | null = null;
+    disabled = false;
+    type = '';
+    textContent = '';
+    private readonly listeners = new Map<string, Array<(e: { target?: unknown }) => void>>();
+
+    constructor(readonly tagName: string) {}
+
+    setAttribute(): void {
+      /* no-op */
+    }
+
+    appendChild(child: FakeEl): FakeEl {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+
+    append(...kids: FakeEl[]): void {
+      for (const kid of kids) this.appendChild(kid);
+    }
+
+    remove(): void {
+      if (this.parent !== null) {
+        this.parent.children = this.parent.children.filter((c) => c !== this);
+        this.parent = null;
+      }
+    }
+
+    contains(node: unknown): boolean {
+      if (node === this) return true;
+      return this.children.some((c) => c.contains(node));
+    }
+
+    getBoundingClientRect(): { right: number; bottom: number; width: number; height: number } {
+      return { right: 10, bottom: 10, width: 10, height: 10 };
+    }
+
+    addEventListener(type: string, fn: (e: { target?: unknown }) => void): void {
+      const list = this.listeners.get(type) ?? [];
+      list.push(fn);
+      this.listeners.set(type, list);
+    }
+
+    fire(type: string, target?: unknown): void {
+      for (const fn of this.listeners.get(type) ?? []) {
+        fn({ target });
+      }
+    }
+  }
+
+  class FakeDoc {
+    body = new FakeEl('body');
+    private readonly listeners = new Map<string, Array<(e: { key?: string; target?: unknown }) => void>>();
+
+    createElement(tag: string): FakeEl {
+      return new FakeEl(tag);
+    }
+
+    addEventListener(
+      type: string,
+      fn: (e: { key?: string; target?: unknown }) => void,
+      _capture?: boolean,
+    ): void {
+      const list = this.listeners.get(type) ?? [];
+      list.push(fn);
+      this.listeners.set(type, list);
+    }
+
+    removeEventListener(
+      type: string,
+      fn: (e: { key?: string; target?: unknown }) => void,
+      _capture?: boolean,
+    ): void {
+      const list = this.listeners.get(type);
+      if (list === undefined) return;
+      this.listeners.set(
+        type,
+        list.filter((x) => x !== fn),
+      );
+    }
+
+    fire(type: string, event: { key?: string; target?: unknown }): void {
+      for (const fn of this.listeners.get(type) ?? []) {
+        fn(event);
+      }
+    }
+  }
+
+  const originalWindow = (globalThis as { window?: unknown }).window;
+
+  it('invokes onClose once when close() is called', () => {
+    const doc = new FakeDoc();
+    (globalThis as { window: { innerWidth: number; innerHeight: number } }).window = {
+      innerWidth: 800,
+      innerHeight: 600,
+    };
+    let closes = 0;
+    const handle = createContextMenu(
+      [{ id: 'x', label: 'X', action: () => undefined }],
+      { x: 1, y: 1 },
+      doc as unknown as Document,
+      { onClose: () => {
+        closes += 1;
+      } },
+    );
+    handle.close();
+    handle.close();
+    expect(closes).toBe(1);
+    if (originalWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window;
+    } else {
+      (globalThis as { window: unknown }).window = originalWindow;
+    }
+  });
+});

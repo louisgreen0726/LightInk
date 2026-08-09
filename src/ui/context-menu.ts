@@ -28,11 +28,17 @@ export interface ContextMenuHandle {
   close(): void;
 }
 
+export interface ContextMenuOptions {
+  /** Called once when the menu is closed (item click, outside pointer, Esc, or close()). */
+  onClose?: () => void;
+}
+
 /** 在 (x,y) 处渲染一个浮动上下文菜单；外部 pointerdown / Esc / 滚动关闭。 */
 export function createContextMenu(
   items: MenuItem[],
   position: { x: number; y: number },
   doc: Document = document,
+  options: ContextMenuOptions = {},
 ): ContextMenuHandle {
   const element = doc.createElement('div');
   element.className = 'lightink-context-menu';
@@ -41,6 +47,7 @@ export function createContextMenu(
   element.style.left = `${position.x}px`;
   element.style.top = `${position.y}px`;
   element.style.zIndex = '2000';
+  let closed = false;
 
   for (const item of items) {
     if (item.separator === true) {
@@ -79,9 +86,14 @@ export function createContextMenu(
     if (event.key === 'Escape') close();
   };
   const close = (): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
     element.remove();
     doc.removeEventListener('pointerdown', onPointerDown, true);
     doc.removeEventListener('keydown', onKeyDown, true);
+    options.onClose?.();
   };
 
   doc.addEventListener('pointerdown', onPointerDown, true);

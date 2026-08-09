@@ -617,7 +617,11 @@ function showTabContextMenu(tabId: string, x: number, y: number): void {
       void invoke('reveal_path_in_files', { path }).catch(() => undefined);
     },
   });
-  createContextMenu(items, { x, y });
+  // Keep tabs chrome open while the menu is up; release on every close path.
+  shell.setTabsHold(true);
+  createContextMenu(items, { x, y }, document, {
+    onClose: () => shell.setTabsHold(false),
+  });
 }
 
 shell.editorArea.addEventListener('contextmenu', (event) => {
