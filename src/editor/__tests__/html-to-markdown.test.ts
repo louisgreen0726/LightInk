@@ -112,4 +112,18 @@ describe('convertHtmlToMarkdown（R8 allowlist）', () => {
     );
     expect(md).toContain('a\\|b');
   });
+
+  it('代码块内连续空行原样保留（规整不穿透围栏）', () => {
+    const md = convertHtmlToMarkdown(
+      '<pre><code>fn a(){\n  x();\n\n\n\n  y();\n}</code></pre>',
+    );
+    expect(md).toBe('```\nfn a(){\n  x();\n\n\n\n  y();\n}\n```');
+  });
+
+  it('代码块行尾空白保留；块外多空行仍被压缩', () => {
+    const md = convertHtmlToMarkdown(
+      '<p>段一</p><pre><code>line one  \nline two</code></pre><p>段二</p>',
+    );
+    expect(md).toBe('段一\n\n```\nline one  \nline two\n```\n\n段二');
+  });
 });

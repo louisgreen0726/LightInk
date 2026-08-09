@@ -223,7 +223,18 @@ export class SourceView {
       event.preventDefault();
       const ta2 = this.textarea;
       if (ta2 === null) return;
-      ta2.setRangeText(md, ta2.selectionStart, ta2.selectionEnd, 'end');
+      // 用 execCommand('insertText') 走 textarea 原生 undo 栈，Ctrl+Z 可回退
+      // （同 R2 源码替换取舍）；宿主不支持时回退 setRangeText，保证内容不丢。
+      ta2.focus();
+      let inserted = false;
+      try {
+        inserted = doc.execCommand('insertText', false, md);
+      } catch {
+        inserted = false;
+      }
+      if (!inserted) {
+        ta2.setRangeText(md, ta2.selectionStart, ta2.selectionEnd, 'end');
+      }
       this.refreshFromTextarea();
     };
     textarea.addEventListener('paste', onPaste);

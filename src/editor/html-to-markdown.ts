@@ -468,15 +468,47 @@ function emitTable(table: Node): string {
   return lines.join('\n');
 }
 
-/** 规整：折叠 3+ 连续换行为 2，去首尾空白。 */
+/**
+ * 规整空白：折叠非代码区段的 3+ 连续空行、去非代码行尾空白、去首尾空白。
+ * 关键：代码块围栏内的内容原样保留——按行扫描跟踪 ``` 围栏开关，仅对非代码行规整，
+ * 避免静默压缩代码内空行、剥离行尾空白（篡改代码内容）。
+ */
 function normalize(md: string): string {
-  return md
-    .replace(/\r\n?/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .split('\n')
-    .map((line) => line.replace(/[ \t]+$/g, ''))
-    .join('\n')
-    .trim();
+  const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  let inCode = false;
+  // 第一遍：非代码行去尾随空白；围栏行与代码行原样。
+  const stripped = lines.map((line) => {
+    if (/^```/.test(line)) {
+      inCode = !inCode;
+      return line;
+    }
+    return inCode ? line : line.replace(/[ \t]+$/g, '');
+  });
+  // 第二遍：非代码区段内连续空行压缩至最多一个；代码块内空行原样保留。
+  const out: string[] = [];
+  inCode = false;
+  let blankRun = 0;
+  for (const line of stripped) {
+    if (/^```/.test(line)) {
+      inCode = !inCode;
+      blankRun = 0;
+      out.push(line);
+      continue;
+    }
+    if (inCode) {
+      blankRun = 0;
+      out.push(line);
+      continue;
+    }
+    if (line === '') {
+      blankRun += 1;
+      if (blankRun <= 1) out.push(line);
+    } else {
+      blankRun = 0;
+      out.push(line);
+    }
+  }
+  return out.join('\n').trim();
 }
 
 /**
