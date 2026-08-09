@@ -467,6 +467,9 @@ export function createAppShell(
         if (tab.id === activeId) {
           btn.classList.add('active');
         }
+        if (tab.dirty) {
+          btn.classList.add('dirty');
+        }
         btn.textContent = tab.dirty ? `● ${tab.title}` : tab.title;
         btn.addEventListener('click', () => callbacks.onSwitch(tab.id));
         const close = document.createElement('span');

@@ -65,6 +65,13 @@ describe('tokens.css 内置主题', () => {
     expect((r + g + b) / 3).toBeLessThan(0x60);
   });
 
+  it.each(['warm-light', 'dark'])('%s 定义 chrome/overlay elevation 令牌 (R5)', (id) => {
+    const block = themeBlock(id);
+    for (const token of ['--lightink-overlay', '--lightink-shadow', '--lightink-shadow-strong']) {
+      expect(tokenValue(block, token).length).toBeGreaterThan(0);
+    }
+  });
+
   it.each(['warm-light', 'dark'])('%s 定义全部主要语法令牌', (id) => {
     const block = themeBlock(id);
     for (const token of [
