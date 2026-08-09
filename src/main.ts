@@ -43,6 +43,7 @@ import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
 import { ShortcutRegistry, type ShortcutAction } from './ui/shortcuts.js';
+import { formatDocumentTitle } from './ui/window-title.js';
 import { showVersionsModal, type VersionMeta } from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
@@ -349,12 +350,9 @@ function renderTabBar(): void {
 /** Window identity for immersive shell: active title + dirty without a permanent tab strip. */
 function syncDocumentTitle(): void {
   const tab = manager.activeTab;
-  if (tab === null) {
-    document.title = '轻墨 LightInk';
-    return;
-  }
-  const dirty = tab.dirty ? '● ' : '';
-  document.title = `${dirty}${tab.title} — 轻墨 LightInk`;
+  document.title = formatDocumentTitle(
+    tab === null ? null : { title: tab.title, dirty: tab.dirty },
+  );
 }
 
 /** Cycle active tab without requiring the tab bar to be revealed. */

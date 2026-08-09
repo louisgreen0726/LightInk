@@ -49,4 +49,20 @@ describe('renderCheatsheet', () => {
     const list = renderCheatsheet([], fakeDoc()) as unknown as FakeEl;
     expect(list.children).toHaveLength(0);
   });
+
+  it('renders immersive tab chrome / cycle bindings used by main SHORTCUT_LABELS', () => {
+    // Mirrors main.ts SHORTCUT_LABELS + DEFAULT_SHORTCUTS for R3 discoverability.
+    const bindings: CheatBinding[] = [
+      { label: '标签栏显隐', shortcut: 'Alt+T' },
+      { label: '下一个标签', shortcut: 'Ctrl+Tab' },
+      { label: '上一个标签', shortcut: 'Ctrl+Shift+Tab' },
+    ];
+    const list = renderCheatsheet(bindings, fakeDoc()) as unknown as FakeEl;
+    expect(list.children).toHaveLength(3);
+    expect(list.children.map((li) => [li.children[0].textContent, li.children[1].textContent])).toEqual([
+      ['标签栏显隐', 'Alt+T'],
+      ['下一个标签', 'Ctrl+Tab'],
+      ['上一个标签', 'Ctrl+Shift+Tab'],
+    ]);
+  });
 });
