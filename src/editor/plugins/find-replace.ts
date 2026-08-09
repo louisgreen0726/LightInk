@@ -195,7 +195,23 @@ export function createFindReplaceProsePlugin(): Plugin {
     },
     view(editorView) {
       findReplaceViews.set(editorView.dom, editorView);
+      let lastKey = '';
+      let lastDoc = editorView.state.doc;
       return {
+        update(view) {
+          // 文档变了：先通知壳层（脏标记 / 字数栏 / 大纲），再同步查找面板。
+          if (view.state.doc !== lastDoc) {
+            lastDoc = view.state.doc;
+            emitFindReplaceDocChange(view);
+          }
+          const fr = pluginStateOf(view.state);
+          if (fr === null) return;
+          // 任意文档变更/查询变更后，命中列表或当前项可能变；通知壳层面板。
+          const key = `${fr.query}|${fr.active}|${fr.matches.length}|${view.state.doc.content.size}`;
+          if (key === lastKey) return;
+          lastKey = key;
+          emitFindReplaceStatus(view);
+        },
         destroy() {
           findReplaceViews.delete(editorView.dom);
         },
@@ -284,6 +300,68 @@ export function replaceAllTr(
 
 const findReplaceViews = new Map<HTMLElement, EditorView>();
 
+/**
+ * 查找状态变化订阅者（粘贴/键入/替换等任意 PM 事务后触发）。
+ * 壳层面板靠此刷新 1/N——仅靠宿主 `input` 会漏掉 Milkdown insert()/部分粘贴路径。
+ */
+export type FindReplaceStatusListener = (
+  view: EditorView,
+  status: { query: string; active: number; total: number },
+) => void;
+
+const findReplaceStatusListeners = new Set<FindReplaceStatusListener>();
+
+/** 订阅查找状态变化；返回取消订阅函数。 */
+export function subscribeFindReplaceStatus(listener: FindReplaceStatusListener): () => void {
+  findReplaceStatusListeners.add(listener);
+  return () => {
+    findReplaceStatusListeners.delete(listener);
+  };
+}
+
+function emitFindReplaceStatus(view: EditorView): void {
+  if (findReplaceStatusListeners.size === 0) return;
+  const fr = pluginStateOf(view.state);
+  if (fr === null) return;
+  const status = { query: fr.query, active: fr.active, total: fr.matches.length };
+  for (const listener of findReplaceStatusListeners) {
+    try {
+      listener(view, status);
+    } catch {
+      // 壳层监听器异常不影响编辑器事务。
+    }
+  }
+}
+
+/**
+ * WYSIWYG 文档变更订阅（任意 docChanged 事务后）。
+ * 粘贴经 handlePaste/insert() 时宿主常只收到 paste、收不到事后 input，
+ * 字数栏/脏标记/查找计数都依赖此通道在事务提交后重读 getMarkdown。
+ */
+export type FindReplaceDocChangeListener = (view: EditorView) => void;
+
+const findReplaceDocChangeListeners = new Set<FindReplaceDocChangeListener>();
+
+/** 订阅 WYSIWYG 文档变更；返回取消订阅函数。 */
+export function subscribeFindReplaceDocChange(
+  listener: FindReplaceDocChangeListener,
+): () => void {
+  findReplaceDocChangeListeners.add(listener);
+  return () => {
+    findReplaceDocChangeListeners.delete(listener);
+  };
+}
+
+function emitFindReplaceDocChange(view: EditorView): void {
+  for (const listener of findReplaceDocChangeListeners) {
+    try {
+      listener(view);
+    } catch {
+      // 壳层监听器异常不影响编辑器事务。
+    }
+  }
+}
+
 /** 反查标签宿主内 WYSIWYG 视图的 EditorView（源码覆盖层/未挂载时返回 null）。 */
 export function findReplaceViewForHost(host: HTMLElement): EditorView | null {
   const dom = host.querySelector('.ProseMirror');
@@ -302,11 +380,85 @@ export function readFindReplaceState(
 
 export function setFindQuery(view: EditorView, query: string): void {
   view.dispatch(findQueryTr(view.state, query));
+  scrollActiveMatchIntoView(view);
+}
+
+/**
+ * 把当前活动命中滚动到编辑区可视范围。
+ *
+ * 面板按钮/输入框驱动时 DOM 焦点在面板里：ProseMirror 的 tr.scrollIntoView()
+ * 走 scrollToSelection()，要求 DOM 选区 focusNode 落在编辑器内，否则直接跳过
+ * （2026-08-09 实测：点「下一处」选区已移动但容器不滚动）。
+ *
+ * 另外 `Element.scrollIntoView({block:'nearest'})` 在命中已部分可见时几乎
+ * 不滚，点「上一处」回跳上方时尤其明显；这里按 match 的 viewport 坐标直接
+ * 调整 `#lightink-editor-area`（或最近的可滚动祖先）的 scrollTop，并留边距。
+ */
+function scrollActiveMatchIntoView(view: EditorView): void {
+  const { from, to } = view.state.selection;
+  let start: { top: number; bottom: number };
+  let end: { top: number; bottom: number };
+  try {
+    start = view.coordsAtPos(from);
+    end = view.coordsAtPos(Math.max(to, from));
+  } catch {
+    return; // stub view / 未挂载等环境：静默跳过
+  }
+
+  const scroller = findFindScrollContainer(view.dom);
+  if (scroller === null) {
+    // 无滚动容器时回落：尽量把命中节点滚到视口中部。
+    let domPos: { node: Node; offset: number };
+    try {
+      domPos = view.domAtPos(from);
+    } catch {
+      return;
+    }
+    const node = domPos.node;
+    const el =
+      node.nodeType === 3
+        ? node.parentElement
+        : node instanceof HTMLElement
+          ? node
+          : null;
+    el?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return;
+  }
+
+  const scRect = scroller.getBoundingClientRect();
+  const targetTop = Math.min(start.top, end.top);
+  const targetBottom = Math.max(start.bottom, end.bottom);
+  // 面板叠在右上角：上下各留边，避免命中被面板/边缘挡住。
+  const margin = 72;
+  if (targetTop < scRect.top + margin) {
+    scroller.scrollTop -= scRect.top + margin - targetTop;
+  } else if (targetBottom > scRect.bottom - margin) {
+    scroller.scrollTop += targetBottom - (scRect.bottom - margin);
+  }
+}
+
+/** 查找编辑区滚动容器：优先 #lightink-editor-area，否则最近 overflow 可滚祖先。 */
+function findFindScrollContainer(fromEl: HTMLElement): HTMLElement | null {
+  const byId = fromEl.ownerDocument.getElementById('lightink-editor-area');
+  if (byId instanceof HTMLElement) return byId;
+  let el: HTMLElement | null = fromEl.parentElement;
+  while (el !== null && el !== fromEl.ownerDocument.body) {
+    const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+    const oy = style?.overflowY ?? '';
+    if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+      return el;
+    }
+    el = el.parentElement;
+  }
+  return null;
 }
 
 export function stepFindMatch(view: EditorView, dir: 1 | -1): void {
   const tr = stepMatchTr(view.state, dir);
-  if (tr !== null) view.dispatch(tr);
+  if (tr !== null) {
+    view.dispatch(tr);
+    scrollActiveMatchIntoView(view);
+  }
 }
 
 /** 「替换当前」。返回是否实际执行了替换。 */
@@ -314,6 +466,7 @@ export function replaceCurrentMatch(view: EditorView, replacement: string): bool
   const tr = replaceCurrentTr(view.state, replacement);
   if (tr === null) return false;
   view.dispatch(tr);
+  scrollActiveMatchIntoView(view);
   return true;
 }
 
@@ -373,22 +526,68 @@ export interface FindReplacePanel {
   /** 刷新计数/空态/替换按钮可用性（total=0 且无命中时禁用替换）。 */
   setStatus(total: number, active: number): void;
   getQuery(): string;
+  /** 预填查找框（Ctrl+F 带上当前选区时用）；不自动触发 onQueryChange。 */
+  setQuery(query: string): void;
   focusFind(): void;
 }
 
-function styleButton(button: HTMLButtonElement): void {
-  button.style.font = 'inherit';
-  button.style.padding = '2px 8px';
-  button.style.borderRadius = '4px';
-  button.style.border = '1px solid var(--lightink-border, rgba(128, 128, 128, 0.4))';
-  button.style.background = 'transparent';
-  button.style.color = 'inherit';
-  button.style.cursor = 'pointer';
+/** 内联 SVG 图标（currentColor，随主题）。 */
+const FIND_ICON_SEARCH =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>' +
+  '<path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
+  '</svg>';
+const FIND_ICON_REPLACE =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M3 5h8.5M9 2.5 11.5 5 9 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '<path d="M13 11H4.5M7 8.5 4.5 11 7 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+const FIND_ICON_PREV =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+const FIND_ICON_NEXT =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+const FIND_ICON_CLOSE =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
+  '</svg>';
+const FIND_ICON_CHEVRON =
+  '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+
+function iconButton(
+  doc: Document,
+  className: string,
+  svg: string,
+  label: string,
+): HTMLButtonElement {
+  const btn = doc.createElement('button');
+  btn.type = 'button';
+  btn.className = `lightink-find-icon-btn ${className}`;
+  btn.innerHTML = svg;
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  return btn;
+}
+
+function fieldIcon(doc: Document, svg: string, className: string): HTMLSpanElement {
+  const el = doc.createElement('span');
+  el.className = `lightink-find-panel__glyph ${className}`;
+  el.innerHTML = svg;
+  el.setAttribute('aria-hidden', 'true');
+  return el;
 }
 
 /**
- * 创建查找替换面板（初始隐藏，由壳层 append 到编辑区并绝对定位）。
+ * 创建查找替换面板（初始隐藏）。
+ * 壳层应 append 到非滚动容器（#lightink-main），用 absolute 贴右上角——
+ * 若挂在 #lightink-editor-area 内，滚动命中时面板会一起被卷走。
  * 面板不感知模式：查询/步进/替换全部经 handlers 由壳层按 WYSIWYG/源码分派。
+ * 外观由 theme.css `.lightink-find-panel*` 负责（VS Code / Typora 风格紧凑浮层）。
  */
 export function createFindReplacePanel(
   doc: Document,
@@ -397,95 +596,93 @@ export function createFindReplacePanel(
 ): FindReplacePanel {
   const root = doc.createElement('div');
   root.className = 'lightink-find-panel';
-  root.style.position = 'absolute';
-  root.style.top = '8px';
-  root.style.right = '16px';
-  root.style.zIndex = '40';
-  root.style.display = 'none';
-  root.style.flexDirection = 'column';
-  root.style.gap = '6px';
-  root.style.padding = '8px';
-  root.style.borderRadius = '8px';
-  root.style.background = 'var(--lightink-bg-elevated, var(--lightink-bg, #fff))';
-  root.style.color = 'var(--lightink-fg, #222)';
-  root.style.border = '1px solid var(--lightink-border, rgba(128, 128, 128, 0.4))';
-  root.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.18)';
-  root.style.fontSize = '13px';
+  root.setAttribute('role', 'search');
+  root.setAttribute('aria-label', labels.findPlaceholder);
 
-  const rowStyle = (row: HTMLDivElement): void => {
-    row.style.display = 'flex';
-    row.style.alignItems = 'center';
-    row.style.gap = '4px';
-  };
-  const inputStyle = (input: HTMLInputElement): void => {
-    input.style.font = 'inherit';
-    input.style.padding = '2px 6px';
-    input.style.borderRadius = '4px';
-    input.style.border = '1px solid var(--lightink-border, rgba(128, 128, 128, 0.4))';
-    input.style.background = 'var(--lightink-bg, #fff)';
-    input.style.color = 'inherit';
-    input.style.width = '160px';
-  };
+  // —— 查找行 ——
+  const expandBtn = iconButton(
+    doc,
+    'lightink-find-expand',
+    FIND_ICON_CHEVRON,
+    labels.replacePlaceholder,
+  );
+  expandBtn.setAttribute('aria-expanded', 'false');
+  expandBtn.setAttribute('aria-controls', 'lightink-find-replace-row');
 
   const findInput = doc.createElement('input');
   findInput.type = 'text';
   findInput.className = 'lightink-find-input';
   findInput.placeholder = labels.findPlaceholder;
-  inputStyle(findInput);
+  findInput.setAttribute('aria-label', labels.findPlaceholder);
+  findInput.autocomplete = 'off';
+  findInput.spellcheck = false;
 
   const status = doc.createElement('span');
   status.className = 'lightink-find-status';
-  status.style.minWidth = '48px';
-  status.style.textAlign = 'center';
-  status.style.opacity = '0.75';
+  status.setAttribute('aria-live', 'polite');
 
-  const prevBtn = doc.createElement('button');
-  prevBtn.type = 'button';
-  prevBtn.className = 'lightink-find-prev';
-  prevBtn.textContent = labels.prev;
-  styleButton(prevBtn);
+  const findField = doc.createElement('div');
+  findField.className = 'lightink-find-panel__field';
+  findField.append(
+    fieldIcon(doc, FIND_ICON_SEARCH, 'lightink-find-panel__glyph--search'),
+    findInput,
+    status,
+  );
 
-  const nextBtn = doc.createElement('button');
-  nextBtn.type = 'button';
-  nextBtn.className = 'lightink-find-next';
-  nextBtn.textContent = labels.next;
-  styleButton(nextBtn);
+  const prevBtn = iconButton(doc, 'lightink-find-prev', FIND_ICON_PREV, labels.prev);
+  const nextBtn = iconButton(doc, 'lightink-find-next', FIND_ICON_NEXT, labels.next);
+  const closeBtn = iconButton(doc, 'lightink-find-close', FIND_ICON_CLOSE, labels.close);
 
-  const closeBtn = doc.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'lightink-find-close';
-  closeBtn.textContent = labels.close;
-  styleButton(closeBtn);
+  const rowFind = doc.createElement('div');
+  rowFind.className = 'lightink-find-panel__row lightink-find-panel__row--find';
+  rowFind.append(expandBtn, findField, prevBtn, nextBtn, closeBtn);
 
-  const row1 = doc.createElement('div');
-  rowStyle(row1);
-  row1.append(findInput, status, prevBtn, nextBtn, closeBtn);
-
+  // —— 替换行（可折叠，默认收起；点展开或 Ctrl+H 语义由壳层 open 后 setReplaceOpen）——
   const replaceInput = doc.createElement('input');
   replaceInput.type = 'text';
   replaceInput.className = 'lightink-replace-input';
   replaceInput.placeholder = labels.replacePlaceholder;
-  inputStyle(replaceInput);
+  replaceInput.setAttribute('aria-label', labels.replacePlaceholder);
+  replaceInput.autocomplete = 'off';
+  replaceInput.spellcheck = false;
+
+  const replaceField = doc.createElement('div');
+  replaceField.className = 'lightink-find-panel__field';
+  replaceField.append(
+    fieldIcon(doc, FIND_ICON_REPLACE, 'lightink-find-panel__glyph--replace'),
+    replaceInput,
+  );
 
   const replaceBtn = doc.createElement('button');
   replaceBtn.type = 'button';
-  replaceBtn.className = 'lightink-replace-current';
+  replaceBtn.className = 'lightink-find-text-btn lightink-replace-current';
   replaceBtn.textContent = labels.replace;
-  styleButton(replaceBtn);
+  replaceBtn.title = labels.replace;
 
   const replaceAllBtn = doc.createElement('button');
   replaceAllBtn.type = 'button';
-  replaceAllBtn.className = 'lightink-replace-all';
+  replaceAllBtn.className = 'lightink-find-text-btn lightink-replace-all';
   replaceAllBtn.textContent = labels.replaceAll;
-  styleButton(replaceAllBtn);
+  replaceAllBtn.title = labels.replaceAll;
 
-  const row2 = doc.createElement('div');
-  rowStyle(row2);
-  row2.append(replaceInput, replaceBtn, replaceAllBtn);
+  const rowReplace = doc.createElement('div');
+  rowReplace.className = 'lightink-find-panel__row lightink-find-panel__row--replace';
+  rowReplace.id = 'lightink-find-replace-row';
+  rowReplace.hidden = true;
+  rowReplace.append(replaceField, replaceBtn, replaceAllBtn);
 
-  root.append(row1, row2);
+  root.append(rowFind, rowReplace);
 
   let open = false;
+  let replaceOpen = false;
+
+  const setReplaceOpen = (next: boolean): void => {
+    replaceOpen = next;
+    rowReplace.hidden = !next;
+    root.classList.toggle('is-replace-open', next);
+    expandBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+    expandBtn.classList.toggle('is-expanded', next);
+  };
 
   findInput.addEventListener('input', () => {
     handlers.onQueryChange(findInput.value);
@@ -506,7 +703,11 @@ export function createFindReplacePanel(
   replaceInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      handlers.onReplace(replaceInput.value);
+      if (event.ctrlKey || event.metaKey) {
+        handlers.onReplaceAll(replaceInput.value);
+      } else {
+        handlers.onReplace(replaceInput.value);
+      }
     } else if (event.key === 'Escape') {
       event.preventDefault();
       panel.close();
@@ -517,18 +718,30 @@ export function createFindReplacePanel(
   replaceBtn.addEventListener('click', () => handlers.onReplace(replaceInput.value));
   replaceAllBtn.addEventListener('click', () => handlers.onReplaceAll(replaceInput.value));
   closeBtn.addEventListener('click', () => panel.close());
+  expandBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const next = !replaceOpen;
+    setReplaceOpen(next);
+    if (next) {
+      // 展开后把焦点放进替换框，便于直接输入。
+      queueMicrotask(() => replaceInput.focus());
+    } else {
+      findInput.focus();
+    }
+  });
 
   const panel: FindReplacePanel = {
     element: root,
     open(): void {
       open = true;
-      root.style.display = 'flex';
+      root.classList.add('is-open');
       panel.focusFind();
     },
     close(): void {
       if (!open) return;
       open = false;
-      root.style.display = 'none';
+      root.classList.remove('is-open');
       handlers.onClose();
     },
     isOpen(): boolean {
@@ -537,7 +750,6 @@ export function createFindReplacePanel(
     setStatus(total: number, active: number): void {
       const hasQuery = findInput.value !== '';
       const empty = hasQuery && total === 0;
-      // 可观察空态：data 属性 + is-empty class + 空态文案；替换按钮禁用。
       root.dataset['findTotal'] = String(total);
       root.dataset['findEmpty'] = empty ? 'true' : 'false';
       root.classList.toggle('is-empty', empty);
@@ -546,13 +758,17 @@ export function createFindReplacePanel(
         : total > 0
           ? labels.count(active, total)
           : '';
-      replaceBtn.disabled = total === 0;
-      replaceAllBtn.disabled = total === 0;
-      prevBtn.disabled = total === 0;
-      nextBtn.disabled = total === 0;
+      const noHits = total === 0;
+      replaceBtn.disabled = noHits;
+      replaceAllBtn.disabled = noHits;
+      prevBtn.disabled = noHits;
+      nextBtn.disabled = noHits;
     },
     getQuery(): string {
       return findInput.value;
+    },
+    setQuery(query: string): void {
+      findInput.value = query;
     },
     focusFind(): void {
       findInput.focus();

@@ -122,9 +122,16 @@ describe('SourceView (factory shape)', () => {
     expect(surface.style.overflowWrap).toBe('break-word');
     expect(surface.style.scrollbarGutter).toBe('stable');
     expect(surface.style.fontVariantLigatures).toBe('none');
+    // 字距/字偶距对齐（textarea UA 默认 vs 高亮层继承值，2026-08-09 漂移根因）。
+    expect(surface.style.letterSpacing).toBe('normal');
+    expect(surface.style.textRendering).toBe('auto');
+    expect(surface.style.fontKerning).toBe('none');
     expect(highlightCode.style.fontSize).toBe('inherit');
     expect(highlightCode.style.lineHeight).toBe('inherit');
     expect(highlightCode.style.whiteSpace).toBe('inherit');
     expect(highlightCode.style.wordBreak).toBe('inherit');
+    expect(highlightCode.style.letterSpacing).toBe('inherit');
+    expect(highlightCode.style.fontWeight).toBe('inherit');
+    expect(highlightCode.style.fontStyle).toBe('inherit');
   });
 });

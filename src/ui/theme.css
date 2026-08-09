@@ -38,8 +38,11 @@ body {
  *
  * The middle reading column (.lightink-tab-host) uses --lightink-measure as
  * max-width and width:100%. 2026-08-09 起按用户决策改为「填满编辑区」：
- * measure = min(分档上限, 94%)——常规窗口下内容占满编辑区宽度（两侧仅留
- * 3% + page-pad-x 的页边距），分档上限只在 2K/4K/超宽屏上兜住极端长行。
+ * measure = min(分档上限, 94%)。2026-08-09 两度实测后的落点：固定 rem 窄栏
+ * 在宽窗下两侧过空，94% 填满又行长超限（CJK 一行 90+ 字视线无法回扫）；
+ * 现按可读性研究取值（拉丁 50-75 字符/行、WCAG 1.4.8 CJK 上限 40 字/行、
+ * Typora 约 860px 先例），各档内容宽约 44-62rem ≈ 中文 45-56 字/行，
+ * 94% 只在窗口窄于上限时兜底填满。
  */
 
 /* Compact: 1366×768, 1280×720, half-tiled — fill the pane, modest type. */
@@ -47,7 +50,7 @@ html[data-display='compact'] {
   --lightink-font-size: 15px;
   --lightink-font-size-ui: 12.5px;
   --lightink-font-size-code: 12.75px;
-  --lightink-measure: min(88rem, 94%);
+  --lightink-measure: min(44rem, 94%);
   --lightink-page-pad-x: 16px;
   --lightink-page-pad-y: 16px;
   --lightink-outline-width: 176px;
@@ -55,7 +58,7 @@ html[data-display='compact'] {
 
 /* HD baseline extras (explicit for clarity when attribute is set). */
 html[data-display='hd'] {
-  --lightink-measure: min(112rem, 94%);
+  --lightink-measure: min(56rem, 94%);
   --lightink-page-pad-x: 28px;
   --lightink-page-pad-y: 24px;
 }
@@ -65,7 +68,7 @@ html[data-display='qhd'] {
   --lightink-font-size: 16.5px;
   --lightink-font-size-ui: 13.5px;
   --lightink-font-size-code: 14px;
-  --lightink-measure: min(140rem, 94%);
+  --lightink-measure: min(58rem, 94%);
   --lightink-page-pad-x: 40px;
   --lightink-page-pad-y: 32px;
   --lightink-outline-width: 248px;
@@ -76,7 +79,7 @@ html[data-display='uhd'] {
   --lightink-font-size: 17.5px;
   --lightink-font-size-ui: 14px;
   --lightink-font-size-code: 14.5px;
-  --lightink-measure: min(170rem, 94%);
+  --lightink-measure: min(60rem, 94%);
   --lightink-page-pad-x: 48px;
   --lightink-page-pad-y: 40px;
   --lightink-outline-width: 280px;
@@ -87,7 +90,7 @@ html[data-display='xuhd'] {
   --lightink-font-size: 18.5px;
   --lightink-font-size-ui: 14.5px;
   --lightink-font-size-code: 15px;
-  --lightink-measure: min(200rem, 94%);
+  --lightink-measure: min(62rem, 94%);
   --lightink-page-pad-x: 56px;
   --lightink-page-pad-y: 48px;
   --lightink-outline-width: 304px;
@@ -100,7 +103,7 @@ html[data-display='xuhd'] {
     --lightink-font-size: 15px;
     --lightink-font-size-ui: 12.5px;
     --lightink-font-size-code: 12.75px;
-    --lightink-measure: min(88rem, 94%);
+    --lightink-measure: min(44rem, 94%);
     --lightink-page-pad-x: 16px;
     --lightink-page-pad-y: 16px;
     --lightink-outline-width: 176px;
@@ -112,7 +115,7 @@ html[data-display='xuhd'] {
     --lightink-font-size: 16.5px;
     --lightink-font-size-ui: 13.5px;
     --lightink-font-size-code: 14px;
-    --lightink-measure: min(140rem, 94%);
+    --lightink-measure: min(58rem, 94%);
     --lightink-page-pad-x: 40px;
     --lightink-page-pad-y: 32px;
     --lightink-outline-width: 248px;
@@ -124,7 +127,7 @@ html[data-display='xuhd'] {
     --lightink-font-size: 17.5px;
     --lightink-font-size-ui: 14px;
     --lightink-font-size-code: 14.5px;
-    --lightink-measure: min(170rem, 94%);
+    --lightink-measure: min(60rem, 94%);
     --lightink-page-pad-x: 48px;
     --lightink-page-pad-y: 40px;
     --lightink-outline-width: 280px;
@@ -136,7 +139,7 @@ html[data-display='xuhd'] {
     --lightink-font-size: 18.5px;
     --lightink-font-size-ui: 14.5px;
     --lightink-font-size-code: 15px;
-    --lightink-measure: min(200rem, 94%);
+    --lightink-measure: min(62rem, 94%);
     --lightink-page-pad-x: 56px;
     --lightink-page-pad-y: 48px;
     --lightink-outline-width: 304px;
@@ -347,8 +350,11 @@ html[data-display='xuhd'] {
   color: var(--lightink-fg);
 }
 
-/* 主区：大纲侧栏 + 编辑区横向排布（T7）。 */
+/* 主区：大纲侧栏 + 编辑区横向排布（T7）。
+   position:relative 作为查找面板定位上下文——面板挂在 main 上而非
+   #lightink-editor-area 内，避免上一处/下一处滚动编辑区时面板被卷走。 */
 #lightink-main {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -1068,6 +1074,11 @@ body.lightink-outline-resizing * {
   user-select: text;
   scrollbar-width: thin;
   scrollbar-color: var(--lightink-border) transparent;
+  /* 与 applySourceMetrics 双保险：防止主题/宿主继承再次拉开两层几何。 */
+  letter-spacing: normal !important;
+  text-rendering: auto !important;
+  font-kerning: none !important;
+  font-variant-ligatures: none !important;
 }
 
 .lightink-source-editor::selection {
@@ -1084,6 +1095,39 @@ body.lightink-outline-resizing * {
   border: none;
   border-radius: 0;
   padding: 8px;
+  letter-spacing: normal !important;
+  text-rendering: auto !important;
+  font-kerning: none !important;
+  font-variant-ligatures: none !important;
+  /* 不显示滚动条：滚动只由 textarea 驱动（JS 同步 scrollTop）。 */
+  scrollbar-width: none;
+}
+
+.lightink-tab-host pre.lightink-source-highlight::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* R15 对齐补强：高亮层 hljs token 只允许颜色差异。字重（.hljs-strong 600）、
+   斜体（.hljs-comment/.hljs-emphasis）与任何背景/内边距都会改变字形几何，
+   使 pre 的折行点与透明 textarea 逐字漂移——原生选区实色块随之盖在错误的
+   文字上（2026-08-09 用户实测截图：选区块相对可见文字整体偏移）。 */
+.lightink-tab-host pre.lightink-source-highlight code,
+.lightink-tab-host pre.lightink-source-highlight code span {
+  font-weight: inherit !important;
+  font-style: inherit !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  letter-spacing: inherit !important;
+  text-rendering: inherit !important;
+  font-kerning: inherit !important;
+  font-variant-ligatures: inherit !important;
+  background: transparent !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
 }
 
 .lightink-tab-host .lightink-source-highlight code {
@@ -1095,6 +1139,10 @@ body.lightink-outline-resizing * {
   overflow-wrap: inherit;
   font-variant-ligatures: inherit;
   tab-size: inherit;
+  letter-spacing: inherit;
+  text-rendering: inherit;
+  font-kerning: inherit;
+  font-feature-settings: inherit;
 }
 
 .lightink-tab-host code {
@@ -1704,6 +1752,288 @@ body.lightink-outline-resizing * {
   padding: 8px 10px;
   color: var(--lightink-muted);
   font-size: 12.5px;
+}
+
+/* Emoji 菜单：固定宽 glyph + 可截断 label + 短码 hint，避免图标被挤没。 */
+.lightink-emoji-menu {
+  min-width: 240px;
+  max-width: 320px;
+}
+
+.lightink-emoji-menu__item {
+  gap: 8px;
+  padding-inline: 8px 10px;
+}
+
+.lightink-emoji-menu__glyph {
+  flex: 0 0 1.6em;
+  width: 1.6em;
+  text-align: center;
+  font-size: 1.15em;
+  line-height: 1;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+}
+
+.lightink-emoji-menu__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lightink-emoji-menu__hint {
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 查找/替换面板（R2，2026-08-10 重做）：
+ *   - 挂在 #lightink-main（非滚动）右上角，编辑区滚动时不消失；
+ *   - VS Code / Typora 风格：字段内嵌图标 + 命中计数，图标导航，可折叠替换行。
+ */
+.lightink-find-panel {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 60;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  width: min(360px, calc(100% - 24px));
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--lightink-border);
+  background: color-mix(in srgb, var(--lightink-bg-elevated) 92%, var(--lightink-bg));
+  color: var(--lightink-fg);
+  box-shadow: var(--lightink-shadow-strong);
+  font-size: 13px;
+  font-family: var(--lightink-font-ui);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: auto;
+  animation: lightink-find-panel-in 120ms ease-out;
+}
+
+@keyframes lightink-find-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lightink-find-panel.is-open {
+  display: flex;
+}
+
+.lightink-find-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* author 的 display:flex 会盖过 UA [hidden]{display:none}，必须显式声明。 */
+.lightink-find-panel__row[hidden] {
+  display: none !important;
+}
+
+.lightink-find-panel__row--replace {
+  padding-left: 28px; /* 与展开按钮对齐，让替换字段与查找字段左缘一致 */
+}
+
+/* 未展开时彻底隐藏替换行（双保险，不依赖 hidden 属性 alone）。 */
+.lightink-find-panel:not(.is-replace-open) .lightink-find-panel__row--replace {
+  display: none !important;
+}
+
+/* 字段外壳：图标 + 输入 + 状态。 */
+.lightink-find-panel__field {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px 0 28px;
+  border-radius: 7px;
+  border: 1px solid var(--lightink-border);
+  background: var(--lightink-bg);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.lightink-find-panel__field:focus-within {
+  border-color: var(--lightink-accent);
+  box-shadow: 0 0 0 2px var(--lightink-accent-soft);
+}
+
+.lightink-find-panel__glyph {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--lightink-muted);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.lightink-find-panel__glyph svg {
+  display: block;
+}
+
+.lightink-find-panel input[type='text'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.lightink-find-panel input[type='text']::placeholder {
+  color: var(--lightink-muted);
+  opacity: 0.85;
+}
+
+/* 命中计数嵌在查找字段右侧。 */
+.lightink-find-status {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  min-width: 2.6em;
+  max-width: 6.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--lightink-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  line-height: 1;
+  user-select: none;
+}
+
+.lightink-find-panel.is-empty .lightink-find-status {
+  color: var(--lightink-danger);
+  min-width: 3.5em;
+}
+
+/* 图标按钮：上一处 / 下一处 / 关闭 / 展开。 */
+.lightink-find-icon-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lightink-muted);
+  cursor: pointer;
+  transition:
+    background 100ms ease,
+    color 100ms ease,
+    border-color 100ms ease;
+}
+
+.lightink-find-icon-btn svg {
+  display: block;
+}
+
+.lightink-find-icon-btn:hover:not(:disabled) {
+  color: var(--lightink-fg);
+  background: var(--lightink-accent-soft);
+  border-color: color-mix(in srgb, var(--lightink-accent) 25%, transparent);
+}
+
+.lightink-find-icon-btn:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
+}
+
+.lightink-find-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.lightink-find-close {
+  color: var(--lightink-muted);
+}
+
+.lightink-find-expand {
+  color: var(--lightink-muted);
+  transition: transform 120ms ease, color 100ms ease, background 100ms ease;
+}
+
+.lightink-find-expand.is-expanded,
+.lightink-find-panel.is-replace-open .lightink-find-expand {
+  transform: rotate(90deg);
+  color: var(--lightink-accent);
+}
+
+/* 替换 / 全部替换：文字按钮。 */
+.lightink-find-text-btn {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 100ms ease,
+    border-color 100ms ease;
+}
+
+.lightink-find-text-btn:hover:not(:disabled) {
+  background: var(--lightink-accent-soft);
+  border-color: color-mix(in srgb, var(--lightink-accent) 35%, var(--lightink-border));
+}
+
+.lightink-find-text-btn:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
+}
+
+.lightink-find-text-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lightink-replace-all {
+  background: color-mix(in srgb, var(--lightink-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--lightink-accent) 40%, var(--lightink-border));
+  color: var(--lightink-accent);
+  font-weight: 600;
+}
+
+.lightink-replace-all:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--lightink-accent) 22%, transparent);
 }
 
 /* 快捷键速查表（R5）。 */

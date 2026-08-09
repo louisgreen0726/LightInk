@@ -22,16 +22,19 @@ import { setMermaidEditTitle } from './editor/plugins/mermaid.js';
 import { setSlashImageHandler, setSlashTranslate } from './editor/plugins/slash-menu.js';
 import { setAppDisplayName } from './ui/window-title.js';
 import { SourceView } from './editor/source-view.js';
+import { subscribeContentChange } from './editor/plugins/content-change.js';
 import {
   clearFindReplace,
   collectSourceMatches,
   createFindReplacePanel,
   findReplaceViewForHost,
+  nextMatchIndex,
   readFindReplaceState,
   replaceAllMatches,
   replaceCurrentMatch,
   setFindQuery,
   stepFindMatch,
+  subscribeFindReplaceStatus,
   type FindReplaceLabels,
   type FindReplacePanel,
 } from './editor/plugins/find-replace.js';
@@ -391,14 +394,27 @@ function runClipboardCommand(command: 'cut' | 'copy' | 'paste'): void {
             // Fallback for environments that still allow the paste command.
             document.execCommand('paste');
           }
-          const tab = manager?.activeTab ?? null;
-          if (tab !== null) {
-            manager.handleContentChanged(tab.id);
-          }
+          // 延迟采样：insertText / 默认 paste 完成后才有正确字数与查找计数。
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const tab = manager?.activeTab ?? null;
+              if (tab !== null) {
+                manager.handleContentChanged(tab.id);
+              }
+            });
+          });
         })
         .catch(() => {
           focusActiveEditor();
           document.execCommand('paste');
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const tab = manager?.activeTab ?? null;
+              if (tab !== null) {
+                manager.handleContentChanged(tab.id);
+              }
+            });
+          });
         });
       return;
     }
@@ -705,13 +721,23 @@ manager = new TabManager({
   },
   attachHost: (el) => {
     shell.editorArea.appendChild(el);
-    // 编辑内容变化 → 脏标记/快照调度（ProseMirror 的 input 事件冒泡到宿主）。
-    el.addEventListener('input', () => {
+    // 源码 textarea 的 input 仍走宿主监听；WYSIWYG 由 contentChangePlugin 广播。
+    const notifyHostContent = (): void => {
       const id = el.dataset.tabId;
       if (id !== undefined) {
         manager.handleContentChanged(id);
       }
-    });
+    };
+    el.addEventListener('input', notifyHostContent, true);
+    el.addEventListener(
+      'paste',
+      () => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(notifyHostContent);
+        });
+      },
+      true,
+    );
   },
   detachHost: (el) => {
     el.remove();
@@ -761,6 +787,9 @@ manager = new TabManager({
     outline.scheduleRefresh();
     // T5/R3：状态栏防抖刷新（内部在隐藏时短路不渲染）。
     statusBar.scheduleUpdate(getActiveMarkdownForStatus);
+    // 查找面板打开时：内容编辑后同步命中计数（WYSIWYG 插件已重算 decoration，
+    // 源码模式需重收 matches；都不强制跳回首命中）。
+    refreshFindOnContentChange();
   },
   onFileOpened: (filePath) => {
     void invoke('add_recent', { path: filePath }).catch(() => undefined);
@@ -1034,12 +1063,57 @@ function activeFindView(): ReturnType<typeof findReplaceViewForHost> {
   return findReplaceViewForHost(tab.hostElement);
 }
 
+/** 只接线一次：WYSIWYG 文档变更 + 查找状态 → 壳层刷新。 */
+let contentObserversWired = false;
+
+/**
+ * 文档变更 / 查找状态的全局观察者。
+ * 必须在应用启动时调用（不要等用户打开查找面板），否则字数栏与 1/N 不会动。
+ * 注意：声明必须在调用点之前（避免 TDZ：contentObserversWired 未初始化就访问）。
+ */
+function wireEditorContentObservers(): void {
+  if (contentObserversWired) return;
+  contentObserversWired = true;
+
+  // 可靠路径：PM 文档引用变化（键入/删除/粘贴/insert/替换）。
+  subscribeContentChange((view) => {
+    const tab = manager?.activeTab ?? null;
+    if (tab === null) return;
+    if (activeSourceTextarea() !== null) return;
+    // 只处理活动标签的 view（多标签各有一份插件）。
+    const activeView = findReplaceViewForHost(tab.hostElement);
+    if (activeView !== null && activeView !== view) return;
+    // 无 find view 时仍按 host 包含关系判定。
+    if (activeView === null && !tab.hostElement.contains(view.dom)) return;
+    manager.handleContentChanged(tab.id);
+  });
+
+  // 查找插件状态变化（含 docChanged 后重收命中）：直接写面板计数。
+  subscribeFindReplaceStatus((view, status) => {
+    if (findPanel === null || !findPanel.isOpen()) return;
+    const tab = manager?.activeTab ?? null;
+    if (tab === null) return;
+    if (activeSourceTextarea() !== null) return;
+    const activeView = findReplaceViewForHost(tab.hostElement);
+    if (activeView !== null && activeView !== view) return;
+    if (activeView === null && !tab.hostElement.contains(view.dom)) return;
+    if (findPanel.getQuery() === '' && status.query === '') {
+      syncFindPanelStatus(0, -1);
+      return;
+    }
+    if (status.query !== findPanel.getQuery() && findPanel.getQuery() !== '') {
+      return;
+    }
+    syncFindPanelStatus(status.total, status.active);
+  });
+}
+
+// 启动即挂上 WYSIWYG 文档/查找状态订阅（不依赖用户先打开查找面板）。
+// 必须放在 contentObserversWired / findPanel 声明之后，否则会 TDZ 崩掉整页。
+wireEditorContentObservers();
+
 function ensureFindPanel(): FindReplacePanel {
   if (findPanel !== null) return findPanel;
-  // 面板绝对定位于编辑区右上角，编辑区需为定位上下文。
-  if (shell.editorArea.style.position === '') {
-    shell.editorArea.style.position = 'relative';
-  }
   findPanel = createFindReplacePanel(document, findPanelLabels(), {
     onQueryChange: (query) => runFindQuery(query),
     onNext: () => stepFind(1),
@@ -1048,7 +1122,10 @@ function ensureFindPanel(): FindReplacePanel {
     onReplaceAll: (replacement) => runReplaceAll(replacement),
     onClose: () => clearFindHighlights(),
   });
-  shell.editorArea.appendChild(findPanel.element);
+  // 挂到 #lightink-main（非滚动容器）而非 editor-area：上一处/下一处滚动
+  // 命中时面板保持在视口右上，不会被卷出屏幕。
+  const main = document.getElementById('lightink-main');
+  (main ?? shell.editorArea).appendChild(findPanel.element);
   return findPanel;
 }
 
@@ -1056,16 +1133,58 @@ function syncFindPanelStatus(total: number, active: number): void {
   findPanel?.setStatus(total, active);
 }
 
-/** 源码模式：选中命中并滚动到可见（按行数 × 行高近似滚动）。 */
+/**
+ * 源码模式：选中命中并滚动到可见。
+ * 用 mirror 测量命中纵向位置（pre-wrap 下按硬换行 × 行高会偏，上一处/下一处
+ * 都可能滚到错误行）。
+ */
 function selectSourceMatch(
   ta: HTMLTextAreaElement,
   match: { start: number; end: number },
 ): void {
   ta.focus();
   ta.setSelectionRange(match.start, match.end);
-  const lineHeight = Number.parseFloat(window.getComputedStyle(ta).lineHeight) || 20;
-  const line = ta.value.slice(0, match.start).split('\n').length;
-  ta.scrollTop = Math.max(0, (line - 3) * lineHeight);
+  scrollTextareaMatchIntoView(ta, match.start);
+}
+
+/** 按命中字符偏移把源码 textarea 滚到可见区（中部偏上）。 */
+function scrollTextareaMatchIntoView(ta: HTMLTextAreaElement, offset: number): void {
+  const style = window.getComputedStyle(ta);
+  const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+  const mirror = document.createElement('div');
+  mirror.setAttribute('aria-hidden', 'true');
+  const mirrorStyle = mirror.style;
+  mirrorStyle.position = 'absolute';
+  mirrorStyle.visibility = 'hidden';
+  mirrorStyle.pointerEvents = 'none';
+  mirrorStyle.whiteSpace = 'pre-wrap';
+  mirrorStyle.wordBreak = style.wordBreak || 'break-word';
+  mirrorStyle.overflowWrap = style.overflowWrap || 'break-word';
+  mirrorStyle.font = style.font;
+  mirrorStyle.fontFamily = style.fontFamily;
+  mirrorStyle.fontSize = style.fontSize;
+  mirrorStyle.fontWeight = style.fontWeight;
+  mirrorStyle.fontStyle = style.fontStyle;
+  mirrorStyle.letterSpacing = style.letterSpacing;
+  mirrorStyle.lineHeight = style.lineHeight;
+  mirrorStyle.tabSize = style.tabSize;
+  mirrorStyle.boxSizing = style.boxSizing;
+  mirrorStyle.padding = style.padding;
+  mirrorStyle.border = style.border;
+  mirrorStyle.width = `${ta.clientWidth}px`;
+  // 末尾放 marker 测偏移高度。
+  const before = ta.value.slice(0, Math.max(0, Math.min(offset, ta.value.length)));
+  mirror.textContent = before;
+  const marker = document.createElement('span');
+  marker.textContent = '​';
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const top = marker.offsetTop;
+  mirror.remove();
+  const viewH = ta.clientHeight;
+  const desired = Math.max(0, top - Math.min(viewH * 0.35, 3 * lineHeight));
+  const maxScroll = Math.max(0, ta.scrollHeight - viewH);
+  ta.scrollTop = Math.min(desired, maxScroll);
 }
 
 function runFindQuery(query: string): void {
@@ -1088,6 +1207,45 @@ function runFindQuery(query: string): void {
   syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
 }
 
+/**
+ * 文档内容变化后刷新查找面板状态（不重置当前命中、不强制滚动）。
+ * 由 TabManager.onActiveContentChanged 驱动：用户编辑时 1/N 计数与高亮保持同步。
+ */
+function refreshFindOnContentChange(): void {
+  if (findPanel === null || !findPanel.isOpen()) return;
+  const query = findPanel.getQuery();
+  if (query === '') {
+    syncFindPanelStatus(0, -1);
+    return;
+  }
+  const ta = activeSourceTextarea();
+  if (ta !== null) {
+    const matches = collectSourceMatches(ta.value, query);
+    if (matches.length === 0) {
+      sourceFindActive = -1;
+      syncFindPanelStatus(0, -1);
+      return;
+    }
+    // 保持当前下标；越界则夹到末项（内容删减后常见）。
+    if (sourceFindActive < 0) {
+      sourceFindActive = 0;
+    } else if (sourceFindActive >= matches.length) {
+      sourceFindActive = matches.length - 1;
+    }
+    syncFindPanelStatus(matches.length, sourceFindActive);
+    return;
+  }
+  const view = activeFindView();
+  if (view === null) {
+    syncFindPanelStatus(0, -1);
+    return;
+  }
+  // WYSIWYG：find-replace 插件在 docChanged 时已重收 matches/decorations，
+  // 这里只把最新 total/active 写回面板。
+  const state = readFindReplaceState(view);
+  syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
+}
+
 function stepFind(dir: 1 | -1): void {
   const query = findPanel?.getQuery() ?? '';
   const ta = activeSourceTextarea();
@@ -1098,7 +1256,8 @@ function stepFind(dir: 1 | -1): void {
       syncFindPanelStatus(0, -1);
       return;
     }
-    sourceFindActive = (sourceFindActive + dir + matches.length) % matches.length;
+    // 与 WYSIWYG nextMatchIndex 同口径：active=-1 时 prev→末、next→首。
+    sourceFindActive = nextMatchIndex(matches.length, sourceFindActive, dir);
     const match = matches[sourceFindActive];
     if (match !== undefined) selectSourceMatch(ta, match);
     syncFindPanelStatus(matches.length, sourceFindActive);
@@ -1197,11 +1356,49 @@ function clearFindHighlights(): void {
   if (view !== null) clearFindReplace(view);
 }
 
-/** 编辑菜单「查找…」/ Ctrl+F：打开面板并把当前查询应用到活动标签。 */
+/**
+ * 打开查找时若编辑器有非空选区，预填到查找框（常见编辑器惯例）。
+ * 多行选区只取首行；过长截断，避免把整段粘进输入框。
+ */
+function selectionForFindSeed(): string {
+  const ta = activeSourceTextarea();
+  if (ta !== null) {
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (end > start) {
+      return sanitizeFindSeed(ta.value.slice(start, end));
+    }
+    return '';
+  }
+  const view = activeFindView();
+  if (view === null) return '';
+  const { from, to } = view.state.selection;
+  if (to <= from) return '';
+  try {
+    return sanitizeFindSeed(view.state.doc.textBetween(from, to, '\n', '\n'));
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeFindSeed(raw: string): string {
+  // 只取首行：跨段选区通常不是用户想搜的「词」。
+  const firstLine = raw.split(/\r?\n/, 1)[0] ?? '';
+  const trimmed = firstLine.trim();
+  if (trimmed === '') return '';
+  // 输入框宽度有限，超长选区截断。
+  return trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed;
+}
+
+/** 编辑菜单「查找…」/ Ctrl+F：打开面板；有选区则预填，再应用到活动标签。 */
 function openFindPanel(): void {
   const tab = manager?.activeTab ?? null;
   if (tab === null) return;
   const panel = ensureFindPanel();
+  const seed = selectionForFindSeed();
+  if (seed !== '') {
+    panel.setQuery(seed);
+  }
   panel.open();
   runFindQuery(panel.getQuery());
 }

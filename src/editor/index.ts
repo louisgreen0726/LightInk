@@ -42,6 +42,7 @@ import { attachCursorListeners, type CursorEventBinding } from './dom-events.js'
 import { insertMarkdownAtSelection } from './insert-markdown.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
+import { contentChangePlugin } from './plugins/content-change.js';
 import { emojiCompletePlugin } from './plugins/emoji-complete.js';
 import { findReplacePlugin } from './plugins/find-replace.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
@@ -203,7 +204,10 @@ export async function mountEditor(
         .use(tocPlugin)
         // T4：查找与替换（R2）WYSIWYG 侧：decoration 高亮全部/当前命中，
         // 替换经单事务（可撤销）；面板与模式分派在壳层 main.ts。
-        .use(findReplacePlugin);
+        .use(findReplacePlugin)
+        // 文档变更广播：壳层字数栏 / 脏标记 / 查找计数的可靠事实源
+        // （不依赖 contenteditable 的 input 冒泡）。
+        .use(contentChangePlugin);
       // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {
         editor.use(

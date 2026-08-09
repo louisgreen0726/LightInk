@@ -200,13 +200,18 @@ function buildMenuElement(state: EmojiState, view: EditorView): HTMLElement {
       item.setAttribute('aria-selected', 'true');
     }
     item.setAttribute('role', 'option');
+    // 图标与文案分列：emoji 单字符放固定宽 glyph，避免与长 label 挤在一起被裁切。
+    const glyph = document.createElement('span');
+    glyph.className = 'lightink-emoji-menu__glyph';
+    glyph.textContent = candidate.char;
+    glyph.setAttribute('aria-hidden', 'true');
     const label = document.createElement('span');
     label.className = 'lightink-slash-menu__label lightink-emoji-menu__label';
-    label.textContent = `${candidate.char} ${candidate.name.replace(/_/g, ' ')}`;
+    label.textContent = candidate.name.replace(/_/g, ' ');
     const hint = document.createElement('span');
-    hint.className = 'lightink-slash-menu__hint';
+    hint.className = 'lightink-slash-menu__hint lightink-emoji-menu__hint';
     hint.textContent = `:${candidate.name}:`;
-    item.append(label, hint);
+    item.append(glyph, label, hint);
     item.addEventListener('mousedown', (event) => event.preventDefault());
     item.addEventListener('click', () => commitEmoji(view, candidate));
     el.appendChild(item);

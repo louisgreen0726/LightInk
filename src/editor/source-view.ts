@@ -97,6 +97,16 @@ export function applySourceMetrics(el: HTMLElement): void {
   el.style.overflowWrap = 'break-word';
   el.style.fontVariantLigatures = 'none';
   el.style.tabSize = '2';
+  // 字距/字偶距必须两层一致（2026-08-09 实测错位根因）：
+  //   - textarea 的 UA 默认 letter-spacing: normal，而高亮层继承
+  //     `.lightink-tab-host` 的 0.01em（按宿主字号折算的绝对值随继承链下传）；
+  //   - 根节点的 text-rendering: optimizeLegibility 会继承到高亮层并启用
+  //     kerning，textarea 则是 auto——每个字偶对推进宽度不同，逐字累积漂移。
+  el.style.letterSpacing = 'normal';
+  el.style.textRendering = 'auto';
+  // 关掉字偶距/连字相关 OpenType 特性，避免高亮层与 textarea 几何再分叉。
+  el.style.fontKerning = 'none';
+  el.style.fontFeatureSettings = '"liga" 0, "calt" 0';
   // textarea 的垂直滚动条不能独占内容宽度，否则它会比背后的 pre 提前折行。
   el.style.scrollbarGutter = 'stable';
 }
@@ -115,6 +125,12 @@ export function applySourceHighlightMetrics(el: HTMLElement): void {
   el.style.overflowWrap = 'inherit';
   el.style.fontVariantLigatures = 'inherit';
   el.style.tabSize = 'inherit';
+  el.style.letterSpacing = 'inherit';
+  el.style.textRendering = 'inherit';
+  el.style.fontKerning = 'inherit';
+  el.style.fontFeatureSettings = 'inherit';
+  el.style.fontWeight = 'inherit';
+  el.style.fontStyle = 'inherit';
 }
 
 /** 把 Markdown 源高亮为 HTML（末尾加换行使最后一行行高与 textarea 对齐）。 */
@@ -137,6 +153,10 @@ export class SourceView {
   private savedHostPosition = '';
   private savedHostHeight = '';
   private savedHostOverflow = '';
+  /** 进入源码前编辑区 overflow，退出时还原（避免双滚动条）。 */
+  private savedAreaOverflow = '';
+  private savedAreaOverflowX = '';
+  private savedAreaOverflowY = '';
   /** 源码态视口尺寸跟随（enter 注册，exit 移除）。 */
   private onWindowResize: (() => void) | null = null;
   /** 最近一次同步到编辑器的文本（用于跳过无变化的冗余 setMarkdown/解析）。 */
@@ -251,6 +271,19 @@ export class SourceView {
     // 整个源码模式只留一条滚动条。
     this.host.style.overflow = 'hidden';
     const area = this.host.parentElement;
+    // 同时锁住编辑区本身的 overflow：仅关 host 时，#lightink-editor-area 仍可能
+    // 因 host 内边距/测量时序或底层 ProseMirror 残留高度出现第二条滚动条
+    // （2026-08-09 Tauri 实测双滚动条）。
+    if (area !== null) {
+      this.savedAreaOverflow = area.style.overflow;
+      this.savedAreaOverflowX = area.style.overflowX;
+      this.savedAreaOverflowY = area.style.overflowY;
+      area.style.overflow = 'hidden';
+    } else {
+      this.savedAreaOverflow = '';
+      this.savedAreaOverflowX = '';
+      this.savedAreaOverflowY = '';
+    }
     const fitViewport = (): void => {
       if (area !== null) {
         this.host.style.height = `${area.clientHeight}px`;
@@ -324,6 +357,15 @@ export class SourceView {
     this.host.style.position = this.savedHostPosition;
     this.host.style.height = this.savedHostHeight;
     this.host.style.overflow = this.savedHostOverflow;
+    const area = this.host.parentElement;
+    if (area !== null) {
+      area.style.overflow = this.savedAreaOverflow;
+      area.style.overflowX = this.savedAreaOverflowX;
+      area.style.overflowY = this.savedAreaOverflowY;
+    }
+    this.savedAreaOverflow = '';
+    this.savedAreaOverflowX = '';
+    this.savedAreaOverflowY = '';
   }
 
   /** 切换模式。 */
