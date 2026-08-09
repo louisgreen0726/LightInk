@@ -301,8 +301,14 @@ export function createAppShell(
   const menuBar = createMenuBar({
     menus,
     onOpenChange: (openMenuId) => {
-      chrome.setHold('menu', openMenuId !== null);
+      const hold = openMenuId !== null;
+      chrome.setHold('menu', hold);
       syncMenuChrome();
+      // setHold(false) schedules leave hysteresis when pointer already left;
+      // resync class after the controller timer so is-menu-revealed can clear.
+      if (!hold) {
+        afterLeaveSync(syncMenuChrome);
+      }
     },
   });
   toolbar.appendChild(menuBar.element);
@@ -346,6 +352,11 @@ export function createAppShell(
   function setTabsHold(hold: boolean): void {
     chrome.setHold('tabs', hold);
     syncTabsChrome();
+    // Match pointerleave: hold release may schedule leave while revealed is still
+    // true; delayed sync clears is-tabs-revealed after hysteresis.
+    if (!hold) {
+      afterLeaveSync(syncTabsChrome);
+    }
   }
 
   function afterLeaveSync(sync: () => void): void {
