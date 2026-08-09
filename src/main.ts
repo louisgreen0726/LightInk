@@ -23,6 +23,19 @@ import { setSlashImageHandler, setSlashTranslate } from './editor/plugins/slash-
 import { setAppDisplayName } from './ui/window-title.js';
 import { SourceView } from './editor/source-view.js';
 import {
+  clearFindReplace,
+  collectSourceMatches,
+  createFindReplacePanel,
+  findReplaceViewForHost,
+  readFindReplaceState,
+  replaceAllMatches,
+  replaceCurrentMatch,
+  setFindQuery,
+  stepFindMatch,
+  type FindReplaceLabels,
+  type FindReplacePanel,
+} from './editor/plugins/find-replace.js';
+import {
   buildEditorContextMenuItems,
   buildTabContextMenuItems,
   createContextMenu,
@@ -490,6 +503,7 @@ shell = createAppShell(
     onCut: () => runClipboardCommand('cut'),
     onCopy: () => runClipboardCommand('copy'),
     onPaste: () => runClipboardCommand('paste'),
+    onFind: () => openFindPanel(),
     onInsertElement: insertElement,
     onToggleTheme: () => {
       themeService.toggle();
@@ -862,6 +876,241 @@ function commitSourceMode(tabId: string): void {
     view.syncToEditor();
   }
 }
+
+// ---------------------------------------------------------------------------
+// T4/R2：查找与替换壳层。面板本身不感知模式；这里按活动标签的当前模式分派：
+//   WYSIWYG → find-replace 插件（decoration 高亮全部/当前命中；替换为单个
+//     ProseMirror 事务，可经既有 undo 一次回到替换前）；
+//   源码模式 → 直接操作源码 textarea（原生 selection + execCommand('insertText')
+//     替换以保留原生 undo，不用 setRangeText；input 事件经 source-view 既有
+//     refreshFromTextarea 同步回文档）。
+// ---------------------------------------------------------------------------
+
+let findPanel: FindReplacePanel | null = null;
+/** 源码模式当前命中下标（WYSIWYG 的当前项由插件状态维护）。 */
+let sourceFindActive = -1;
+
+function findPanelLabels(): FindReplaceLabels {
+  const zh = i18n.locale !== 'en';
+  return {
+    findPlaceholder: zh ? '查找' : 'Find',
+    replacePlaceholder: zh ? '替换为' : 'Replace with',
+    prev: zh ? '上一处' : 'Prev',
+    next: zh ? '下一处' : 'Next',
+    replace: zh ? '替换' : 'Replace',
+    replaceAll: zh ? '全部替换' : 'Replace All',
+    close: zh ? '关闭' : 'Close',
+    empty: zh ? '无匹配' : 'No matches',
+    count: (active, total) => `${String(active + 1)}/${String(total)}`,
+  };
+}
+
+/** 活动标签处于源码模式时返回其源码 textarea；否则 null（走 WYSIWYG 路径）。 */
+function activeSourceTextarea(): HTMLTextAreaElement | null {
+  const tab = manager?.activeTab ?? null;
+  if (tab === null) return null;
+  const view = sourceViews.get(tab.id);
+  if (view === undefined || !view.isSourceMode) return null;
+  return tab.hostElement.querySelector<HTMLTextAreaElement>('textarea.lightink-source-editor');
+}
+
+/** 活动标签的 WYSIWYG EditorView（源码模式/无活动标签/未就绪时 null）。 */
+function activeFindView(): ReturnType<typeof findReplaceViewForHost> {
+  const tab = manager?.activeTab ?? null;
+  if (tab === null || activeSourceTextarea() !== null) return null;
+  return findReplaceViewForHost(tab.hostElement);
+}
+
+function ensureFindPanel(): FindReplacePanel {
+  if (findPanel !== null) return findPanel;
+  // 面板绝对定位于编辑区右上角，编辑区需为定位上下文。
+  if (shell.editorArea.style.position === '') {
+    shell.editorArea.style.position = 'relative';
+  }
+  findPanel = createFindReplacePanel(document, findPanelLabels(), {
+    onQueryChange: (query) => runFindQuery(query),
+    onNext: () => stepFind(1),
+    onPrev: () => stepFind(-1),
+    onReplace: (replacement) => runReplaceCurrent(replacement),
+    onReplaceAll: (replacement) => runReplaceAll(replacement),
+    onClose: () => clearFindHighlights(),
+  });
+  shell.editorArea.appendChild(findPanel.element);
+  return findPanel;
+}
+
+function syncFindPanelStatus(total: number, active: number): void {
+  findPanel?.setStatus(total, active);
+}
+
+/** 源码模式：选中命中并滚动到可见（按行数 × 行高近似滚动）。 */
+function selectSourceMatch(
+  ta: HTMLTextAreaElement,
+  match: { start: number; end: number },
+): void {
+  ta.focus();
+  ta.setSelectionRange(match.start, match.end);
+  const lineHeight = Number.parseFloat(window.getComputedStyle(ta).lineHeight) || 20;
+  const line = ta.value.slice(0, match.start).split('\n').length;
+  ta.scrollTop = Math.max(0, (line - 3) * lineHeight);
+}
+
+function runFindQuery(query: string): void {
+  const ta = activeSourceTextarea();
+  if (ta !== null) {
+    const matches = collectSourceMatches(ta.value, query);
+    sourceFindActive = matches.length > 0 ? 0 : -1;
+    const first = matches[0];
+    if (first !== undefined) selectSourceMatch(ta, first);
+    syncFindPanelStatus(matches.length, sourceFindActive);
+    return;
+  }
+  const view = activeFindView();
+  if (view === null) {
+    syncFindPanelStatus(0, -1);
+    return;
+  }
+  setFindQuery(view, query);
+  const state = readFindReplaceState(view);
+  syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
+}
+
+function stepFind(dir: 1 | -1): void {
+  const query = findPanel?.getQuery() ?? '';
+  const ta = activeSourceTextarea();
+  if (ta !== null) {
+    const matches = collectSourceMatches(ta.value, query);
+    if (matches.length === 0) {
+      sourceFindActive = -1;
+      syncFindPanelStatus(0, -1);
+      return;
+    }
+    sourceFindActive = (sourceFindActive + dir + matches.length) % matches.length;
+    const match = matches[sourceFindActive];
+    if (match !== undefined) selectSourceMatch(ta, match);
+    syncFindPanelStatus(matches.length, sourceFindActive);
+    return;
+  }
+  const view = activeFindView();
+  if (view === null) return;
+  stepFindMatch(view, dir);
+  const state = readFindReplaceState(view);
+  syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
+}
+
+/**
+ * 源码模式替换一处：选中命中后 execCommand('insertText')（保留原生 undo）；
+ * insertText 触发 input 事件 → source-view 既有同步回文档。execCommand 不可用
+ * 的环境回退 setRangeText + 手工 input 事件（功能正确，undo 粒度退化）。
+ */
+function replaceSourceRange(
+  ta: HTMLTextAreaElement,
+  start: number,
+  end: number,
+  text: string,
+): void {
+  ta.focus();
+  ta.setSelectionRange(start, end);
+  const ok = document.execCommand('insertText', false, text);
+  if (!ok) {
+    ta.setRangeText(text, start, end, 'end');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function markActiveTabDirty(): void {
+  const id = manager?.activeTabId ?? null;
+  if (id !== null) manager.handleContentChanged(id);
+}
+
+function runReplaceCurrent(replacement: string): void {
+  const query = findPanel?.getQuery() ?? '';
+  const ta = activeSourceTextarea();
+  if (ta !== null) {
+    const matches = collectSourceMatches(ta.value, query);
+    const match = matches[Math.min(Math.max(sourceFindActive, 0), matches.length - 1)];
+    if (match === undefined) {
+      syncFindPanelStatus(0, -1);
+      return;
+    }
+    replaceSourceRange(ta, match.start, match.end, replacement);
+    // 替换后命中重收：原下标处即下一未替换命中（收敛到范围内）。
+    const next = collectSourceMatches(ta.value, query);
+    sourceFindActive =
+      next.length === 0
+        ? -1
+        : Math.min(Math.max(sourceFindActive, 0), next.length - 1);
+    const current = next[sourceFindActive];
+    if (current !== undefined) selectSourceMatch(ta, current);
+    syncFindPanelStatus(next.length, sourceFindActive);
+    markActiveTabDirty();
+    return;
+  }
+  const view = activeFindView();
+  if (view === null) return;
+  if (replaceCurrentMatch(view, replacement)) {
+    markActiveTabDirty();
+  }
+  const state = readFindReplaceState(view);
+  syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
+}
+
+function runReplaceAll(replacement: string): void {
+  const query = findPanel?.getQuery() ?? '';
+  const ta = activeSourceTextarea();
+  if (ta !== null) {
+    const matches = collectSourceMatches(ta.value, query);
+    // 自后向前替换，位置不被前序替换带偏；每次 insertText 均为原生可撤销步。
+    for (let i = matches.length - 1; i >= 0; i -= 1) {
+      const match = matches[i];
+      if (match !== undefined) replaceSourceRange(ta, match.start, match.end, replacement);
+    }
+    if (matches.length > 0) markActiveTabDirty();
+    sourceFindActive = -1;
+    syncFindPanelStatus(collectSourceMatches(ta.value, query).length, -1);
+    return;
+  }
+  const view = activeFindView();
+  if (view === null) return;
+  const count = replaceAllMatches(view, replacement);
+  if (count > 0) markActiveTabDirty();
+  const state = readFindReplaceState(view);
+  syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
+}
+
+function clearFindHighlights(): void {
+  sourceFindActive = -1;
+  const view = activeFindView();
+  if (view !== null) clearFindReplace(view);
+}
+
+/** 编辑菜单「查找…」/ Ctrl+F：打开面板并把当前查询应用到活动标签。 */
+function openFindPanel(): void {
+  const tab = manager?.activeTab ?? null;
+  if (tab === null) return;
+  const panel = ensureFindPanel();
+  panel.open();
+  runFindQuery(panel.getQuery());
+}
+
+// Ctrl+F/Cmd+F 打开查找面板：捕获阶段接线，优先于 WebView/编辑器默认行为
+//（shortcuts.ts 注册表属后续任务 scope，此处在 main.ts 独立监听）。
+document.addEventListener(
+  'keydown',
+  (event) => {
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === 'f'
+    ) {
+      event.preventDefault();
+      openFindPanel();
+    }
+  },
+  true,
+);
+
 
 // 快捷键：捕获阶段注册，保存等操作在编辑器内同样生效。
 const shortcuts = new ShortcutRegistry({

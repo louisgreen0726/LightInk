@@ -55,6 +55,11 @@ export interface AppShellActions {
   onCut(): void;
   onCopy(): void;
   onPaste(): void;
+  /**
+   * T4/R2：打开查找替换面板。可选——测试 stub 可省略（菜单动作空操作）。
+   * 无活动标签时实现方自行空操作。
+   */
+  onFind?(): void;
   // 插入（元素 id）
   onInsertElement(id: InsertElementId): void;
   // 视图
@@ -339,6 +344,16 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         menuItem('edit-cut', () => t('edit.cut'), actions.onCut, sc(actions, 'Ctrl+X')),
         menuItem('edit-copy', () => t('edit.copy'), actions.onCopy, sc(actions, 'Ctrl+C')),
         menuItem('edit-paste', () => t('edit.paste'), actions.onPaste, sc(actions, 'Ctrl+V')),
+        separator('edit-sep2'),
+        // T4/R2：查找与替换面板。i18n 目录（src/i18n/messages.ts）不在本任务
+        // scope 内，标签按当前 locale 内联双语；快捷键 Ctrl+F/Cmd+F 在 main.ts
+        // 捕获阶段接线（shortcuts.ts 属后续任务 scope）。
+        menuItem(
+          'edit-find',
+          () => (actions.getLocale() === 'en' ? 'Find…' : '查找…'),
+          () => actions.onFind?.(),
+          sc(actions, 'Ctrl+F'),
+        ),
       ],
     },
     { id: 'insert', label: () => t('menu.insert'), items: insertItems },

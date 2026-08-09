@@ -43,6 +43,7 @@ import { insertMarkdownAtSelection } from './insert-markdown.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { emojiCompletePlugin } from './plugins/emoji-complete.js';
+import { findReplacePlugin } from './plugins/find-replace.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
 import { frontmatterPlugin } from './plugins/front-matter.js';
 import { linkExclusiveEndsPlugin, linkNavigationPlugin } from './link-navigation.js';
@@ -194,7 +195,10 @@ export async function mountEditor(
         // T2：[TOC] 标记段落渲染为可点击目录（R6）。纯 decoration 插件，
         // 不改写文档；标记经序列化为转义形式 `\[TOC]`，重解析仍还原触发，
         // 功能往返安全。
-        .use(tocPlugin);
+        .use(tocPlugin)
+        // T4：查找与替换（R2）WYSIWYG 侧：decoration 高亮全部/当前命中，
+        // 替换经单事务（可撤销）；面板与模式分派在壳层 main.ts。
+        .use(findReplacePlugin);
       // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {
         editor.use(
