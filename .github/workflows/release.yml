@@ -92,6 +92,15 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
+      # WiX 3.14 的 light.exe 在 ICE 校验阶段依赖 VBScript（Windows Script Host）。
+      # windows-2025 镜像默认禁用 VBSCRIPT 可选功能，会导致
+      # "failed to run ... WixTools314\light.exe"（candle 成功、light 失败）。
+      # 参考：https://github.com/tauri-apps/tauri/issues/13752
+      # DISM 幂等，旧镜像（已启用）上执行无副作用。
+      - name: Enable VBScript for WiX MSI bundling
+        if: runner.os == 'Windows'
+        run: dism /online /enable-feature /featurename:VBSCRIPT /norestart
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v1
         env:
