@@ -74,6 +74,13 @@ export interface AppShellActions {
   canReloadCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
+  /**
+   * T5/R3：切换字数状态栏显隐。可选——测试 stub 可省略（菜单动作空操作）。
+   * 实现方负责持久化偏好；关闭即不渲染状态栏。
+   */
+  onToggleStatusBar?(): void;
+  /** T5/R3：字数状态栏当前是否可见（视图菜单勾选标记）。 */
+  isStatusBarVisible?(): boolean;
   /** Toggle native window fullscreen (wired in main). */
   onToggleFullscreen(): void;
   /** Whether chrome navigation (menu + tabs) is currently pinned open. */
@@ -114,6 +121,8 @@ export interface AppShell {
   readonly editorArea: HTMLDivElement;
   /** 大纲侧栏槽位（主区左侧），由 outline 视图挂载内容。 */
   readonly outlineSidebar: HTMLDivElement;
+  /** T5/R3：状态栏挂载槽位（shell 根部最后一行），由 status-bar 挂载内容。 */
+  readonly statusBarHost: HTMLDivElement;
   /** Immersive chrome visibility owner (menu + tabs surfaces). */
   readonly chrome: ChromeController;
   /** Reveal menu chrome and open the File menu (hotkey / first-run path). */
@@ -395,6 +404,16 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           sc(actions, 'Ctrl+/'),
           () => true,
         ),
+        // T5/R3：字数统计状态栏开关（勾选标记式）。i18n 目录不在本任务 scope，
+        // 标签按当前 locale 内联双语（同 T4「查找…」先例）。
+        menuItem(
+          'view-word-count',
+          () => {
+            const base = actions.getLocale() === 'en' ? 'Word Count' : '字数统计';
+            return actions.isStatusBarVisible?.() === true ? `✓ ${base}` : base;
+          },
+          () => actions.onToggleStatusBar?.(),
+        ),
         separator('view-font-sep'),
         menuItem('view-zoom-in', () => t('view.zoomIn'), actions.onZoomIn, sc(actions, 'Ctrl+=')),
         menuItem('view-zoom-out', () => t('view.zoomOut'), actions.onZoomOut, sc(actions, 'Ctrl+-')),
@@ -496,6 +515,10 @@ export function createAppShell(
   mainRow.id = 'lightink-main';
   mainRow.replaceChildren(outlineSidebar, editorArea);
 
+  // T5/R3：状态栏槽位（根部最后一行，默认空——状态栏关闭时不渲染任何内容）。
+  const statusBarHost = document.createElement('div');
+  statusBarHost.id = 'lightink-status-bar-host';
+
   // 下拉菜单栏（语言切换时 rebuildMenus 整栏重建）。
   function wireHelpCheatsheet(menus: Menu[]): void {
     const helpMenu = menus.find((m) => m.id === 'help');
@@ -532,7 +555,7 @@ export function createAppShell(
 
   chromeHost.replaceChildren(menuTrigger, toolbar);
   tabsHost.replaceChildren(tabsTrigger, tabBar);
-  root.replaceChildren(chromeHost, tabsHost, mainRow);
+  root.replaceChildren(chromeHost, tabsHost, mainRow, statusBarHost);
   root.classList.add('lightink-immersive');
 
   function syncMenuChrome(): void {
@@ -748,6 +771,7 @@ export function createAppShell(
     tabBar,
     editorArea,
     outlineSidebar,
+    statusBarHost,
     chrome,
     revealMenu,
     toggleMenuChrome,

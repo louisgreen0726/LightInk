@@ -66,6 +66,7 @@ import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
+import { createStatusBar, type StatusBar } from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
 import { installFontScale } from './ui/font-scale.js';
@@ -131,6 +132,8 @@ let manager: TabManager;
 let shell: ReturnType<typeof createAppShell>;
 // T7：大纲视图在 TabManager 之后创建（见下），回调触发时必然已赋值。
 let outline: OutlineView;
+// T5/R3：字数状态栏在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
+let statusBar: StatusBar;
 
 function saveActiveAs(): void {
   const id = manager.activeTabId;
@@ -519,6 +522,12 @@ shell = createAppShell(
     onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),
+    // T5/R3：字数状态栏开关（视图菜单勾选项；statusBar 在 TabManager 后创建，
+    // 菜单动作经 ?. 短路，菜单打开时 isStatusBarVisible 重算勾选态）。
+    isStatusBarVisible: () => statusBar?.isVisible() === true,
+    onToggleStatusBar: () => {
+      statusBar?.toggle();
+    },
     onToggleFullscreen: () => {
       void enterOrExitFullscreen();
     },
@@ -709,6 +718,8 @@ manager = new TabManager({
   onTabsChanged: renderTabBar,
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
+    // T5/R3：状态栏防抖刷新（内部在隐藏时短路不渲染）。
+    statusBar.scheduleUpdate(getActiveMarkdownForStatus);
   },
   onFileOpened: (filePath) => {
     void invoke('add_recent', { path: filePath }).catch(() => undefined);
@@ -767,6 +778,33 @@ outline = createOutlineView({
   t: (key) => i18n.t(key),
 });
 shell.outlineSidebar.appendChild(outline.root);
+
+// T5/R3：字数状态栏。挂载于 shell 根部槽位；显隐偏好 localStorage 跨会话保持
+// （默认关闭），刷新由 TabManager 的 onActiveContentChanged 防抖驱动（见上）。
+// 标签闭包现读 locale，语言切换后下次刷新即用新文案。
+statusBar = createStatusBar(document, shell.statusBarHost, {
+  storage: window.localStorage,
+  labels: () =>
+    i18n.locale === 'en'
+      ? { words: 'Words', characters: 'Characters' }
+      : { words: '字数', characters: '字符' },
+});
+
+/** 活动标签的 markdown（状态栏统计来源；与大纲同一事实源 editor.getMarkdown）。 */
+function getActiveMarkdownForStatus(): string | null {
+  const tab = manager?.activeTab ?? null;
+  if (tab === null) {
+    return null;
+  }
+  try {
+    return tab.editor.getMarkdown();
+  } catch {
+    return null;
+  }
+}
+
+// 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
+statusBar.refresh(getActiveMarkdownForStatus);
 
 /** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
 function showVersionsForActive(): void {
