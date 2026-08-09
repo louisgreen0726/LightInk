@@ -122,10 +122,17 @@ export function frontmatterNodeSchema(): NodeSchema {
  * Register `remark-frontmatter` on Milkdown's internal remark instance so
  * the WYSIWYG parser/serializer understands `yaml` mdast nodes — the same
  * plugin `parser.ts` registers on the pure stack.
+ *
+ * 必须显式传 `['yaml']` 作为 initialOptions：Milkdown `$remark` 把
+ * `initialOptions ?? {}` 作为 unified `.use(plugin, options)` 的 options，
+ * 缺省 `{}` 会被 remark-frontmatter 当作 matter  spec 对象而抛
+ * `Missing 'type' in matter '{}'`（编辑器挂载即失败；纯栈 `.use(plugin)`
+ * 不传 options 走插件默认 ['yaml']，所以 headless 测试暴露不了）。
  */
 export const remarkFrontmatterPlugin = $remark(
   'remarkFrontmatter',
   () => remarkFrontmatter,
+  ['yaml'],
 );
 
 /** ProseMirror node schema for the `frontmatter` atom block. */
