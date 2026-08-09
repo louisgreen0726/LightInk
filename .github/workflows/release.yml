@@ -57,6 +57,7 @@ jobs:
           workspaces: src-tauri -> target
           cache-workspace-crates: true
           cache-bin: false
+          cache-on-failure: true  # 失败重跑（同 tag）可复用已编译依赖
 
       - name: Install frontend dependencies
         run: npm ci --prefer-offline --no-audit --no-fund
@@ -93,13 +94,33 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # WiX 3.14 的 light.exe 在 ICE 校验阶段依赖 VBScript（Windows Script Host）。
-      # windows-2025 镜像默认禁用 VBSCRIPT 可选功能，会导致
-      # "failed to run ... WixTools314\light.exe"（candle 成功、light 失败）。
+      # Windows 11 24H2 / Server 2025 起 VBScript 从可选功能（feature）迁移为
+      # 按需功能（FoD capability），`dism /enable-feature` 会报 0x800f080c
+      # "Feature name VBSCRIPT is unknown"。这里自动发现 capability 名称
+      # （如 VBSCRIPT~~~~0.0.1.0），并兼容旧镜像的可选功能形态。
       # 参考：https://github.com/tauri-apps/tauri/issues/13752
-      # DISM 幂等，旧镜像（已启用）上执行无副作用。
       - name: Enable VBScript for WiX MSI bundling
         if: runner.os == 'Windows'
-        run: dism /online /enable-feature /featurename:VBSCRIPT /norestart
+        shell: pwsh
+        run: |
+          $cap = Get-WindowsCapability -Online -Name 'VBSCRIPT*' | Select-Object -First 1
+          if ($cap) {
+            Write-Host "VBScript capability: $($cap.Name) state=$($cap.State)"
+            if ($cap.State -ne 'Installed') {
+              Add-WindowsCapability -Online -Name $cap.Name
+            }
+          } else {
+            $feat = Get-WindowsOptionalFeature -Online -FeatureName 'VBSCRIPT' -ErrorAction SilentlyContinue
+            if ($feat) {
+              Write-Host "VBScript optional feature state=$($feat.State)"
+              if ($feat.State -ne 'Enabled') {
+                Enable-WindowsOptionalFeature -Online -FeatureName 'VBSCRIPT' -NoRestart | Out-Null
+              }
+            } else {
+              Write-Error 'VBScript is neither a capability nor an optional feature on this image.'
+              exit 1
+            }
+          }
 
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v1
