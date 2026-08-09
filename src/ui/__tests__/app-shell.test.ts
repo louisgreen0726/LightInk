@@ -1,16 +1,18 @@
 /**
- * app-shell buildMenus 生产结构回归测试（R2）：
+ * app-shell buildMenus 生产结构回归测试（R2）+ immersive chrome DOM（R2/R3）：
  * 基于生产 buildMenus 产出（而非手写 spec）断言分隔项与菜单结构，
- * 防止「分隔符漏设 separator:true 而渲染为空白可点击按钮」的回归。
+ * 防止「分隔符漏设 separator:true 而渲染为空白可点击按钮」的回归；
+ * 并覆盖菜单/标签 chrome 默认折叠与 class 同步（node + minimal fake document）。
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { InsertElementId } from '../../editor/insert-commands.js';
 import type { BuiltinThemeId } from '../../theme/theme-service.js';
 import {
   buildMenus,
   buildRecentsMenuItems,
+  createAppShell,
   pathBaseName,
   pathDirName,
   type AppShellActions,
@@ -45,6 +47,220 @@ function stubActions(currentThemeId = 'warm-light'): AppShellActions {
     onToggleSourceMode: noop,
   };
 }
+
+/** Minimal DOM for createAppShell in node (no happy-dom/jsdom in project). */
+class FakeEl {
+  id = '';
+  className = '';
+  tabIndex = 0;
+  type = '';
+  hidden = false;
+  disabled = false;
+  private ownText = '';
+  children: FakeEl[] = [];
+  parent: FakeEl | null = null;
+  dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
+  private readonly attrs = new Map<string, string>();
+  private readonly listeners = new Map<string, Array<(e: unknown) => void>>();
+  readonly classList = {
+    contains: (c: string): boolean => this.className.split(/\s+/).filter(Boolean).includes(c),
+    add: (c: string): void => {
+      if (!this.classList.contains(c)) {
+        this.className = this.className === '' ? c : `${this.className} ${c}`;
+      }
+    },
+    toggle: (c: string, force?: boolean): boolean => {
+      const has = this.classList.contains(c);
+      const next = force === undefined ? !has : force;
+      if (next && !has) this.classList.add(c);
+      if (!next && has) {
+        this.className = this.className
+          .split(/\s+/)
+          .filter((x) => x && x !== c)
+          .join(' ');
+      }
+      return next;
+    },
+  };
+
+  constructor(readonly tagName: string) {}
+
+  get textContent(): string {
+    return this.ownText + this.children.map((c) => c.textContent).join('');
+  }
+
+  set textContent(value: string) {
+    this.ownText = value;
+    this.children = [];
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+
+  appendChild(child: FakeEl): FakeEl {
+    child.parent = this;
+    this.children.push(child);
+    return child;
+  }
+
+  append(...kids: FakeEl[]): void {
+    for (const kid of kids) {
+      this.appendChild(kid);
+    }
+  }
+
+  replaceChildren(...kids: FakeEl[]): void {
+    for (const kid of this.children) {
+      kid.parent = null;
+    }
+    this.children = [];
+    for (const kid of kids) {
+      this.appendChild(kid);
+    }
+  }
+
+  contains(node: unknown): boolean {
+    if (node === this) return true;
+    return this.children.some((child) => child.contains(node));
+  }
+
+  getBoundingClientRect(): { right: number; width: number; left: number; top: number } {
+    return { right: 0, width: 0, left: 0, top: 0 };
+  }
+
+  addEventListener(type: string, fn: (e: unknown) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(fn);
+    this.listeners.set(type, list);
+  }
+
+  removeEventListener(): void {
+    /* no-op for shell tests */
+  }
+
+  querySelector(selector: string): FakeEl | null {
+    if (selector.startsWith('#')) {
+      const id = selector.slice(1);
+      return this.find((el) => el.id === id);
+    }
+    return null;
+  }
+
+  private find(pred: (el: FakeEl) => boolean): FakeEl | null {
+    if (pred(this)) return this;
+    for (const child of this.children) {
+      const hit = child.find(pred);
+      if (hit) return hit;
+    }
+    return null;
+  }
+}
+
+class FakeDoc {
+  body = new FakeEl('body');
+  private readonly listeners = new Map<string, Array<(e: unknown) => void>>();
+
+  createElement(tag: string): FakeEl {
+    return new FakeEl(tag);
+  }
+
+  addEventListener(type: string, fn: (e: unknown) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(fn);
+    this.listeners.set(type, list);
+  }
+
+  removeEventListener(type: string, fn: (e: unknown) => void): void {
+    const list = this.listeners.get(type);
+    if (list === undefined) return;
+    this.listeners.set(
+      type,
+      list.filter((x) => x !== fn),
+    );
+  }
+}
+
+const originalDocument = (globalThis as { document?: unknown }).document;
+
+function installFakeDocument(): FakeDoc {
+  const doc = new FakeDoc();
+  (globalThis as { document: unknown }).document = doc;
+  return doc;
+}
+
+function restoreDocument(): void {
+  if (originalDocument === undefined) {
+    delete (globalThis as { document?: unknown }).document;
+  } else {
+    (globalThis as { document: unknown }).document = originalDocument;
+  }
+}
+
+describe('createAppShell immersive chrome', () => {
+  afterEach(() => {
+    restoreDocument();
+  });
+
+  it('defaults menu and tabs chrome collapsed with triggers', () => {
+    installFakeDocument();
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), { shortcutBindings: () => [] });
+    const fakeRoot = root as unknown as FakeEl;
+
+    expect(shell.chrome.isRevealed('menu')).toBe(false);
+    expect(shell.chrome.isRevealed('tabs')).toBe(false);
+    expect(fakeRoot.querySelector('#lightink-chrome-host')?.classList.contains('is-menu-revealed')).toBe(
+      false,
+    );
+    expect(fakeRoot.querySelector('#lightink-tabs-host')?.classList.contains('is-tabs-revealed')).toBe(
+      false,
+    );
+    expect(fakeRoot.querySelector('#lightink-menu-trigger')).not.toBeNull();
+    expect(fakeRoot.querySelector('#lightink-tabs-trigger')).not.toBeNull();
+  });
+
+  it('toggleTabsChrome and setTabsHold sync is-tabs-revealed', () => {
+    installFakeDocument();
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), { shortcutBindings: () => [] });
+    const tabsHost = (root as unknown as FakeEl).querySelector('#lightink-tabs-host');
+
+    shell.toggleTabsChrome();
+    expect(shell.chrome.isRevealed('tabs')).toBe(true);
+    expect(tabsHost?.classList.contains('is-tabs-revealed')).toBe(true);
+
+    shell.setTabsHold(true);
+    expect(shell.chrome.isRevealed('tabs')).toBe(true);
+    shell.toggleTabsChrome();
+    // hold blocks dismiss via toggle → dismiss path
+    expect(shell.chrome.isRevealed('tabs')).toBe(true);
+
+    shell.setTabsHold(false);
+    shell.toggleTabsChrome();
+    expect(shell.chrome.isRevealed('tabs')).toBe(false);
+    expect(tabsHost?.classList.contains('is-tabs-revealed')).toBe(false);
+  });
+
+  it('toggleMenuChrome syncs is-menu-revealed', () => {
+    installFakeDocument();
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), { shortcutBindings: () => [] });
+    const chromeHost = (root as unknown as FakeEl).querySelector('#lightink-chrome-host');
+
+    shell.toggleMenuChrome();
+    expect(shell.chrome.isRevealed('menu')).toBe(true);
+    expect(chromeHost?.classList.contains('is-menu-revealed')).toBe(true);
+    shell.toggleMenuChrome();
+    expect(shell.chrome.isRevealed('menu')).toBe(false);
+    expect(chromeHost?.classList.contains('is-menu-revealed')).toBe(false);
+  });
+});
 
 describe('buildMenus 生产结构', () => {
   const menus = buildMenus(stubActions());

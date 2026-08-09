@@ -1,13 +1,13 @@
 /**
- * Shell chrome visibility controller (immersive writing redesign R2).
+ * Shell chrome visibility controller (immersive writing redesign R2/R3).
  *
  * Owns pure reveal/dismiss/hold/hysteresis state for chrome surfaces so the
- * app shell can default to editor-first paint and only show menu chrome on
+ * app shell can default to editor-first paint and only show menu/tab chrome on
  * demand. DOM class application stays in app-shell; this module is headless-
  * testable with injectable timers.
  */
 
-export type ChromeSurface = 'menu';
+export type ChromeSurface = 'menu' | 'tabs';
 
 export interface ChromeControllerOptions {
   /** Leave-delay before auto-dismiss when pointer exits (ms). Default 180. */

@@ -102,4 +102,27 @@ describe('createChromeController', () => {
     }
     expect(chrome.isRevealed('menu')).toBe(true);
   });
+
+  it('tabs surface defaults hidden and is independent of menu', () => {
+    const chrome = createChromeController();
+    expect(chrome.isRevealed('tabs')).toBe(false);
+    chrome.reveal('tabs');
+    expect(chrome.isRevealed('tabs')).toBe(true);
+    expect(chrome.isRevealed('menu')).toBe(false);
+    chrome.reveal('menu');
+    chrome.dismiss('tabs');
+    expect(chrome.isRevealed('tabs')).toBe(false);
+    expect(chrome.isRevealed('menu')).toBe(true);
+  });
+
+  it('tabs hold blocks dismiss like menu', () => {
+    const chrome = createChromeController();
+    chrome.setHold('tabs', true);
+    expect(chrome.isRevealed('tabs')).toBe(true);
+    chrome.dismiss('tabs');
+    expect(chrome.isRevealed('tabs')).toBe(true);
+    chrome.setHold('tabs', false);
+    chrome.dismiss('tabs');
+    expect(chrome.isRevealed('tabs')).toBe(false);
+  });
 });

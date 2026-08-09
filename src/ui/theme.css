@@ -85,6 +85,47 @@ body {
   overflow: hidden;
 }
 
+/* Tabs chrome host: thin trigger + collapsible tab bar (R3, parity with menu). */
+.lightink-tabs-host {
+  position: relative;
+  flex: 0 0 auto;
+  z-index: 15;
+}
+
+.lightink-tabs-host:not(.is-tabs-revealed) #lightink-tabbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border-bottom-width: 0;
+  transform: translateY(-4px);
+  transition:
+    max-height 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.lightink-tabs-host.is-tabs-revealed #lightink-tabbar {
+  position: relative;
+  max-height: 48px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition:
+    max-height 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.lightink-tabs-host.is-tabs-revealed .lightink-chrome-trigger--tabs {
+  height: 0;
+  overflow: hidden;
+}
+
 /* 命令行：单排紧凑按钮，无堆叠。 */
 #lightink-toolbar {
   display: flex;

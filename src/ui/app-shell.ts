@@ -1,6 +1,6 @@
 /**
- * `app-shell` — 沉浸写作外壳：默认隐藏菜单 chrome，边缘/快捷键按需唤出；
- * 标签栏 + 大纲槽位 + 编辑区仍由既有接线驱动。
+ * `app-shell` — 沉浸写作外壳：默认隐藏菜单与标签 chrome，边缘/快捷键按需唤出；
+ * 大纲槽位 + 编辑区仍由既有接线驱动。
  *
  * 顶部为下拉菜单（文件/编辑/插入/视图/帮助），菜单项标注快捷键。
  * 插入菜单与斜杠命令共用 `insert-commands` 元素目录。
@@ -76,12 +76,16 @@ export interface AppShell {
   readonly editorArea: HTMLDivElement;
   /** 大纲侧栏槽位（主区左侧），由 outline 视图挂载内容。 */
   readonly outlineSidebar: HTMLDivElement;
-  /** Immersive chrome visibility owner (menu surface for T1). */
+  /** Immersive chrome visibility owner (menu + tabs surfaces). */
   readonly chrome: ChromeController;
   /** Reveal menu chrome and open the File menu (hotkey / first-run path). */
   revealMenu(): void;
   /** Toggle menu chrome reveal without forcing a specific panel open. */
   toggleMenuChrome(): void;
+  /** Toggle tabs chrome reveal (hotkey path). */
+  toggleTabsChrome(): void;
+  /** Hold tabs chrome open while a nested UI (e.g. context menu) is active. */
+  setTabsHold(hold: boolean): void;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -261,8 +265,21 @@ export function createAppShell(
 
   const toolbar = document.createElement('div');
   toolbar.id = 'lightink-toolbar';
+
+  const tabsHost = document.createElement('div');
+  tabsHost.id = 'lightink-tabs-host';
+  tabsHost.className = 'lightink-tabs-host';
+
+  const tabsTrigger = document.createElement('div');
+  tabsTrigger.id = 'lightink-tabs-trigger';
+  tabsTrigger.className = 'lightink-chrome-trigger lightink-chrome-trigger--tabs';
+  tabsTrigger.setAttribute('role', 'button');
+  tabsTrigger.setAttribute('aria-label', '显示标签栏');
+  tabsTrigger.tabIndex = 0;
+
   const tabBar = document.createElement('div');
   tabBar.id = 'lightink-tabbar';
+
   const editorArea = document.createElement('div');
   editorArea.id = 'lightink-editor-area';
   const outlineSidebar = document.createElement('div');
@@ -291,13 +308,20 @@ export function createAppShell(
   toolbar.appendChild(menuBar.element);
 
   chromeHost.replaceChildren(menuTrigger, toolbar);
-  root.replaceChildren(chromeHost, tabBar, mainRow);
+  tabsHost.replaceChildren(tabsTrigger, tabBar);
+  root.replaceChildren(chromeHost, tabsHost, mainRow);
   root.classList.add('lightink-immersive');
 
   function syncMenuChrome(): void {
     const revealed = chrome.isRevealed('menu');
     chromeHost.classList.toggle('is-menu-revealed', revealed);
     menuTrigger.setAttribute('aria-expanded', revealed ? 'true' : 'false');
+  }
+
+  function syncTabsChrome(): void {
+    const revealed = chrome.isRevealed('tabs');
+    tabsHost.classList.toggle('is-tabs-revealed', revealed);
+    tabsTrigger.setAttribute('aria-expanded', revealed ? 'true' : 'false');
   }
 
   function revealMenu(): void {
@@ -314,7 +338,17 @@ export function createAppShell(
     }
   }
 
-  function afterLeaveSync(): void {
+  function toggleTabsChrome(): void {
+    chrome.toggle('tabs');
+    syncTabsChrome();
+  }
+
+  function setTabsHold(hold: boolean): void {
+    chrome.setHold('tabs', hold);
+    syncTabsChrome();
+  }
+
+  function afterLeaveSync(sync: () => void): void {
     // Match chrome-controller leave hysteresis (180ms) with a small buffer.
     const schedule =
       typeof setTimeout === 'undefined'
@@ -323,25 +357,29 @@ export function createAppShell(
             return 0;
           }
         : (fn: () => void) => setTimeout(fn, 200);
-    schedule(syncMenuChrome);
+    schedule(sync);
   }
 
-  menuTrigger.addEventListener('pointerenter', () => {
-    chrome.pointerEnter('menu');
-    syncMenuChrome();
-  });
-  menuTrigger.addEventListener('pointerleave', () => {
-    chrome.pointerLeave('menu');
-    afterLeaveSync();
-  });
-  toolbar.addEventListener('pointerenter', () => {
-    chrome.pointerEnter('menu');
-    syncMenuChrome();
-  });
-  toolbar.addEventListener('pointerleave', () => {
-    chrome.pointerLeave('menu');
-    afterLeaveSync();
-  });
+  function bindSurfacePointer(
+    surface: 'menu' | 'tabs',
+    elements: readonly HTMLElement[],
+    sync: () => void,
+  ): void {
+    for (const el of elements) {
+      el.addEventListener('pointerenter', () => {
+        chrome.pointerEnter(surface);
+        sync();
+      });
+      el.addEventListener('pointerleave', () => {
+        chrome.pointerLeave(surface);
+        afterLeaveSync(sync);
+      });
+    }
+  }
+
+  bindSurfacePointer('menu', [menuTrigger, toolbar], syncMenuChrome);
+  bindSurfacePointer('tabs', [tabsTrigger, tabBar], syncTabsChrome);
+
   menuTrigger.addEventListener('click', () => {
     chrome.reveal('menu');
     syncMenuChrome();
@@ -354,7 +392,61 @@ export function createAppShell(
     }
   });
 
+  tabsTrigger.addEventListener('click', () => {
+    chrome.reveal('tabs');
+    syncTabsChrome();
+  });
+  tabsTrigger.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      chrome.reveal('tabs');
+      syncTabsChrome();
+    }
+  });
+
+  // Keep tabs chrome open while a tab context menu is up (opened from main).
+  tabBar.addEventListener('contextmenu', (event) => {
+    const target = event.target;
+    const tabBtn =
+      target instanceof HTMLElement ? target.closest<HTMLElement>('[data-tab-id]') : null;
+    if (tabBtn === null) {
+      return;
+    }
+    setTabsHold(true);
+    const release = (ev: Event): void => {
+      const node = ev.target;
+      if (node instanceof Node) {
+        if (tabBar.contains(node)) {
+          return;
+        }
+        if (node instanceof Element && node.closest('.lightink-context-menu') !== null) {
+          return;
+        }
+      }
+      setTabsHold(false);
+      document.removeEventListener('pointerdown', release, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+    const onKey = (ev: KeyboardEvent): void => {
+      if (ev.key === 'Escape') {
+        release(ev);
+      }
+    };
+    const attach =
+      typeof setTimeout === 'undefined'
+        ? (fn: () => void) => {
+            fn();
+            return 0;
+          }
+        : (fn: () => void) => setTimeout(fn, 0);
+    attach(() => {
+      document.addEventListener('pointerdown', release, true);
+      document.addEventListener('keydown', onKey, true);
+    });
+  });
+
   syncMenuChrome();
+  syncTabsChrome();
 
   function showCheatsheet(bindings: readonly CheatBinding[]): void {
     const overlay = document.createElement('div');
@@ -426,6 +518,8 @@ export function createAppShell(
     chrome,
     revealMenu,
     toggleMenuChrome,
+    toggleTabsChrome,
+    setTabsHold,
     renderTabBar,
   };
 }
