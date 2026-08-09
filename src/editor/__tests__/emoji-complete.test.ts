@@ -2,8 +2,8 @@
  * emoji 自动补全插件（T3 / R7）纯逻辑与 headless 状态推导测试。
  *
  * 覆盖：
- *   - 触发判定 `parseEmojiTrigger`：行中触发、`:` 前需行首/空白、
- *     查询至少 2 字符、查询必须直达光标；
+ *   - 触发判定 `parseEmojiTrigger`：行中触发、`:` 前不得为查询字符
+ *     （行首/空白/CJK/标点均可触发）、查询至少 2 字符、查询必须直达光标；
  *   - 检索 `filterEmoji`：大小写不敏感、主名前缀优先、无匹配为空、limit 截断；
  *   - 插件状态推导（EMOJI_PLUGIN_KEY.getState）：开/关、colonPos 指向 `:`、
  *     无匹配不弹窗、方向键环形选择、Esc 取消后相同触发文本保持关闭且
@@ -87,6 +87,12 @@ describe('parseEmojiTrigger', () => {
   it('triggers mid-line when `:` follows whitespace', () => {
     expect(parseEmojiTrigger('hello :smi')).toEqual({ query: 'smi' });
     expect(parseEmojiTrigger('中文 :sm')).toEqual({ query: 'sm' });
+  });
+
+  it('triggers when `:` directly follows CJK text or punctuation（中文写作无空格）', () => {
+    expect(parseEmojiTrigger('中文:sm')).toEqual({ query: 'sm' });
+    expect(parseEmojiTrigger('笑一个:joy')).toEqual({ query: 'joy' });
+    expect(parseEmojiTrigger('。:heart')).toEqual({ query: 'heart' });
   });
 
   it('rejects queries shorter than the minimum length', () => {

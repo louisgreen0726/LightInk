@@ -87,11 +87,14 @@ export interface EmojiTrigger {
 
 /**
  * 纯逻辑：给定「行首→光标」文本，判定是否为 emoji 触发。
- * 形如 `…␣:query`（`:` 前为行首或空白，query 无空白且长度 ≥ EMOJI_MIN_QUERY_LENGTH）
- * 返回 {query}；否则 null。
+ * 形如 `…<边界>:query`：`:` 前不得是查询字符（ASCII 字母/数字/`_+-`），
+ * 即行首、空白、中文等 CJK 字符或标点之后均可触发——中文写作不在字间敲
+ * 空格，仅放行「行首/空白」会让中文用户永远触发不了（2026-08-09 用户实测
+ * 反馈）。`foo:sm`（前贴英文字母）与 `12:30`（前贴数字）仍不触发。
+ * query 无空白且长度 ≥ EMOJI_MIN_QUERY_LENGTH 时返回 {query}；否则 null。
  */
 export function parseEmojiTrigger(linePrefix: string): EmojiTrigger | null {
-  const match = /(?:^|\s):([A-Za-z0-9_+-]{2,})$/.exec(linePrefix);
+  const match = /(?:^|[^A-Za-z0-9_+-]):([A-Za-z0-9_+-]{2,})$/.exec(linePrefix);
   if (match === null || match[1].length < EMOJI_MIN_QUERY_LENGTH) return null;
   return { query: match[1] };
 }
