@@ -58,7 +58,7 @@
   --lightink-line-height-body: 1.75;
   --lightink-line-height-code: 1.55;
   /* Middle column cap; scaled per display tier (see theme.css data-display). */
-  --lightink-measure: min(48rem, 100%);
+  --lightink-measure: min(112rem, 94%);
   /* Page chrome spacing (scaled per display tier in theme.css). */
   --lightink-page-pad-x: 28px;
   --lightink-page-pad-y: 24px;
@@ -110,7 +110,7 @@
   --lightink-font-size-code: 13.5px;
   --lightink-line-height-body: 1.75;
   --lightink-line-height-code: 1.55;
-  --lightink-measure: min(48rem, 100%);
+  --lightink-measure: min(112rem, 94%);
   --lightink-page-pad-x: 28px;
   --lightink-page-pad-y: 24px;
   --lightink-outline-width: 220px;
@@ -157,7 +157,7 @@
   --lightink-font-size-code: 13.5px;
   --lightink-line-height-body: 1.75;
   --lightink-line-height-code: 1.55;
-  --lightink-measure: min(48rem, 100%);
+  --lightink-measure: min(112rem, 94%);
   --lightink-page-pad-x: 28px;
   --lightink-page-pad-y: 24px;
   --lightink-outline-width: 220px;
@@ -204,7 +204,7 @@
   --lightink-font-size-code: 13.5px;
   --lightink-line-height-body: 1.75;
   --lightink-line-height-code: 1.55;
-  --lightink-measure: min(48rem, 100%);
+  --lightink-measure: min(112rem, 94%);
   --lightink-page-pad-x: 28px;
   --lightink-page-pad-y: 24px;
   --lightink-outline-width: 220px;
