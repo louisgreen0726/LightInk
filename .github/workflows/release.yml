@@ -93,35 +93,6 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      # WiX 3.14 的 light.exe 在 ICE 校验阶段依赖 VBScript（Windows Script Host）。
-      # Windows 11 24H2 / Server 2025 起 VBScript 从可选功能（feature）迁移为
-      # 按需功能（FoD capability），`dism /enable-feature` 会报 0x800f080c
-      # "Feature name VBSCRIPT is unknown"。这里自动发现 capability 名称
-      # （如 VBSCRIPT~~~~0.0.1.0），并兼容旧镜像的可选功能形态。
-      # 参考：https://github.com/tauri-apps/tauri/issues/13752
-      - name: Enable VBScript for WiX MSI bundling
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $cap = Get-WindowsCapability -Online -Name 'VBSCRIPT*' | Select-Object -First 1
-          if ($cap) {
-            Write-Host "VBScript capability: $($cap.Name) state=$($cap.State)"
-            if ($cap.State -ne 'Installed') {
-              Add-WindowsCapability -Online -Name $cap.Name
-            }
-          } else {
-            $feat = Get-WindowsOptionalFeature -Online -FeatureName 'VBSCRIPT' -ErrorAction SilentlyContinue
-            if ($feat) {
-              Write-Host "VBScript optional feature state=$($feat.State)"
-              if ($feat.State -ne 'Enabled') {
-                Enable-WindowsOptionalFeature -Online -FeatureName 'VBSCRIPT' -NoRestart | Out-Null
-              }
-            } else {
-              Write-Error 'VBScript is neither a capability nor an optional feature on this image.'
-              exit 1
-            }
-          }
-
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -133,7 +104,8 @@ jobs:
           releaseDraft: false
           prerelease: false
           retryAttempts: 3
-          args: --target ${{ matrix.target }}
+          # `--verbose` exposes the underlying WiX LGHT/ICE error in Actions logs.
+          args: --target ${{ matrix.target }} --verbose
 
   verify-release:
     name: Verify release assets
