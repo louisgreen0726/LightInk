@@ -718,6 +718,35 @@ manager = new TabManager({
       ],
       cancelId: 'skip',
     })) === 'restore',
+  // R13：未脏文件检测到磁盘更新（提示「可重新加载」）。
+  confirmExternalReload: async (tab) =>
+    (await showConfirmDialog(document, {
+      title: i18n.t('dialog.externalReload.title'),
+      message: i18n.t('dialog.externalReload.message', { title: tab.title }),
+      buttons: [
+        { id: 'reload', label: i18n.t('dialog.externalReload.reload'), kind: 'primary' },
+        { id: 'ignore', label: i18n.t('dialog.externalReload.ignore'), kind: 'plain' },
+      ],
+      cancelId: 'ignore',
+    })) === 'reload'
+      ? 'reload'
+      : 'ignore',
+  // R13：已脏文件 / 保存前检测到外部冲突（保留内存 / 重新加载 / 覆盖磁盘）。
+  confirmExternalConflict: async (tab) => {
+    const choice = await showConfirmDialog(document, {
+      title: i18n.t('dialog.externalConflict.title'),
+      message: i18n.t('dialog.externalConflict.message', { title: tab.title }),
+      buttons: [
+        { id: 'keep', label: i18n.t('dialog.externalConflict.keep'), kind: 'primary' },
+        { id: 'reload', label: i18n.t('dialog.externalConflict.reload'), kind: 'plain' },
+        { id: 'overwrite', label: i18n.t('dialog.externalConflict.overwrite'), kind: 'danger' },
+      ],
+      cancelId: 'keep',
+    });
+    if (choice === 'reload') return 'reload';
+    if (choice === 'overwrite') return 'overwrite';
+    return 'keep';
+  },
   onTabsChanged: renderTabBar,
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
@@ -1372,6 +1401,35 @@ function getShortcutBindings(): CheatBinding[] {
     shortcut: formatShortcutLabel(combo, isMac),
   }));
 }
+
+// R13：外部文件变更检测——窗口聚焦 + 定时（秒级）轮询活动文件 mtime。
+// 检测逻辑与冲突/重载分派在 TabManager（可注入测试），这里只做时机触发。
+async function pollExternalChange(): Promise<void> {
+  try {
+    await manager.checkActiveExternalChange();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('[lightink/external-change] check failed', error);
+  }
+}
+window.addEventListener('focus', () => {
+  void pollExternalChange();
+});
+// 秒级轮询兜底（聚焦间隙的外部修改）；弹窗进行中由 TabManager 自身守卫跳过。
+window.setInterval(() => {
+  void pollExternalChange();
+}, 3000);
+// Tauri 窗口聚焦事件比 DOM focus 更可靠地覆盖「从其它应用切回」的场景。
+void (async () => {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) void pollExternalChange();
+    });
+  } catch {
+    // 非 Tauri（纯前端 dev）：仅依赖 DOM focus + 定时轮询。
+  }
+})();
 
 async function bootstrap(): Promise<void> {
   // 先恢复崩溃遗留的未命名草稿（其副作用：为每个恢复草稿开标签）。

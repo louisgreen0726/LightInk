@@ -11,6 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 
 import type { EditorInstance } from '../../editor/types.js';
 import type { RoundtripDeps } from '../../file/roundtrip.js';
+import type {
+  ExternalConflictChoice,
+  ExternalReloadChoice,
+} from '../../file/external-change.js';
 import { fileNameOf, snapshotKeyOf, TabManager, type TabManagerDeps } from '../tab-manager.js';
 import type { CloseChoice, TabState } from '../types.js';
 
@@ -98,6 +102,8 @@ function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
       snapshots.delete(key);
     }),
     readStaleSnapshot: vi.fn(async () => null),
+    // R13：默认 stat 返回稳定基线（mtime=1000），外部变更测试用 overrides 覆盖。
+    statFile: vi.fn(async () => ({ mtime_ms: 1000, size: 0 })),
     snapshotDebounceMs: 1000,
     ...overrides,
   };
@@ -487,5 +493,141 @@ describe('保存与快照写入竞态', () => {
     resolveWrite!();
     await savePromise;
     expect(harness.roundtrip.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
+  });
+});
+
+describe('R13 外部文件变更检测', () => {
+  /** 可变 stat：返回值可随测试推进调整（模拟磁盘在外部被改写）。 */
+  function mutableStat(initial: { mtime_ms: number; size: number }) {
+    let cur = initial;
+    const fn = vi.fn(async () => ({ mtime_ms: cur.mtime_ms, size: cur.size }));
+    return { fn, set: (v: { mtime_ms: number; size: number }) => { cur = v; } };
+  }
+
+  const readFileFn = (h: Harness) => h.roundtrip.readFile as ReturnType<typeof vi.fn>;
+  const writeFileFn = (h: Harness) => h.roundtrip.writeFile as ReturnType<typeof vi.fn>;
+
+  it('保存前检测到外部冲突，选 keep 中止写入并保留脏态', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'keep');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    stat.set({ mtime_ms: 2000, size: 9 }); // 磁盘被外部改写
+    await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(false);
+    expect(confirmConflict).toHaveBeenCalledTimes(1);
+    expect(writeFileFn(harness)).not.toHaveBeenCalled();
+    expect(tab!.dirty).toBe(true);
+    expect(tab!.editor.getMarkdown()).toBe('mine');
+  });
+
+  it('保存前外部冲突，选 overwrite 仍写入（非静默覆盖）', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'overwrite');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    stat.set({ mtime_ms: 2000, size: 9 });
+    await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(true);
+    expect(writeFileFn(harness)).toHaveBeenCalledWith('C:\\a.md', 'mine');
+    expect(tab!.dirty).toBe(false);
+  });
+
+  it('保存前外部冲突，选 reload 从磁盘重载并放弃内存编辑', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'reload');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    stat.set({ mtime_ms: 2000, size: 9 });
+    readFileFn(harness).mockResolvedValue('disk-new');
+    await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(false);
+    expect(writeFileFn(harness)).not.toHaveBeenCalled();
+    expect(tab!.editor.getMarkdown()).toBe('disk-new');
+    expect(tab!.dirty).toBe(false);
+  });
+
+  it('轮询：未脏文件磁盘更新，选 reload 重载为新内容', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmReload = vi.fn(async (): Promise<ExternalReloadChoice> => 'reload');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalReload: confirmReload });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    expect(tab!.dirty).toBe(false);
+    stat.set({ mtime_ms: 2000, size: 9 });
+    readFileFn(harness).mockResolvedValue('disk-new');
+    await harness.manager.checkActiveExternalChange();
+    expect(confirmReload).toHaveBeenCalledTimes(1);
+    expect(tab!.editor.getMarkdown()).toBe('disk-new');
+    expect(tab!.dirty).toBe(false);
+  });
+
+  it('轮询：未脏文件磁盘更新，选 ignore 不重载且更新基线（不重复弹窗）', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmReload = vi.fn(async (): Promise<ExternalReloadChoice> => 'ignore');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalReload: confirmReload });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    stat.set({ mtime_ms: 2000, size: 9 });
+    await harness.manager.checkActiveExternalChange();
+    expect(tab!.editor.getMarkdown()).toBe('original'); // 未重载
+    // 基线已对齐到 {2000,9}：磁盘态不变 → 第二次轮询不再弹窗。
+    await harness.manager.checkActiveExternalChange();
+    expect(confirmReload).toHaveBeenCalledTimes(1);
+  });
+
+  it('轮询：已脏文件磁盘更新，选 keep 保留内存脏态且不写盘', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'keep');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    stat.set({ mtime_ms: 2000, size: 9 });
+    await harness.manager.checkActiveExternalChange();
+    expect(tab!.editor.getMarkdown()).toBe('mine');
+    expect(tab!.dirty).toBe(true);
+    expect(writeFileFn(harness)).not.toHaveBeenCalled();
+  });
+
+  it('轮询：已脏文件磁盘更新，选 overwrite 立即把内存内容写盘', async () => {
+    const stat = mutableStat({ mtime_ms: 1000, size: 5 });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'overwrite');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    stat.set({ mtime_ms: 2000, size: 9 });
+    await harness.manager.checkActiveExternalChange();
+    expect(writeFileFn(harness)).toHaveBeenCalledWith('C:\\a.md', 'mine');
+    expect(tab!.dirty).toBe(false);
+  });
+
+  it('stat 失败时轮询只上报错误、不弹窗、不自动动作（R13 失败行为）', async () => {
+    let fail = false;
+    let cur = { mtime_ms: 1000, size: 5 };
+    const statFile = vi.fn(async () => {
+      if (fail) throw new Error('gone');
+      return { mtime_ms: cur.mtime_ms, size: cur.size };
+    });
+    const reportError = vi.fn();
+    const confirmReload = vi.fn(async (): Promise<ExternalReloadChoice> => 'reload');
+    const harness = makeHarness({ statFile, reportError, confirmExternalReload: confirmReload });
+    readFileFn(harness).mockResolvedValue('original');
+    const tab = await harness.manager.openFile('C:\\a.md'); // 基线 {1000,5}
+    cur = { mtime_ms: 2000, size: 9 };
+    fail = true; // 磁盘文件被删/不可读
+    await harness.manager.checkActiveExternalChange();
+    expect(reportError).toHaveBeenCalledTimes(1);
+    expect(confirmReload).not.toHaveBeenCalled();
+    expect(tab!.editor.getMarkdown()).toBe('original'); // 不自动改动内容
   });
 });

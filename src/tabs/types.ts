@@ -6,6 +6,7 @@
  */
 
 import type { EditorInstance } from '../editor/types.js';
+import type { FileStat } from '../file/file-service.js';
 
 /** 单个标签页的完整会话状态。 */
 export interface TabState {
@@ -28,6 +29,11 @@ export interface TabState {
   readonly hostElement: HTMLElement;
   /** 最近一次已保存（或初始加载）的内容，用于比较得出脏标记。 */
   lastSavedMarkdown: string;
+  /**
+   * R13：最近一次加载/保存成功时记录的磁盘 `FileStat`（mtime+size），作为
+   * 外部变更检测基线。未命名标签或 stat 失败时为 null（不参与检测）。
+   */
+  lastSavedMtime: FileStat | null;
 }
 
 /** 关闭未保存标签时用户的三选一。 */

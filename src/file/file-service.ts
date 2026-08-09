@@ -21,6 +21,20 @@ export async function writeFile(path: string, content: string): Promise<void> {
   return invoke<void>('write_file', { path, content });
 }
 
+/**
+ * 文件 stat（R13 外部变更检测）：修改时间（ms，自 UNIX_EPOCH）+ 字节数。
+ * 字段名与 Rust `FileStat` 的 serde 序列化一致（snake_case 原样透传）。
+ * stat 失败（文件被删/权限）reject 可读错误信息。
+ */
+export interface FileStat {
+  readonly mtime_ms: number;
+  readonly size: number;
+}
+
+export async function statFile(path: string): Promise<FileStat> {
+  return invoke<FileStat>('stat_file', { path });
+}
+
 /** 写入崩溃恢复快照（应用数据目录，按文件路径哈希命名）。 */
 export async function writeSnapshot(filePath: string, content: string): Promise<void> {
   return invoke<void>('write_snapshot', { filePath, content });

@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 /// 读取 UTF-8 文本文件。io 错误映射为可读的中文错误信息。
 pub fn read_file_impl(path: &Path) -> Result<String, String> {
@@ -49,6 +50,38 @@ pub fn read_file(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
     write_file_impl(Path::new(&path), &content)
+}
+
+/// 文件 stat 结果（返回前端用于 R13 外部变更检测）：修改时间（毫秒，自
+/// UNIX_EPOCH）+ 字节数。两者经 mtime 对比判定磁盘是否比记录基线更新。
+#[derive(serde::Serialize, Debug)]
+pub struct FileStat {
+    pub mtime_ms: u64,
+    pub size: u64,
+}
+
+/// 取文件的修改时间（ms）与大小。读不到元数据/修改时间时报可读中文错误
+/// （R13 失败行为：stat 失败 → 前端提示文件不可读，不做自动动作）。
+pub fn stat_file_impl(path: &Path) -> Result<FileStat, String> {
+    let meta = fs::metadata(path)
+        .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?;
+    let mtime = meta
+        .modified()
+        .map_err(|e| format!("无法读取修改时间 {}: {}", path.display(), e))?;
+    // mtime 早于 UNIX_EPOCH（极端情况）视为 0；正常文件不会触发。
+    let mtime_ms = mtime
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(FileStat {
+        mtime_ms,
+        size: meta.len(),
+    })
+}
+
+#[tauri::command]
+pub fn stat_file(path: String) -> Result<FileStat, String> {
+    stat_file_impl(Path::new(&path))
 }
 
 #[cfg(test)]
@@ -114,5 +147,24 @@ mod tests {
         let path = dir.path().join("deep").join("nested").join("f.md");
         write_file_impl(&path, "hello").expect("write");
         assert_eq!(read_file_impl(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn stat_returns_mtime_and_size() {
+        let dir = temp_dir();
+        let path = dir.path().join("stat.md");
+        let content = "# 笔记 📝\n中文内容\n";
+        write_file_impl(&path, content).expect("write");
+        let st = stat_file_impl(&path).expect("stat");
+        assert_eq!(st.size, content.len() as u64);
+        assert!(st.mtime_ms > 0, "mtime should be a real epoch ms");
+    }
+
+    #[test]
+    fn stat_missing_file_reports_error() {
+        let dir = temp_dir();
+        let missing = dir.path().join("nope.md");
+        let err = stat_file_impl(&missing).expect_err("must fail");
+        assert!(err.contains("无法读取文件信息"), "unexpected error: {}", err);
     }
 }
