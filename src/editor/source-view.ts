@@ -19,6 +19,7 @@ import hljs from 'highlight.js/lib/core';
 import hljsMarkdown from 'highlight.js/lib/languages/markdown';
 
 import { highlightCode } from './plugins/code-highlight.js';
+import { convertHtmlToMarkdown } from './html-to-markdown.js';
 
 // 共享 hljs 单例（与 code-highlight.ts 同一实例）注册 markdown 语法，使 highlightCode
 // 能高亮 Markdown 源。仅注册一次。
@@ -210,6 +211,22 @@ export class SourceView {
     };
     textarea.addEventListener('input', onInput);
     textarea.addEventListener('scroll', onScroll);
+    // R8：源码模式粘贴富文本（text/html）同样转结构化 Markdown 插入，不插入原始
+    // HTML 标签；无 text/html 或转换失败则回落原生纯文本粘贴，保证不丢内容。
+    const onPaste = (event: ClipboardEvent): void => {
+      const cd = event.clipboardData;
+      if (cd === null) return;
+      const pastedHtml = cd.getData('text/html');
+      if (pastedHtml === '') return;
+      const md = convertHtmlToMarkdown(pastedHtml);
+      if (md === '') return; // 回落原生纯文本粘贴
+      event.preventDefault();
+      const ta2 = this.textarea;
+      if (ta2 === null) return;
+      ta2.setRangeText(md, ta2.selectionStart, ta2.selectionEnd, 'end');
+      this.refreshFromTextarea();
+    };
+    textarea.addEventListener('paste', onPaste);
 
     wrapper.appendChild(pre);
     wrapper.appendChild(textarea);

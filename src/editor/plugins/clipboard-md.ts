@@ -29,6 +29,7 @@ import { CellSelection } from '@milkdown/prose/tables';
 import type { EditorView } from '@milkdown/prose/view';
 
 import { clipboardHasImage } from '../../asset/clipboard.js';
+import { convertHtmlToMarkdown } from '../html-to-markdown.js';
 import { routeClipboardPaste } from '../paste.js';
 import {
   encodeMatrixClipboardText,
@@ -39,6 +40,20 @@ import {
 } from './table-ops.js';
 
 const PLUGIN_KEY = new PluginKey('lightink-clipboard-md');
+
+/**
+ * 安全读取剪贴板某 MIME：部分宿主对自定义/未知 MIME 调 getData 会抛错或返回非串，
+ * 统一兜底为空串。`application/x-lightink-table` 用于识别 LightInk 内部表格复制载荷
+ * （含 text/html 的 HTML 表格），此时须交 tableOpsPlugin 接管，不走 HTML→MD 转换。
+ */
+function readClipboardMime(dt: DataTransfer | null | undefined, mime: string): string {
+  if (dt === null || dt === undefined) return '';
+  try {
+    return dt.getData(mime) ?? '';
+  } catch {
+    return '';
+  }
+}
 
 /**
  * 构造复制剪贴板数据：`text/plain` 即 Markdown 源（R9 outcome#1 的纯逻辑契约）。
@@ -67,6 +82,22 @@ export const clipboardMdPlugin = $prose((ctx: Ctx) => {
         if (view.state.selection instanceof CellSelection) {
           return false;
         }
+        // R8 富文本粘贴：剪贴板含 text/html（飞书/钉钉/浏览器/Word）且非 LightInk
+        // 内部表格载荷时，优先 HTML→Markdown 结构化插入；转换空/解析失败则回退到
+        // 下方既有纯文本路径，保证不丢内容、不崩溃。
+        const html = readClipboardMime(dt, 'text/html');
+        if (html !== '' && readClipboardMime(dt, 'application/x-lightink-table') === '') {
+          const md = convertHtmlToMarkdown(html);
+          if (md !== '') {
+            try {
+              insert(md)(ctx);
+              return true;
+            } catch {
+              // 解析失败 → 继续回退默认粘贴。
+            }
+          }
+        }
+        // 既有路径：纯文本看起来像 Markdown 源 → 解析替换选区；纯文本交默认。
         const text = dt?.getData('text/plain') ?? '';
         if (routeClipboardPaste(text) !== 'markdown') {
           return false;
