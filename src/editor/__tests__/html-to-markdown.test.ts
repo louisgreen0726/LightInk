@@ -127,3 +127,29 @@ describe('convertHtmlToMarkdown（R8 allowlist）', () => {
     expect(md).toBe('段一\n\n```\nline one  \nline two\n```\n\n段二');
   });
 });
+
+describe('HTML 注释/DOCTYPE/CDATA 剥离（Delivery Review P1）', () => {
+  it('CF_HTML 的 StartFragment/EndFragment 注释不残留可见文本', () => {
+    const html =
+      '<html><body><!--StartFragment--><p>Hello <b>world</b></p><!--EndFragment--></body></html>';
+    const md = convertHtmlToMarkdown(html);
+    expect(md).toBe('Hello **world**');
+    expect(md).not.toContain('!--');
+  });
+
+  it('DOCTYPE 与 Word 条件注释被剥离', () => {
+    const html =
+      '<!DOCTYPE html><p>甲</p><!--[if mso]><v:shape>占位</v:shape><![endif]--><p>乙</p>';
+    expect(convertHtmlToMarkdown(html)).toBe('甲\n\n乙');
+  });
+
+  it('CDATA 与处理指令被剥离', () => {
+    expect(convertHtmlToMarkdown('<p>甲</p><![CDATA[ junk ]]><?xml version="1.0"?><p>乙</p>')).toBe(
+      '甲\n\n乙',
+    );
+  });
+
+  it('未闭合注释截断到末尾（残缺剪贴板不残留）', () => {
+    expect(convertHtmlToMarkdown('<p>可见</p><!-- 截断')).toBe('可见');
+  });
+});

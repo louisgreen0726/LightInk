@@ -86,6 +86,16 @@ type Token = OpenToken | CloseToken | TextToken;
 const TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
 const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'=]+)))?/g;
 
+/**
+ * 剥离 HTML 注释 / DOCTYPE / CDATA / 处理指令（含未闭合截断情形）：
+ * Windows CF_HTML 剪贴板（浏览器 <!--StartFragment-->、Word 条件注释）几乎
+ * 必然携带；TAG_RE 不识别它们时会落入文本节点、经 escapeMd 变成可见垃圾
+ * 文本（Delivery Review P1）。已知取舍：<pre> 内作为字面示例出现的注释同样
+ * 被剥离——真实剪贴板来源中这远比可见垃圾罕见。
+ */
+const JUNK_RE =
+  /<!--[\s\S]*?(?:-->|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<![^>]*>|<\?[\s\S]*?\?>/g;
+
 /** 没有闭合标签的 void 元素（allowlist 内）。 */
 const VOID_TAGS = new Set(['img', 'br', 'hr', 'input', 'wbr']);
 
@@ -104,13 +114,14 @@ function parseAttrs(attrString: string): Record<string, string> {
 }
 
 function tokenize(html: string): Token[] {
+  const cleaned = html.replace(JUNK_RE, '');
   const tokens: Token[] = [];
   TAG_RE.lastIndex = 0;
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = TAG_RE.exec(html)) !== null) {
+  while ((m = TAG_RE.exec(cleaned)) !== null) {
     if (m.index > last) {
-      const text = html.slice(last, m.index);
+      const text = cleaned.slice(last, m.index);
       if (text !== '') tokens.push({ type: 'text', value: text });
     }
     last = TAG_RE.lastIndex;
@@ -123,8 +134,8 @@ function tokenize(html: string): Token[] {
       tokens.push({ type: 'open', tag, attrs, selfClosing: VOID_TAGS.has(tag) || m[3].endsWith('/') });
     }
   }
-  if (last < html.length) {
-    const text = html.slice(last);
+  if (last < cleaned.length) {
+    const text = cleaned.slice(last);
     if (text !== '') tokens.push({ type: 'text', value: text });
   }
   return tokens;
