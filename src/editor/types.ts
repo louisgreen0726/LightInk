@@ -181,6 +181,11 @@ export interface EditorInstance {
    */
   focus(): void;
   /**
+   * 全选当前文档（渐进式：表格内逐层 cell→table→doc，表外 文本块→整篇），与
+   * Mod-a 行为一致。供「编辑/右键 全选」菜单（R10）使用；未就绪时为空操作。
+   */
+  selectAll(): void;
+  /**
    * Undo the last document change via ProseMirror history.
    * Prefer this over synthetic Ctrl+Z key events (menus steal focus).
    */

@@ -507,6 +507,9 @@ shell = createAppShell(
     onCopy: () => runClipboardCommand('copy'),
     onPaste: () => runClipboardCommand('paste'),
     onFind: () => openFindPanel(),
+    // T6/R10：全选（双模式）；含未保存新标签在内的任意活动文档均可用。
+    onSelectAll: () => selectAllActive(),
+    hasActiveDocument: () => manager.activeTab !== null,
     onInsertElement: insertElement,
     onToggleTheme: () => {
       themeService.toggle();
@@ -915,6 +918,21 @@ function commitSourceMode(tabId: string): void {
   }
 }
 
+/**
+ * T6/R10：全选活动文档（双模式）。WYSIWYG 走编辑器渐进式 selectAll（与 Mod-a 一致），
+ * 源码模式选源码 textarea 全文。无活动文档时空操作。
+ */
+function selectAllActive(): void {
+  const tab = manager.activeTab;
+  if (tab === null) return;
+  const sourceView = sourceViews.get(tab.id);
+  if (sourceView !== undefined && sourceView.isSourceMode) {
+    sourceView.selectAll();
+    return;
+  }
+  tab.editor.selectAll();
+}
+
 // ---------------------------------------------------------------------------
 // T4/R2：查找与替换壳层。面板本身不感知模式；这里按活动标签的当前模式分派：
 //   WYSIWYG → find-replace 插件（decoration 高亮全部/当前命中；替换为单个
@@ -1154,6 +1172,17 @@ document.addEventListener(
 const shortcuts = new ShortcutRegistry({
   new: () => void manager.newTab(),
   open: () => void manager.openFile(),
+  // T6/R9：关闭活动标签，复用 closeTab 的未保存确认（与点标签关闭按钮同路径：
+  // 先提交源码态编辑，再 closeTab——干净标签直关，脏标签弹三选一确认）。
+  // 无活动标签时空操作。注：WebView2 可能由外壳吞掉 Ctrl+W，需真机确认；
+  // 若被吞，备选组合键 Ctrl+Shift+W / Alt+W（见 task-run concerns）。
+  'close-tab': () => {
+    const id = manager.activeTabId;
+    if (id !== null) {
+      commitSourceMode(id);
+      void manager.closeTab(id);
+    }
+  },
   save: () => {
     commitActiveSourceMode();
     void manager.saveActiveTab();
@@ -1220,6 +1249,7 @@ function showEditorContextMenu(x: number, y: number): void {
       copy: () => runClipboardCommand('copy'),
       paste: () => runClipboardCommand('paste'),
       pastePlain: () => runClipboardCommand('paste'),
+      selectAll: () => selectAllActive(),
       bold: () => tab.editor.toggleMark('strong'),
       italic: () => tab.editor.toggleMark('emphasis'),
       link: () => {

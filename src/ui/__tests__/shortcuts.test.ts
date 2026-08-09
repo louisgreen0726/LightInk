@@ -43,6 +43,7 @@ describe('默认键位映射', () => {
     expect(DEFAULT_SHORTCUTS).toEqual({
       new: 'Ctrl+N',
       open: 'Ctrl+O',
+      'close-tab': 'Ctrl+W',
       save: 'Ctrl+S',
       'save-as': 'Ctrl+Shift+S',
       'toggle-theme': 'Ctrl+J',
@@ -137,6 +138,19 @@ describe('ShortcutRegistry 派发', () => {
     const { handlers, registry } = makeRegistry();
     expect(registry.handleKeyDown(keyEvent({ key: 'j' }))).toBe(true);
     expect(handlers['toggle-theme']).toHaveBeenCalledTimes(1);
+  });
+
+  it('关闭标签（Ctrl+W / Cmd+W）派发', () => {
+    const closeTab = vi.fn();
+    const registry = new ShortcutRegistry({ 'close-tab': closeTab });
+    expect(registry.handleKeyDown(keyEvent({ key: 'w' }))).toBe(true);
+    expect(closeTab).toHaveBeenCalledTimes(1);
+    // macOS Cmd 等价。
+    expect(registry.handleKeyDown(keyEvent({ key: 'w', ctrlKey: false, metaKey: true }))).toBe(true);
+    expect(closeTab).toHaveBeenCalledTimes(2);
+    // Shift 变体不命中（保留给未来「关闭其他」等）。
+    expect(registry.handleKeyDown(keyEvent({ key: 'w', shiftKey: true }))).toBe(false);
+    expect(closeTab).toHaveBeenCalledTimes(2);
   });
 
   it('标签 chrome 与切换（Alt+T / Ctrl+Tab / Ctrl+Shift+Tab）派发', () => {

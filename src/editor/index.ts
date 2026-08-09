@@ -51,7 +51,7 @@ import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, imageDisplayPlugin, insertImageAt, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
-import { progressiveSelectPlugin } from './plugins/progressive-select.js';
+import { progressiveSelectAll, progressiveSelectPlugin } from './plugins/progressive-select.js';
 import { slashMenuPlugin } from './plugins/slash-menu.js';
 import { taskCheckboxPlugin } from './plugins/task-checkbox.js';
 import { runTableOp, type TableOpId } from './plugins/table-ops.js';
@@ -372,6 +372,12 @@ export async function mountEditor(
       const view = getView(state);
       if (view === null) return;
       view.focus();
+    },
+    selectAll(): void {
+      const view = getView(state);
+      if (view === null) return;
+      view.focus();
+      progressiveSelectAll(view.state, view.dispatch.bind(view));
     },
     undo(): void {
       const view = getView(state);

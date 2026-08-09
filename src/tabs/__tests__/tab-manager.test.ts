@@ -43,6 +43,7 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     isInTable: () => false,
     runTableOp: () => false,
     focus: vi.fn(),
+    selectAll: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     destroy: vi.fn(async () => undefined),

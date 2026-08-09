@@ -2,8 +2,8 @@
  * `shortcuts` — 极简 UI 的键盘快捷键注册表（T6, R11）。
  *
  * 核心操作单快捷键直达：
- *   Ctrl+N 新建 / Ctrl+O 打开 / Ctrl+S 保存 / Ctrl+Shift+S 另存为 /
- *   Ctrl+J 切换主题。
+ *   Ctrl+N 新建 / Ctrl+O 打开 / Ctrl+W 关闭标签 / Ctrl+S 保存 /
+ *   Ctrl+Shift+S 另存为 / Ctrl+J 切换主题。
  *
  * 键位说明：
  *   - Ctrl+T 在多数浏览器/WebView 中是保留键（新建标签页），避开；
@@ -26,6 +26,7 @@
 export type ShortcutAction =
   | 'new'
   | 'open'
+  | 'close-tab'
   | 'save'
   | 'save-as'
   | 'toggle-theme'
@@ -46,6 +47,8 @@ export type ShortcutAction =
 export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   new: 'Ctrl+N',
   open: 'Ctrl+O',
+  // T6/R9：关闭活动标签（复用 closeTab 未保存确认；WebView2 可能吞键，见 main 接线注释）。
+  'close-tab': 'Ctrl+W',
   save: 'Ctrl+S',
   'save-as': 'Ctrl+Shift+S',
   'toggle-theme': 'Ctrl+J',

@@ -450,6 +450,7 @@ describe('createOutlineView + TabManager', () => {
       isInTable: () => false,
       runTableOp: () => false,
       focus: () => undefined,
+      selectAll: () => undefined,
       undo: () => undefined,
       redo: () => undefined,
       destroy: vi.fn(async () => undefined),

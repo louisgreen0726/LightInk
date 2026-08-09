@@ -135,6 +135,8 @@ export interface EditorMenuActions {
   copy(): void;
   paste(): void;
   pastePlain(): void;
+  /** T6/R10：全选当前文档（双模式）。 */
+  selectAll(): void;
   bold(): void;
   italic(): void;
   link(): void;
@@ -164,6 +166,13 @@ export function buildEditorContextMenuItems(
     { id: 'copy', label: t('ctx.copy'), action: actions.copy, enabled: () => ctx.hasSelection },
     { id: 'paste', label: t('ctx.paste'), action: actions.paste },
     { id: 'paste-plain', label: t('ctx.pastePlain'), action: actions.pastePlain },
+    // T6/R10：全选（双模式可用——源码模式仅返回 clipboardItems，故放在此处）。
+    {
+      id: 'select-all',
+      label: t('ctx.selectAll'),
+      shortcut: sc('Ctrl+A'),
+      action: actions.selectAll,
+    },
   ];
   // 源码模式：格式/链接动作作用于背后的 WYSIWYG 编辑器而非源码 textarea，
   // 展示会误导——只保留剪贴板项（execCommand 对聚焦的 textarea 同样生效）。

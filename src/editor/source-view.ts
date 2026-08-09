@@ -273,6 +273,14 @@ export class SourceView {
     this.textarea?.focus();
   }
 
+  /** 源码态全选 textarea（R10 菜单「全选」）。非源码态为空操作。 */
+  selectAll(): void {
+    if (!this.controller.isSourceMode() || this.textarea === null) return;
+    const ta = this.textarea;
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length);
+  }
+
   /** 退出源码模式，把 textarea 文本写回编辑器。 */
   exit(): void {
     if (!this.controller.isSourceMode() || this.wrapper === null) return;

@@ -56,6 +56,13 @@ export interface AppShellActions {
   onCopy(): void;
   onPaste(): void;
   /**
+   * T6/R10：全选当前文档内容（双模式：WYSIWYG 渐进式 / 源码 textarea）。
+   * 可选——测试 stub 可省略（菜单动作空操作）。
+   */
+  onSelectAll?(): void;
+  /** T6/R10：是否有活动文档（编辑菜单「全选」启用判定，含未保存新标签）。 */
+  hasActiveDocument?(): boolean;
+  /**
    * T4/R2：打开查找替换面板。可选——测试 stub 可省略（菜单动作空操作）。
    * 无活动标签时实现方自行空操作。
    */
@@ -353,6 +360,15 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         menuItem('edit-cut', () => t('edit.cut'), actions.onCut, sc(actions, 'Ctrl+X')),
         menuItem('edit-copy', () => t('edit.copy'), actions.onCopy, sc(actions, 'Ctrl+C')),
         menuItem('edit-paste', () => t('edit.paste'), actions.onPaste, sc(actions, 'Ctrl+V')),
+        // T6/R10：全选（双模式）。无活动文档时禁用；Ctrl+A 由 progressive-select 插件
+        //（WYSIWYG）与原生 textarea（源码模式）处理，此处仅为菜单显式入口与快捷键提示。
+        menuItem(
+          'edit-select-all',
+          () => t('edit.selectAll'),
+          () => actions.onSelectAll?.(),
+          sc(actions, 'Ctrl+A'),
+          () => actions.hasActiveDocument?.() !== false,
+        ),
         separator('edit-sep2'),
         // T4/R2：查找与替换面板。i18n 目录（src/i18n/messages.ts）不在本任务
         // scope 内，标签按当前 locale 内联双语；快捷键 Ctrl+F/Cmd+F 在 main.ts

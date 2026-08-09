@@ -18,6 +18,7 @@ const noopActions = (): EditorMenuActions => ({
   copy: () => undefined,
   paste: () => undefined,
   pastePlain: () => undefined,
+  selectAll: () => undefined,
   bold: () => undefined,
   italic: () => undefined,
   link: () => undefined,
@@ -52,6 +53,8 @@ describe('buildEditorContextMenuItems (R3)', () => {
     // paste 始终可用
     expect(m['paste']).toBe(true);
     expect(m['paste-plain']).toBe(true);
+    // T6/R10：全选始终可用（即使无选区）。
+    expect(m['select-all']).toBe(true);
   });
 
   it('enables cut/copy/format when there is a selection', () => {
@@ -83,7 +86,7 @@ describe('buildEditorContextMenuItems (R3)', () => {
       { hasSelection: true, hasLink: true, inSourceMode: true },
       noopActions(),
     );
-    expect(items.map((i) => i.id)).toEqual(['cut', 'copy', 'paste', 'paste-plain']);
+    expect(items.map((i) => i.id)).toEqual(['cut', 'copy', 'paste', 'paste-plain', 'select-all']);
     // 选区判定仍然生效。
     const noSel = enabledMap(
       buildEditorContextMenuItems({ hasSelection: false, hasLink: false, inSourceMode: true }, noopActions()),
@@ -91,6 +94,8 @@ describe('buildEditorContextMenuItems (R3)', () => {
     expect(noSel['cut']).toBe(false);
     expect(noSel['copy']).toBe(false);
     expect(noSel['paste']).toBe(true);
+    // 源码模式下全选同样可用（双模式 R10）。
+    expect(noSel['select-all']).toBe(true);
   });
 });
 
