@@ -54,6 +54,7 @@ import { slashMenuPlugin } from './plugins/slash-menu.js';
 import { taskCheckboxPlugin } from './plugins/task-checkbox.js';
 import { runTableOp, type TableOpId } from './plugins/table-ops.js';
 import { tableOpsPlugin } from './plugins/table-ops.js';
+import { tocPlugin } from './plugins/toc.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
 import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
@@ -185,7 +186,10 @@ export async function mountEditor(
         // T8：LaTeX 公式即时渲染（KaTeX 按需加载 + 错误隔离，见 R8）。
         .use(mathPlugin)
         // T9：mermaid 代码块即时渲染（按需加载 + 语法错误隔离，见 R9）。
-        .use(mermaidPlugin);
+        .use(mermaidPlugin)
+        // T2：[TOC] 标记段落渲染为可点击目录（R6）。纯 decoration 插件，
+        // 不改写文档，字面 [TOC] 段落随 getMarkdown 原样往返。
+        .use(tocPlugin);
       // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {
         editor.use(
