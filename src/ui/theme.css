@@ -30,6 +30,61 @@ body {
   height: 100vh;
 }
 
+/* Immersive chrome host: thin top trigger + collapsible menu bar. */
+.lightink-chrome-host {
+  position: relative;
+  flex: 0 0 auto;
+  z-index: 20;
+}
+
+.lightink-chrome-trigger {
+  height: 6px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  outline: none;
+}
+
+.lightink-chrome-trigger:hover,
+.lightink-chrome-trigger:focus-visible {
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-chrome-host:not(.is-menu-revealed) #lightink-toolbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border-bottom-width: 0;
+  transform: translateY(-4px);
+  transition:
+    max-height 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.lightink-chrome-host.is-menu-revealed #lightink-toolbar {
+  position: relative;
+  max-height: 48px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition:
+    max-height 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.lightink-chrome-host.is-menu-revealed .lightink-chrome-trigger {
+  height: 0;
+  overflow: hidden;
+}
+
 /* 命令行：单排紧凑按钮，无堆叠。 */
 #lightink-toolbar {
   display: flex;

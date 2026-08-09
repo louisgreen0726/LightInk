@@ -50,6 +50,7 @@ describe('默认键位映射', () => {
       'insert-image': 'Ctrl+Alt+I',
       'toggle-outline': 'Ctrl+Shift+L',
       'toggle-source-mode': 'Ctrl+/',
+      'toggle-menu-chrome': 'Alt+M',
     });
   });
 });

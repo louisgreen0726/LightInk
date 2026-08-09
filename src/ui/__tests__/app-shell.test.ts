@@ -8,7 +8,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { InsertElementId } from '../../editor/insert-commands.js';
 import type { BuiltinThemeId } from '../../theme/theme-service.js';
-import { buildMenus, buildRecentsMenuItems, pathBaseName, pathDirName, type AppShellActions } from '../app-shell.js';
+import {
+  buildMenus,
+  buildRecentsMenuItems,
+  pathBaseName,
+  pathDirName,
+  type AppShellActions,
+} from '../app-shell.js';
 
 function stubActions(currentThemeId = 'warm-light'): AppShellActions {
   const noop = (): void => undefined;

@@ -28,7 +28,8 @@ export type ShortcutAction =
   | 'insert-link'
   | 'insert-image'
   | 'toggle-outline'
-  | 'toggle-source-mode';
+  | 'toggle-source-mode'
+  | 'toggle-menu-chrome';
 
 export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   new: 'Ctrl+N',
@@ -41,6 +42,8 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   'insert-image': 'Ctrl+Alt+I',
   'toggle-outline': 'Ctrl+Shift+L',
   'toggle-source-mode': 'Ctrl+/',
+  // Immersive shell: Alt alone is awkward; Alt+M toggles menu chrome.
+  'toggle-menu-chrome': 'Alt+M',
 };
 
 /** 结构化键盘事件（兼容 DOM KeyboardEvent 的结构子集）。 */

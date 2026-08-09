@@ -531,6 +531,7 @@ const shortcuts = new ShortcutRegistry({
   'insert-image': () => insertElement('image'),
   'toggle-outline': () => outline.toggleCollapse(),
   'toggle-source-mode': () => toggleActiveSourceMode(),
+  'toggle-menu-chrome': () => shell.toggleMenuChrome(),
 });
 shortcuts.attach(document);
 
@@ -641,6 +642,7 @@ const SHORTCUT_LABELS: Readonly<Record<ShortcutAction, string>> = {
   'insert-image': '插入图片',
   'toggle-outline': '大纲显隐',
   'toggle-source-mode': '源码模式',
+  'toggle-menu-chrome': '菜单栏显隐',
 };
 
 /** 快捷键速查表数据源（R5）：从注册表派生标签→组合键。 */

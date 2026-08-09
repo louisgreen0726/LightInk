@@ -37,6 +37,8 @@ export interface Menu {
 
 export interface MenuBarSpec {
   menus: Menu[];
+  /** Fires when open menu id changes (null = all closed). Used by immersive chrome hold. */
+  onOpenChange?: (openMenuId: string | null) => void;
 }
 
 export interface MenuBar {
@@ -62,20 +64,33 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     openFlyout = null;
   }
 
+  function notifyOpenChange(next: string | null): void {
+    if (openMenuId === next) {
+      return;
+    }
+    openMenuId = next;
+    spec.onOpenChange?.(next);
+  }
+
   function closeAll(): void {
     closeFlyout();
     for (const panel of panels.values()) {
       panel.hidden = true;
     }
-    openMenuId = null;
+    notifyOpenChange(null);
   }
 
   function openMenu(menuId: string): void {
-    closeAll();
+    closeFlyout();
+    for (const panel of panels.values()) {
+      panel.hidden = true;
+    }
     const panel = panels.get(menuId);
     if (panel !== undefined) {
       panel.hidden = false;
-      openMenuId = menuId;
+      notifyOpenChange(menuId);
+    } else {
+      notifyOpenChange(null);
     }
   }
 
@@ -206,6 +221,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
         openMenu(menu.id);
       }
     });
+    // Immersive shell: opening any menu panel keeps chrome held via onOpenChange.
 
     const panel = doc.createElement('div');
     panel.className = 'lightink-menu-panel';

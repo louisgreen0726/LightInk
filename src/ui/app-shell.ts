@@ -1,16 +1,16 @@
 /**
- * `app-shell` — 极简应用外壳（R2 重构）：下拉菜单栏 + 标签栏 + 编辑区。
+ * `app-shell` — 沉浸写作外壳：默认隐藏菜单 chrome，边缘/快捷键按需唤出；
+ * 标签栏 + 大纲槽位 + 编辑区仍由既有接线驱动。
  *
- * 顶部为下拉菜单（文件/编辑/插入/视图/帮助），菜单项标注快捷键；菜单不挤占
- * 编辑区纵向空间。插入菜单与斜杠命令（R11）共用 `insert-commands` 元素目录。
- * 帮助菜单的快捷键速查（R5）动态读取快捷键注册表。
- *
- * 标签栏/主区（大纲侧栏槽位 + 编辑区）与 TabManager 接线保持不变。
+ * 顶部为下拉菜单（文件/编辑/插入/视图/帮助），菜单项标注快捷键。
+ * 插入菜单与斜杠命令共用 `insert-commands` 元素目录。
+ * 帮助菜单的快捷键速查动态读取快捷键注册表。
  */
 
 import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
 import { BUILTIN_THEMES, type BuiltinThemeId } from '../theme/theme-service.js';
+import { createChromeController, type ChromeController } from './chrome-controller.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 
@@ -76,6 +76,12 @@ export interface AppShell {
   readonly editorArea: HTMLDivElement;
   /** 大纲侧栏槽位（主区左侧），由 outline 视图挂载内容。 */
   readonly outlineSidebar: HTMLDivElement;
+  /** Immersive chrome visibility owner (menu surface for T1). */
+  readonly chrome: ChromeController;
+  /** Reveal menu chrome and open the File menu (hotkey / first-run path). */
+  revealMenu(): void;
+  /** Toggle menu chrome reveal without forcing a specific panel open. */
+  toggleMenuChrome(): void;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -241,6 +247,18 @@ export function createAppShell(
   actions: AppShellActions,
   options: AppShellOptions,
 ): AppShell {
+  const chrome = createChromeController();
+  const chromeHost = document.createElement('div');
+  chromeHost.id = 'lightink-chrome-host';
+  chromeHost.className = 'lightink-chrome-host';
+
+  const menuTrigger = document.createElement('div');
+  menuTrigger.id = 'lightink-menu-trigger';
+  menuTrigger.className = 'lightink-chrome-trigger lightink-chrome-trigger--menu';
+  menuTrigger.setAttribute('role', 'button');
+  menuTrigger.setAttribute('aria-label', '显示菜单栏');
+  menuTrigger.tabIndex = 0;
+
   const toolbar = document.createElement('div');
   toolbar.id = 'lightink-toolbar';
   const tabBar = document.createElement('div');
@@ -263,10 +281,80 @@ export function createAppShell(
       cheatsheetItem.action = () => showCheatsheet(options.shortcutBindings());
     }
   }
-  const menuBar = createMenuBar({ menus });
+  const menuBar = createMenuBar({
+    menus,
+    onOpenChange: (openMenuId) => {
+      chrome.setHold('menu', openMenuId !== null);
+      syncMenuChrome();
+    },
+  });
   toolbar.appendChild(menuBar.element);
 
-  root.replaceChildren(toolbar, tabBar, mainRow);
+  chromeHost.replaceChildren(menuTrigger, toolbar);
+  root.replaceChildren(chromeHost, tabBar, mainRow);
+  root.classList.add('lightink-immersive');
+
+  function syncMenuChrome(): void {
+    const revealed = chrome.isRevealed('menu');
+    chromeHost.classList.toggle('is-menu-revealed', revealed);
+    menuTrigger.setAttribute('aria-expanded', revealed ? 'true' : 'false');
+  }
+
+  function revealMenu(): void {
+    chrome.reveal('menu');
+    syncMenuChrome();
+    menuBar.openMenu('file');
+  }
+
+  function toggleMenuChrome(): void {
+    chrome.toggle('menu');
+    syncMenuChrome();
+    if (!chrome.isRevealed('menu')) {
+      menuBar.closeAll();
+    }
+  }
+
+  function afterLeaveSync(): void {
+    // Match chrome-controller leave hysteresis (180ms) with a small buffer.
+    const schedule =
+      typeof setTimeout === 'undefined'
+        ? (fn: () => void) => {
+            fn();
+            return 0;
+          }
+        : (fn: () => void) => setTimeout(fn, 200);
+    schedule(syncMenuChrome);
+  }
+
+  menuTrigger.addEventListener('pointerenter', () => {
+    chrome.pointerEnter('menu');
+    syncMenuChrome();
+  });
+  menuTrigger.addEventListener('pointerleave', () => {
+    chrome.pointerLeave('menu');
+    afterLeaveSync();
+  });
+  toolbar.addEventListener('pointerenter', () => {
+    chrome.pointerEnter('menu');
+    syncMenuChrome();
+  });
+  toolbar.addEventListener('pointerleave', () => {
+    chrome.pointerLeave('menu');
+    afterLeaveSync();
+  });
+  menuTrigger.addEventListener('click', () => {
+    chrome.reveal('menu');
+    syncMenuChrome();
+  });
+  menuTrigger.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      chrome.reveal('menu');
+      syncMenuChrome();
+    }
+  });
+
+  syncMenuChrome();
 
   function showCheatsheet(bindings: readonly CheatBinding[]): void {
     const overlay = document.createElement('div');
@@ -330,5 +418,14 @@ export function createAppShell(
     );
   }
 
-  return { toolbar, tabBar, editorArea, outlineSidebar, renderTabBar };
+  return {
+    toolbar,
+    tabBar,
+    editorArea,
+    outlineSidebar,
+    chrome,
+    revealMenu,
+    toggleMenuChrome,
+    renderTabBar,
+  };
 }
