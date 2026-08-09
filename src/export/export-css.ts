@@ -64,7 +64,9 @@ blockquote {
 }
 a { color: var(--lightink-accent); }
 hr { border: none; border-top: 1px solid var(--lightink-border); }
-img { max-width: 100%; }
+/* 默认响应式；显式宽度（nodeView 写入 width 样式）不被钳制（R12）。 */
+img { max-width: 100%; height: auto; }
+img[style*="width"] { max-width: none; }
 table { border-collapse: collapse; margin: 8px 0; }
 th, td { border: 1px solid var(--lightink-border); padding: 4px 10px; }
 th { background: var(--lightink-bg-elevated); }

@@ -48,7 +48,8 @@ import { formatToolbarPlugin } from './plugins/format-toolbar.js';
 import { frontmatterPlugin } from './plugins/front-matter.js';
 import { linkExclusiveEndsPlugin, linkNavigationPlugin } from './link-navigation.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
-import { imageAssetPlugin, imageDisplayPlugin, insertImageAt, type ImageAssetMountOptions } from './plugins/image.js';
+import { imageAssetPlugin, insertImageAt, type ImageAssetMountOptions } from './plugins/image.js';
+import { htmlWithImageParse, imageSizeNodeViewPlugin, imageWithSize } from './plugins/image-size.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
 import { progressiveSelectAll, progressiveSelectPlugin } from './plugins/progressive-select.js';
@@ -171,6 +172,10 @@ export async function mountEditor(
         .use(inputAssistPlugin)
         .use(commonmark)
         .use(gfm)
+        // T8/R12：image 节点扩 width/align attrs，序列化约定（有设置出 HTML img），
+        // html 节点 parseMarkdown 还原白名单 <img>；必须在 commonmark/gfm 之后覆盖。
+        .use(imageWithSize)
+        .use(htmlWithImageParse)
         .use(history)
         // T1：YAML front matter 原样往返（R5）：remark-frontmatter + frontmatter
         // atom 节点；必须在 commonmark/gfm 之后注册以扩展其 remark 实例。
@@ -226,9 +231,9 @@ export async function mountEditor(
         );
       }
       // 注入相对引用解析器时，image 节点经 nodeView 把 assets/… 解析为可显示
-      // 的 data URL（相对路径在 webview 无静态服务，原样渲染会裂图）。
+      // 的 data URL；T8/R12 同 nodeView 提供选中后的缩放柄 + 浮动对齐条。
       if (options.imageSrcResolver !== undefined) {
-        editor.use(imageDisplayPlugin(options.imageSrcResolver));
+        editor.use(imageSizeNodeViewPlugin(options.imageSrcResolver));
       }
       state.editor = editor;
 
