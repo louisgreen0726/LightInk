@@ -13,10 +13,14 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   bytesToBase64,
   createAssetSaver,
+  createImageSrcResolver,
   extFromFileName,
   extFromMime,
   fileNameStem,
+  importImageAsset,
   migrateStagingAssets,
+  mimeFromExt,
+  readImageBase64,
   saveAsset,
 } from '../asset-service.js';
 
@@ -135,5 +139,65 @@ describe('createAssetSaver', () => {
       sessionId: 's1',
     });
     await expect(saver(new Uint8Array([1]).buffer, 'png')).rejects.toThrow('落盘失败');
+  });
+});
+
+describe('mimeFromExt', () => {
+  it('maps image extensions to MIME types', () => {
+    expect(mimeFromExt('png')).toBe('image/png');
+    expect(mimeFromExt('JPG')).toBe('image/jpeg');
+    expect(mimeFromExt('jpeg')).toBe('image/jpeg');
+    expect(mimeFromExt('svg')).toBe('image/svg+xml');
+    expect(mimeFromExt('bin')).toBe('application/octet-stream');
+  });
+});
+
+describe('importImageAsset / readImageBase64 wrappers', () => {
+  it('importImageAsset passes docPath/sessionId/sourcePath through', async () => {
+    invokeMock.mockResolvedValue('assets/img-z.jpg');
+    const rel = await importImageAsset('C:\\docs\\a.md', 's1', 'C:\\pics\\猫.jpg');
+    expect(rel).toBe('assets/img-z.jpg');
+    expect(invokeMock).toHaveBeenCalledWith('import_image_asset', {
+      docPath: 'C:\\docs\\a.md',
+      sessionId: 's1',
+      sourcePath: 'C:\\pics\\猫.jpg',
+    });
+  });
+
+  it('readImageBase64 passes docPath/sessionId/relPath through', async () => {
+    invokeMock.mockResolvedValue('QUJD');
+    const base64 = await readImageBase64(null, 's1', 'assets/img-z.jpg');
+    expect(base64).toBe('QUJD');
+    expect(invokeMock).toHaveBeenCalledWith('read_image_base64', {
+      docPath: null,
+      sessionId: 's1',
+      relPath: 'assets/img-z.jpg',
+    });
+  });
+});
+
+describe('createImageSrcResolver', () => {
+  it('resolves relative refs to data URLs with the right MIME', async () => {
+    const read = vi.fn(async () => 'QUJD');
+    const resolver = createImageSrcResolver({ readImageBase64: read, getDocPath: () => null, sessionId: 's1' });
+    await expect(resolver('assets/a.png')).resolves.toBe('data:image/png;base64,QUJD');
+    await expect(resolver('assets/b.JPG')).resolves.toBe('data:image/png;base64,QUJD'.replace('png', 'jpeg'));
+    expect(read).toHaveBeenCalledWith(null, 's1', 'assets/a.png');
+  });
+
+  it('caches per (docPath, relPath) and re-resolves after save-as path change', async () => {
+    let docPath: string | null = null;
+    const read = vi.fn(async () => 'QUJD');
+    const resolver = createImageSrcResolver({ readImageBase64: read, getDocPath: () => docPath, sessionId: 's1' });
+
+    await resolver('assets/a.png');
+    await resolver('assets/a.png');
+    expect(read).toHaveBeenCalledTimes(1);
+
+    // 另存为后文档路径变化 → 换键重新解析。
+    docPath = 'D:\\notes\\新文档.md';
+    await resolver('assets/a.png');
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenLastCalledWith('D:\\notes\\新文档.md', 's1', 'assets/a.png');
   });
 });

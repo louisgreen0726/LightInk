@@ -14,11 +14,15 @@
 
 import { $prose, nanoid } from '@milkdown/utils';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
-import type { EditorView } from '@milkdown/prose/view';
+import type { Node as PMNode } from '@milkdown/prose/model';
+import type { EditorView, NodeView } from '@milkdown/prose/view';
 
 import type { AssetSaver } from '../../asset/asset-service.js';
 import { clipboardHasImage, extractClipboardImage } from '../../asset/clipboard.js';
 import { dropHasImage, extractDroppedImages } from '../../asset/dragdrop.js';
+
+/** 相对引用 → 可显示 URL（生产为 asset-service 的 createImageSrcResolver）。 */
+export type ImageSrcResolver = (relPath: string) => Promise<string>;
 
 /**
  * mountEditor 的图片资源扩展选项（定义在此而非 types.ts，因为 types.ts
@@ -29,6 +33,8 @@ export interface ImageAssetMountOptions {
   readonly assetSaver?: AssetSaver;
   /** 落盘失败上报（生产接到 TabManager 的 reportError）。 */
   readonly onAssetError?: (message: string, error: unknown) => void;
+  /** 相对引用 `assets/…` → 可显示 URL 的解析器；缺省时 <img> 按原样渲染。 */
+  readonly imageSrcResolver?: ImageSrcResolver;
 }
 
 /** 事件处理器依赖（与 mount 选项同形，便于内部传递）。 */
@@ -198,6 +204,96 @@ export function imageAssetPlugin(deps: ImageAssetDeps) {
             event.preventDefault();
             void processImageDrop(view, event, deps);
             return true;
+          },
+        },
+      }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 图片显示：相对引用 → data URL（nodeView）
+// ---------------------------------------------------------------------------
+
+/**
+ * src 是否需要解析的相对资源引用：无 scheme、非 //、非 / 或盘符绝对路径、
+ * 非 data:/blob: —— 即文档内的 `assets/…` 相对引用（webview 对其无静态服务，
+ * 原样渲染会裂图）。
+ */
+export function isRelativeAssetSrc(src: string): boolean {
+  if (src === '') return false;
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(src)) return false; // http(s):// 或协议相对
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return false; // data: / blob: / file: 等
+  if (src.startsWith('/')) return false;
+  if (/^[a-z]:[\\/]/i.test(src)) return false; // Windows 盘符绝对路径
+  return true;
+}
+
+/**
+ * image 节点 nodeView：外链/绝对 URL 原样渲染；相对引用经 resolver 解析为
+ * data URL 异步填进 <img>（解析失败回退原 src，保持裂图+alt 的可诊断形态）。
+ * seq 令牌防止 update 期间旧异步回填覆盖新值。
+ */
+function createImageNodeView(node: PMNode, resolver: ImageSrcResolver): NodeView {
+  const img = document.createElement('img');
+  img.className = 'lightink-image';
+  let seq = 0;
+
+  const sync = (n: PMNode): void => {
+    seq += 1;
+    const mySeq = seq;
+    const src = typeof n.attrs['src'] === 'string' ? (n.attrs['src'] as string) : '';
+    const alt = typeof n.attrs['alt'] === 'string' ? (n.attrs['alt'] as string) : '';
+    const title = typeof n.attrs['title'] === 'string' ? (n.attrs['title'] as string) : '';
+    img.alt = alt;
+    if (title !== '') {
+      img.title = title;
+    } else {
+      img.removeAttribute('title');
+    }
+    if (src === '') {
+      img.removeAttribute('src');
+      return;
+    }
+    if (!isRelativeAssetSrc(src)) {
+      img.src = src;
+      return;
+    }
+    resolver(src)
+      .then((url) => {
+        if (mySeq === seq) {
+          img.src = url;
+        }
+      })
+      .catch(() => {
+        if (mySeq === seq) {
+          img.src = src;
+        }
+      });
+  };
+  sync(node);
+
+  return {
+    dom: img,
+    update: (incoming: PMNode) => {
+      if (incoming.type !== node.type) return false;
+      sync(incoming);
+      return true;
+    },
+  };
+}
+
+/**
+ * 图片显示插件（`$prose`）：为 image 节点注册上述 nodeView。
+ * 仅当 mountEditor 注入了 imageSrcResolver 时注册（见 index.ts）。
+ */
+export function imageDisplayPlugin(resolver: ImageSrcResolver) {
+  return $prose(
+    () =>
+      new Plugin({
+        key: new PluginKey('lightink-image-display'),
+        props: {
+          nodeViews: {
+            image: (node: PMNode) => createImageNodeView(node, resolver),
           },
         },
       }),

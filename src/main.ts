@@ -7,17 +7,24 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { ask, confirm, message as dialogMessage, save } from '@tauri-apps/plugin-dialog';
+import { message as dialogMessage, open as openDialog, save } from '@tauri-apps/plugin-dialog';
 
 import { mountEditor } from './editor/index.js';
 import { classifyLink } from './editor/link-navigation.js';
+import { imageMarkdownSnippet } from './editor/plugins/image.js';
 import { SourceView } from './editor/source-view.js';
 import {
   buildEditorContextMenuItems,
   buildTabContextMenuItems,
   createContextMenu,
 } from './ui/context-menu.js';
-import { insertElementMarkdown, type InsertElementId } from './editor/insert-commands.js';
+import {
+  getInsertElement,
+  insertElementMarkdown,
+  type InsertElementId,
+} from './editor/insert-commands.js';
+import { fileNameStem, importImageAsset } from './asset/asset-service.js';
+import { planDroppedFiles } from './file/file-drop.js';
 import { buildExportCss } from './export/export-css.js';
 import {
   exportActiveTabHtml,
@@ -34,8 +41,8 @@ import type { CloseChoice } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
+import { showConfirmDialog } from './ui/confirm-dialog.js';
 import { ShortcutRegistry, type ShortcutAction } from './ui/shortcuts.js';
-import { countDocumentStats, createStatusBarView, type StatusBarView } from './ui/status-bar.js';
 import { showVersionsModal, type VersionMeta } from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
@@ -57,8 +64,6 @@ const themeService = new ThemeService({
 let manager: TabManager;
 // T7：大纲视图在 TabManager 之后创建（见下），回调触发时必然已赋值。
 let outline: OutlineView;
-// T9：状态栏视图同上（回调触发时必然已赋值）。
-let statusBar: StatusBarView;
 
 function saveActiveAs(): void {
   const id = manager.activeTabId;
@@ -67,16 +72,116 @@ function saveActiveAs(): void {
   }
 }
 
-/** 向活动标签追加插入元素（R2 插入菜单 MVP；光标级精度由 T6/R11 叠加）。 */
+/**
+ * 向活动标签插入元素（R2 插入菜单 / R5 快捷键）：
+ *   - 图片：走本地文件选择 → 落盘 assets → 光标处插入（见 insertImageFromFile）；
+ *   - 源码模式：片段插入到源码 textarea 光标处（否则写编辑器会被源码态退出时
+ *     的 textarea 写回覆盖，用户感知为「插入无法使用」）；
+ *   - WYSIWYG：以块间空行分隔追加到文末（MVP 插入路径）。
+ */
 function insertElement(id: InsertElementId): void {
   const tab = manager.activeTab;
   if (tab === null) {
     return;
   }
+  if (id === 'image') {
+    void insertImageFromFile();
+    return;
+  }
+  const sourceView = sourceViews.get(tab.id);
+  if (sourceView !== undefined && sourceView.isSourceMode) {
+    const element = getInsertElement(id);
+    if (element !== undefined) {
+      sourceView.insertSnippetAtCursor(element.snippet());
+    }
+    manager.handleContentChanged(tab.id);
+    return;
+  }
   tab.editor.setMarkdown(insertElementMarkdown(tab.editor.getMarkdown(), id));
-  const activeId = manager.activeTabId;
-  if (activeId !== null) {
-    manager.handleContentChanged(activeId);
+  manager.handleContentChanged(tab.id);
+}
+
+/**
+ * 插入图片（共享主流程）：Rust 侧落盘（文档旁 assets/ 或未保存文档的
+ * 会话暂存目录）→ 在光标处插入引用。WYSIWYG 插入 image 节点；源码模式插入
+ * Markdown 图片片段到 textarea 光标处。落盘失败提示且不插入引用（同粘贴路径）。
+ * 调用方：插入菜单的文件选择器、OS 文件拖入。
+ */
+async function importAndInsertImage(sourcePath: string): Promise<void> {
+  const tab = manager.activeTab;
+  if (tab === null) {
+    return;
+  }
+  let relPath: string;
+  try {
+    relPath = await importImageAsset(tab.filePath, tab.syntheticId, sourcePath);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error ?? '');
+    void dialogMessage(`图片导入失败，未插入引用。\n${detail}`, {
+      title: '插入图片',
+      kind: 'error',
+    });
+    return;
+  }
+  const alt = fileNameStem(sourcePath);
+  const sourceView = sourceViews.get(tab.id);
+  if (sourceView !== undefined && sourceView.isSourceMode) {
+    sourceView.insertSnippetAtCursor(imageMarkdownSnippet({ id: '', url: relPath, alt }));
+  } else {
+    tab.editor.insertImage(relPath, alt);
+  }
+  manager.handleContentChanged(tab.id);
+}
+
+/** 插入菜单「图片」：打开本地文件选择器，选中后走共享落盘/插入流程。 */
+async function insertImageFromFile(): Promise<void> {
+  const tab = manager.activeTab;
+  if (tab === null) {
+    return;
+  }
+  let selected: string | null;
+  try {
+    const result = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] }],
+    });
+    selected = typeof result === 'string' ? result : null;
+  } catch {
+    // 非 Tauri 环境（纯前端 dev）：无原生对话框，静默取消。
+    return;
+  }
+  if (selected === null) {
+    return;
+  }
+  await importAndInsertImage(selected);
+}
+
+/**
+ * OS 文件拖入窗口（tauri://drag-drop）：.md/.markdown 逐个开标签；图片走共享
+ * 落盘/插入流程（顺带覆盖 OS 拖图——dragDropEnabled 下 HTML5 handleDrop 收不到
+ * OS 文件）；其余类型汇总一条提示。
+ */
+async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
+  const plan = planDroppedFiles(paths);
+  for (const path of plan.markdown) {
+    const opened = await manager.openFile(path);
+    if (opened === null) {
+      void dialogMessage(`无法打开「${path}」：文件不存在或无法读取。`, {
+        title: '轻墨 LightInk',
+        kind: 'warning',
+      });
+    }
+  }
+  for (const path of plan.images) {
+    await importAndInsertImage(path);
+  }
+  if (plan.unsupported.length > 0) {
+    const names = plan.unsupported.map((p) => p.split(/[\\/]/).pop() ?? p).join('、');
+    void dialogMessage(`不支持的文件类型：${names}\n可拖入 Markdown 文件（.md）或图片。`, {
+      title: '轻墨 LightInk',
+      kind: 'warning',
+    });
   }
 }
 
@@ -166,7 +271,11 @@ const shell = createAppShell(
     },
     clearRecents: () => invoke('clear_recents'),
     onShowVersions: () => showVersionsForActive(),
-    hasActiveFile: () => manager.activeTab?.filePath != null,
+    // 注意：菜单 enabled 回调在 createAppShell 构造期就被同步调用（见 menus.ts 的
+    // refreshItemEnabled），此时 manager 尚未赋值（于下方 new TabManager 处赋值）。
+    // 用 ?. 短路避免构造期抛错；构造期返回 false（无活动文件）也正确，菜单打开时
+    // 会经 refreshMenu 重算。
+    hasActiveFile: () => manager?.activeTab?.filePath != null,
     onSave: () => {
       commitActiveSourceMode();
       void manager.saveActiveTab();
@@ -207,20 +316,21 @@ const shell = createAppShell(
   { shortcutBindings: getShortcutBindings },
 );
 
-/** 关闭未保存标签的三选一确认（dialog 插件两步询问，临时方案）。 */
+/** 关闭未保存标签的三选一确认（应用内主题化弹层，一次给出全部选择）。 */
 async function confirmClose(tab: { title: string }): Promise<CloseChoice> {
-  const wantSave = await ask(`「${tab.title}」有未保存的更改，是否保存？`, {
-    title: '轻墨 LightInk',
-    kind: 'warning',
+  const choice = await showConfirmDialog(document, {
+    title: '关闭标签',
+    message: `「${tab.title}」有未保存的更改。\n保存后再关闭？`,
+    buttons: [
+      { id: 'save', label: '保存', kind: 'primary' },
+      { id: 'discard', label: '不保存', kind: 'danger' },
+      { id: 'cancel', label: '取消', kind: 'plain' },
+    ],
+    cancelId: 'cancel',
   });
-  if (wantSave) {
-    return 'save';
-  }
-  const discard = await confirm('不保存直接关闭？更改将丢失。', {
-    title: '轻墨 LightInk',
-    kind: 'warning',
-  });
-  return discard ? 'discard' : 'cancel';
+  if (choice === 'save') return 'save';
+  if (choice === 'discard') return 'discard';
+  return 'cancel';
 }
 
 function renderTabBar(): void {
@@ -267,15 +377,19 @@ manager = new TabManager({
     el.remove();
   },
   confirmClose,
-  promptRestore: (path) =>
-    ask(`检测到「${path}」的崩溃恢复快照比磁盘文件新，是否恢复未保存的内容？`, {
-      title: '轻墨 LightInk - 崩溃恢复',
-      kind: 'warning',
-    }),
+  promptRestore: async (path) =>
+    (await showConfirmDialog(document, {
+      title: '崩溃恢复',
+      message: `检测到「${path}」的崩溃恢复快照比磁盘文件新。\n是否恢复未保存的内容？`,
+      buttons: [
+        { id: 'restore', label: '恢复', kind: 'primary' },
+        { id: 'skip', label: '不恢复', kind: 'plain' },
+      ],
+      cancelId: 'skip',
+    })) === 'restore',
   onTabsChanged: renderTabBar,
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
-    refreshStatusBar();
   },
   onFileOpened: (filePath) => {
     void invoke('add_recent', { path: filePath }).catch(() => undefined);
@@ -304,27 +418,6 @@ outline = createOutlineView({
   },
 });
 shell.outlineSidebar.appendChild(outline.root);
-
-// T9/R6：底部状态栏（字数/字符数）。随活动标签切换/内容变化经既有
-// onActiveContentChanged 回调实时刷新（每键击重算，常规文档可接受）。
-statusBar = createStatusBarView(document);
-shell.statusBar.appendChild(statusBar.root);
-/** 刷新底部状态栏字数/字符数（无活动标签或读取异常时清空）。 */
-function refreshStatusBar(): void {
-  const tab = manager.activeTab;
-  if (tab === null) {
-    statusBar.setStats(null);
-    return;
-  }
-  let md: string;
-  try {
-    md = tab.editor.getMarkdown();
-  } catch {
-    statusBar.setStats(null);
-    return;
-  }
-  statusBar.setStats(countDocumentStats(md));
-}
 
 /** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
 function showVersionsForActive(): void {
@@ -445,16 +538,28 @@ shortcuts.attach(document);
 function showEditorContextMenu(x: number, y: number): void {
   const tab = manager.activeTab;
   if (tab === null) return;
+  const sourceView = sourceViews.get(tab.id);
+  const inSource = sourceView !== undefined && sourceView.isSourceMode;
+  // 源码态下选区/链接以源码 textarea 为准（WYSIWYG 编辑器被覆盖层遮住）。
   const sel = tab.editor.getSelection();
-  const hasSelection = sel !== null && !sel.empty;
-  const link = tab.editor.getLinkAtPoint(x, y);
+  const hasSelection = inSource
+    ? sourceView?.hasTextSelection() === true
+    : sel !== null && !sel.empty;
+  const link = inSource ? null : tab.editor.getLinkAtPoint(x, y);
   const hasLink = link !== null;
   const items = buildEditorContextMenuItems(
-    { hasSelection, hasLink },
+    { hasSelection, hasLink, inSourceMode: inSource },
     {
-      cut: () => document.execCommand('cut'),
-      copy: () => document.execCommand('copy'),
+      cut: () => {
+        if (inSource) sourceView?.focusEditor();
+        document.execCommand('cut');
+      },
+      copy: () => {
+        if (inSource) sourceView?.focusEditor();
+        document.execCommand('copy');
+      },
       paste: () => {
+        if (inSource) sourceView?.focusEditor();
         void navigator.clipboard?.readText().then((text) => {
           if (typeof text === 'string' && text !== '') {
             document.execCommand('insertText', false, text);
@@ -462,6 +567,7 @@ function showEditorContextMenu(x: number, y: number): void {
         });
       },
       pastePlain: () => {
+        if (inSource) sourceView?.focusEditor();
         void navigator.clipboard?.readText().then((text) => {
           if (typeof text === 'string' && text !== '') {
             document.execCommand('insertText', false, text);
@@ -559,8 +665,13 @@ async function bootstrap(): Promise<void> {
         })
         .catch(() => undefined);
     });
+    // OS 文件拖入窗口：.md 开标签 / 图片插入 / 其他提示（dragDropEnabled 默认开启，
+    // Tauri 把 OS 拖拽拦截为本事件，HTML5 drop 收不到 OS 文件）。
+    await listen<{ paths: string[] }>('tauri://drag-drop', (event) => {
+      void handleOsFileDrop(event.payload.paths);
+    });
   } catch {
-    // 非 Tauri 环境（纯前端 dev）：无单实例事件，忽略。
+    // 非 Tauri 环境（纯前端 dev）：无单实例/拖拽事件，忽略。
   }
   // R1：取出启动/关联文件（首实例 argv 经后端 take_pending_file；命令未就绪时静默）。
   const pendingFile = await invoke<string | null>('take_pending_file').catch(() => null);

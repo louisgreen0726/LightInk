@@ -47,6 +47,7 @@ pub fn run() {
             snapshot::list_untitled_drafts,
             asset::save_asset,
             asset::migrate_staging_assets,
+            asset::import_image_asset,
             export::read_image_base64,
             cli::take_pending_file,
             recents::list_recents,

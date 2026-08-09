@@ -1,9 +1,9 @@
 /**
- * `app-shell` — 极简应用外壳（R2 重构）：紧凑高频按钮 + 下拉菜单栏 + 标签栏 + 编辑区。
+ * `app-shell` — 极简应用外壳（R2 重构）：下拉菜单栏 + 标签栏 + 编辑区。
  *
- * 顶部由原单排按钮重构为「紧凑按钮（新建/打开/保存）+ 下拉菜单（文件/编辑/插入/视图/帮助）」，
- * 菜单项标注快捷键；菜单不挤占编辑区纵向空间（与原工具栏同高）。插入菜单与斜杠命令（R11）
- * 共用 `insert-commands` 元素目录。帮助菜单的快捷键速查（R5）动态读取快捷键注册表。
+ * 顶部为下拉菜单（文件/编辑/插入/视图/帮助），菜单项标注快捷键；菜单不挤占
+ * 编辑区纵向空间。插入菜单与斜杠命令（R11）共用 `insert-commands` 元素目录。
+ * 帮助菜单的快捷键速查（R5）动态读取快捷键注册表。
  *
  * 标签栏/主区（大纲侧栏槽位 + 编辑区）与 TabManager 接线保持不变。
  */
@@ -76,8 +76,6 @@ export interface AppShell {
   readonly editorArea: HTMLDivElement;
   /** 大纲侧栏槽位（主区左侧），由 outline 视图挂载内容。 */
   readonly outlineSidebar: HTMLDivElement;
-  /** 底部状态栏槽位（R6），由 status-bar 视图挂载字数/字符数。 */
-  readonly statusBar: HTMLDivElement;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -85,17 +83,6 @@ export interface AppShell {
     callbacks: TabBarCallbacks,
   ): void;
 }
-
-/** 紧凑高频按钮：新建/打开/保存（菜单旁保留，一次点击直达）。 */
-const COMPACT_COMMANDS: ReadonlyArray<{
-  action: 'onNew' | 'onOpen' | 'onSave';
-  label: string;
-  shortcut: string;
-}> = [
-  { action: 'onNew', label: '新建', shortcut: 'Ctrl+N' },
-  { action: 'onOpen', label: '打开', shortcut: 'Ctrl+O' },
-  { action: 'onSave', label: '保存', shortcut: 'Ctrl+S' },
-];
 
 function menuItem(
   id: string,
@@ -110,6 +97,52 @@ function menuItem(
 /** 菜单分隔符：渲染为 <hr>，不可点击（修复 P2[blocking]：此前分隔项漏设 separator:true）。 */
 function separator(id: string): MenuItem {
   return { id, label: '', separator: true, action: () => undefined };
+}
+
+// ---------------------------------------------------------------------------
+// R12「最近打开」子菜单（VS Code 式：悬停展开列表，替代模态弹窗）
+// ---------------------------------------------------------------------------
+
+/** 取路径的文件名（兼容 / 与 \；末尾分隔符已剥除）。 */
+export function pathBaseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter((p) => p.length > 0);
+  return parts[parts.length - 1] ?? path;
+}
+
+/** 取路径的目录部分（无目录段返回空串，hint 不渲染）。 */
+export function pathDirName(path: string): string {
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return idx > 0 ? path.slice(0, idx) : '';
+}
+
+export interface RecentsMenuActions {
+  open(path: string): void;
+  clear(): void;
+}
+
+/**
+ * 构建「最近打开」子菜单项：每行 = 文件名（label）+ 目录（右侧弱化 hint，
+ * 头部省略），末尾分隔线 + 清空入口；空列表给占位禁用项。
+ */
+export function buildRecentsMenuItems(
+  paths: readonly string[],
+  actions: RecentsMenuActions,
+): MenuItem[] {
+  if (paths.length === 0) {
+    return [
+      { id: 'recents-empty', label: '（无最近打开的文件）', action: () => undefined, enabled: () => false },
+    ];
+  }
+  return [
+    ...paths.map((path, index) => ({
+      id: `recent-${index}`,
+      label: pathBaseName(path),
+      hint: pathDirName(path),
+      action: () => actions.open(path),
+    })),
+    separator('recents-sep'),
+    { id: 'recents-clear', label: '清空最近打开', action: actions.clear },
+  ];
 }
 
 export function buildMenus(actions: AppShellActions): Menu[] {
@@ -129,7 +162,23 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem('file-new', '新建', actions.onNew, 'Ctrl+N'),
         menuItem('file-open', '打开', actions.onOpen, 'Ctrl+O'),
-        menuItem('file-recents', '最近打开…', () => undefined),
+        // R12：VS Code 式「最近打开」子菜单——悬停展开列表（打开时现取，
+        // 读取失败按空列表处理），不再弹模态层。
+        {
+          id: 'file-recents',
+          label: '最近打开',
+          action: () => undefined,
+          submenu: () =>
+            actions
+              .listRecents()
+              .catch(() => [] as string[])
+              .then((paths) =>
+                buildRecentsMenuItems(paths, {
+                  open: (path) => void actions.openRecent(path),
+                  clear: () => void actions.clearRecents(),
+                }),
+              ),
+        },
         separator('file-sep1'),
         menuItem('file-save', '保存', actions.onSave, 'Ctrl+S'),
         menuItem('file-save-as', '另存为', actions.onSaveAs, 'Ctrl+Shift+S'),
@@ -203,19 +252,6 @@ export function createAppShell(
   const mainRow = document.createElement('div');
   mainRow.id = 'lightink-main';
   mainRow.replaceChildren(outlineSidebar, editorArea);
-  const statusBar = document.createElement('div');
-  statusBar.id = 'lightink-statusbar';
-
-  // 紧凑高频按钮。
-  for (const cmd of COMPACT_COMMANDS) {
-    const btn = document.createElement('button');
-    btn.className = 'lightink-command';
-    btn.dataset.action = cmd.action;
-    btn.textContent = cmd.label;
-    btn.title = `${cmd.label}（${cmd.shortcut}）`;
-    btn.addEventListener('click', () => actions[cmd.action]());
-    toolbar.appendChild(btn);
-  }
 
   // 下拉菜单栏。
   const menus = buildMenus(actions);
@@ -227,18 +263,10 @@ export function createAppShell(
       cheatsheetItem.action = () => showCheatsheet(options.shortcutBindings());
     }
   }
-  // R12：文件菜单「最近打开…」弹出最近文件列表。
-  const fileMenu = menus.find((m) => m.id === 'file');
-  if (fileMenu !== undefined) {
-    const recentsItem = fileMenu.items.find((i) => i.id === 'file-recents');
-    if (recentsItem !== undefined) {
-      recentsItem.action = () => showRecents();
-    }
-  }
   const menuBar = createMenuBar({ menus });
   toolbar.appendChild(menuBar.element);
 
-  root.replaceChildren(toolbar, tabBar, mainRow, statusBar);
+  root.replaceChildren(toolbar, tabBar, mainRow);
 
   function showCheatsheet(bindings: readonly CheatBinding[]): void {
     const overlay = document.createElement('div');
@@ -274,87 +302,6 @@ export function createAppShell(
     close.focus();
   }
 
-  // R12：最近打开文件列表弹层。动态读取 actions.listRecents，逐行点击调用
-  // actions.openRecent；「清空」调用 actions.clearRecents 并刷新为空态。
-  function showRecents(): void {
-    void actions
-      .listRecents()
-      .then((paths) => renderRecents(paths))
-      .catch(() => undefined);
-  }
-
-  function renderRecents(paths: string[]): void {
-    const overlay = document.createElement('div');
-    overlay.className = 'lightink-modal-overlay';
-    const dialog = document.createElement('div');
-    dialog.className = 'lightink-modal-dialog';
-    const title = document.createElement('div');
-    title.className = 'lightink-modal-title';
-    title.textContent = '最近打开';
-    const list = document.createElement('div');
-    list.className = 'lightink-recents-list';
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'lightink-modal-close';
-    close.textContent = '关闭';
-    const clearBtn = document.createElement('button');
-    clearBtn.type = 'button';
-    clearBtn.className = 'lightink-recents-clear';
-    clearBtn.textContent = '清空';
-
-    const renderRows = (items: readonly string[]): void => {
-      list.replaceChildren();
-      clearBtn.disabled = items.length === 0;
-      if (items.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'lightink-recents-empty';
-        empty.textContent = '暂无最近打开的文件';
-        list.appendChild(empty);
-        return;
-      }
-      for (const path of items) {
-        const row = document.createElement('button');
-        row.type = 'button';
-        row.className = 'lightink-recents-item';
-        row.textContent = path;
-        row.addEventListener('click', () => {
-          dismiss();
-          void actions.openRecent(path);
-        });
-        list.appendChild(row);
-      }
-    };
-    clearBtn.addEventListener('click', () => {
-      void actions.clearRecents().then(() => renderRows([]));
-    });
-
-    const footer = document.createElement('div');
-    footer.className = 'lightink-recents-footer';
-    footer.append(clearBtn, close);
-    dialog.append(title, list, footer);
-    overlay.appendChild(dialog);
-
-    function dismiss(): void {
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-    }
-    function onKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        dismiss();
-      }
-    }
-    overlay.addEventListener('pointerdown', (event) => {
-      if (event.target === overlay) {
-        dismiss();
-      }
-    });
-    close.addEventListener('click', dismiss);
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(overlay);
-    renderRows(paths);
-    close.focus();
-  }
-
   function renderTabBar(
     tabs: readonly ShellTabInfo[],
     activeId: string | null,
@@ -383,5 +330,5 @@ export function createAppShell(
     );
   }
 
-  return { toolbar, tabBar, editorArea, outlineSidebar, statusBar, renderTabBar };
+  return { toolbar, tabBar, editorArea, outlineSidebar, renderTabBar };
 }

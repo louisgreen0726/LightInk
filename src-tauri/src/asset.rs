@@ -271,6 +271,20 @@ fn resolve_base_dir(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("lightink"))
 }
 
+/// 解析文档目录：Some(文档路径) → 其父目录；None（未保存）→ None（走暂存）。
+fn resolve_doc_dir(doc_path: Option<&str>) -> Result<Option<PathBuf>, String> {
+    match doc_path {
+        Some(p) => Ok(Some(
+            Path::new(p)
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .ok_or_else(|| format!("无效的文档路径: {}", p))?
+                .to_path_buf(),
+        )),
+        None => Ok(None),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tauri 命令层
 // ---------------------------------------------------------------------------
@@ -288,22 +302,49 @@ pub fn save_asset(
 ) -> Result<String, String> {
     let bytes = decode_base64(&bytes_base64)?;
     let staging_root = resolve_base_dir(&app);
-    let doc_dir = match doc_path.as_deref() {
-        Some(p) => Some(
-            Path::new(p)
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty())
-                .ok_or_else(|| format!("无效的文档路径: {}", p))?
-                .to_path_buf(),
-        ),
-        None => None,
-    };
+    let doc_dir = resolve_doc_dir(doc_path.as_deref())?;
     save_asset_impl(
         doc_dir.as_deref(),
         &staging_root,
         &session_id,
         &bytes,
         &ext,
+    )
+}
+
+/// 「插入图片」从本地文件导入（纯逻辑）：读取源文件字节，按与粘贴/拖拽
+/// 完全相同的规则落盘（文档旁 assets/ 或会话暂存目录），返回相对引用
+/// `assets/<name>.<ext>`。扩展名取自源文件名，必须在白名单内。
+pub fn import_image_asset_impl(
+    doc_dir: Option<&Path>,
+    staging_root: &Path,
+    session_id: &str,
+    source_path: &Path,
+) -> Result<String, String> {
+    let ext = source_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .ok_or_else(|| format!("无法识别图片扩展名: {}", source_path.display()))?;
+    let bytes = fs::read(source_path)
+        .map_err(|e| format!("无法读取图片 {}: {}", source_path.display(), e))?;
+    save_asset_impl(doc_dir, staging_root, session_id, &bytes, ext)
+}
+
+/// 「插入图片」从本地文件导入。`doc_path` 为 None 时落暂存目录（保存时迁移）。
+#[tauri::command]
+pub fn import_image_asset(
+    app: tauri::AppHandle,
+    doc_path: Option<String>,
+    session_id: String,
+    source_path: String,
+) -> Result<String, String> {
+    let staging_root = resolve_base_dir(&app);
+    let doc_dir = resolve_doc_dir(doc_path.as_deref())?;
+    import_image_asset_impl(
+        doc_dir.as_deref(),
+        &staging_root,
+        &session_id,
+        Path::new(&source_path),
     )
 }
 
@@ -489,5 +530,50 @@ mod tests {
         let session = "untitled-m2";
         save_asset_impl(None, dir.path(), session, b"x", "png").unwrap();
         assert!(migrate_staging_assets_impl(dir.path(), session, "").is_err());
+    }
+
+    // -- 本地文件导入（插入图片） --
+
+    #[test]
+    fn import_reads_source_file_and_saves_to_doc_assets() {
+        let dir = temp_dir();
+        let source = dir.path().join("照片.JPG");
+        fs::write(&source, b"\xff\xd8jpeg-bytes").unwrap();
+        let doc_dir = dir.path().join("docs");
+        let rel = import_image_asset_impl(Some(&doc_dir), dir.path(), "s", &source)
+            .expect("import");
+        // 扩展名小写化（JPG → jpg），内容一致。
+        assert!(rel.starts_with("assets/") && rel.ends_with(".jpg"), "rel = {}", rel);
+        assert_eq!(fs::read(doc_dir.join(&rel)).unwrap(), b"\xff\xd8jpeg-bytes");
+    }
+
+    #[test]
+    fn import_without_doc_goes_to_session_staging() {
+        let dir = temp_dir();
+        let source = dir.path().join("p.webp");
+        fs::write(&source, b"RIFFwebp").unwrap();
+        let rel = import_image_asset_impl(None, dir.path(), "untitled-z", &source)
+            .expect("import");
+        let name = rel.strip_prefix("assets/").unwrap();
+        let staged = dir
+            .path()
+            .join(STAGING_DIR_NAME)
+            .join("untitled-z")
+            .join(name);
+        assert_eq!(fs::read(staged).unwrap(), b"RIFFwebp");
+    }
+
+    #[test]
+    fn import_rejects_bad_ext_missing_file_and_empty_content() {
+        let dir = temp_dir();
+        let exe = dir.path().join("virus.exe");
+        fs::write(&exe, b"MZ").unwrap();
+        assert!(import_image_asset_impl(Some(dir.path()), dir.path(), "s", &exe).is_err());
+        let missing = dir.path().join("gone.png");
+        assert!(import_image_asset_impl(Some(dir.path()), dir.path(), "s", &missing).is_err());
+        let empty = dir.path().join("empty.png");
+        fs::write(&empty, b"").unwrap();
+        assert!(import_image_asset_impl(Some(dir.path()), dir.path(), "s", &empty).is_err());
+        assert!(!dir.path().join(ASSETS_DIR_NAME).exists());
     }
 }

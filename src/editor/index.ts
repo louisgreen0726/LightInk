@@ -40,7 +40,7 @@ import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
 import { linkNavigationPlugin } from './link-navigation.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
-import { imageAssetPlugin, type ImageAssetMountOptions } from './plugins/image.js';
+import { imageAssetPlugin, imageDisplayPlugin, insertImageAt, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
 import { slashMenuPlugin } from './plugins/slash-menu.js';
@@ -185,6 +185,11 @@ export async function mountEditor(
           }),
         );
       }
+      // 注入相对引用解析器时，image 节点经 nodeView 把 assets/… 解析为可显示
+      // 的 data URL（相对路径在 webview 无静态服务，原样渲染会裂图）。
+      if (options.imageSrcResolver !== undefined) {
+        editor.use(imageDisplayPlugin(options.imageSrcResolver));
+      }
       state.editor = editor;
 
       editor.onStatusChange((status) => {
@@ -268,6 +273,11 @@ export async function mountEditor(
       if (linkType === undefined) return;
       const { from, to } = view.state.selection;
       view.dispatch(view.state.tr.addMark(from, to, linkType.create({ href })));
+    },
+    insertImage(url: string, alt: string): void {
+      const view = getView(state);
+      if (view === null) return;
+      insertImageAt(view, null, url, alt);
     },
     async destroy(): Promise<void> {
       try {

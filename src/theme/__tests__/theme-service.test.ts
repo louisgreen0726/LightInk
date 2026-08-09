@@ -80,15 +80,13 @@ describe('ThemeService 内置主题', () => {
     expect(h.attrs.get('data-theme')).toBe('warm-light');
   });
 
-  it('列出全部内置预设主题（R15：6 套，浅/深各三）', () => {
+  it('列出全部内置预设主题（4 套，浅/深各二）', () => {
     const h = makeHarness();
     expect(h.service.builtinThemes().map((t) => t.id)).toEqual([
       'warm-light',
       'cool-light',
-      'sepia',
       'dark',
       'midnight',
-      'forest',
     ]);
     expect(BUILTIN_THEMES.some((t) => t.id === 'warm-light')).toBe(true);
   });

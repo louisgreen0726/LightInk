@@ -108,6 +108,8 @@ export interface EditorMenuContext {
   hasSelection: boolean;
   /** 光标是否在链接上。 */
   hasLink: boolean;
+  /** 是否处于源码模式（格式/链接项对源码 textarea 无意义，只保留剪贴板项）。 */
+  inSourceMode?: boolean;
 }
 
 export interface EditorMenuActions {
@@ -127,11 +129,19 @@ export function buildEditorContextMenuItems(
   ctx: EditorMenuContext,
   actions: EditorMenuActions,
 ): MenuItem[] {
-  return [
+  const clipboardItems: MenuItem[] = [
     { id: 'cut', label: '剪切', action: actions.cut, enabled: () => ctx.hasSelection },
     { id: 'copy', label: '复制', action: actions.copy, enabled: () => ctx.hasSelection },
     { id: 'paste', label: '粘贴', action: actions.paste },
     { id: 'paste-plain', label: '粘贴为纯文本', action: actions.pastePlain },
+  ];
+  // 源码模式：格式/链接动作作用于背后的 WYSIWYG 编辑器而非源码 textarea，
+  // 展示会误导——只保留剪贴板项（execCommand 对聚焦的 textarea 同样生效）。
+  if (ctx.inSourceMode === true) {
+    return clipboardItems;
+  }
+  return [
+    ...clipboardItems,
     { separator: true, id: 'sep-format', label: '', action: () => undefined },
     { id: 'bold', label: '加粗', shortcut: 'Ctrl+B', action: actions.bold, enabled: () => ctx.hasSelection },
     { id: 'italic', label: '斜体', shortcut: 'Ctrl+I', action: actions.italic, enabled: () => ctx.hasSelection },

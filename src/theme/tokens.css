@@ -1,13 +1,16 @@
 /*
  * LightInk 主题令牌（T6, R15）。唯一 owner：前端主题服务（src/theme/theme-service.ts）。
  *
- * 内置主题（6 套，浅/深各三）：
- *   - warm-light：默认护眼浅色，暖纸色背景（非纯白）；
- *   - cool-light：冷调浅色，冷灰蓝背景；
- *   - sepia：复古褐黄，更深的暖褐；
- *   - dark：护眼深色（暖炭灰）；
- *   - midnight：午夜深蓝（冷调深色）；
- *   - forest：墨绿深色（冷绿深色）。
+ * 内置主题（4 套，浅/深各二）：
+ *   - warm-light 纸墨浅色：默认护眼浅色，暖宣纸底 + 赭石强调；
+ *   - cool-light 云白浅色：冷调浅色，雾白底 + 青蓝强调；
+ *   - dark      墨夜深色：暖炭深色，墨色底 + 蜜蜡强调；
+ *   - midnight  深空深色：冷调深色，夜空蓝底 + 星蓝强调。
+ *
+ * 令牌约定：
+ *   - --lightink-selection：常规选区洗色（约 20% 透明度）；
+ *   - --lightink-selection-strong：源码模式选区（透明文字 textarea 叠加高亮层，
+ *     需要更强的洗色才能辨识选中范围）。
  *
  * 自定义主题 = 用户 CSS 文件，由 ThemeService 注入 <style> 覆盖下列令牌
  * （:root 上的 warm-light 令牌作为自定义主题未定义项的回退）。
@@ -17,156 +20,113 @@
 [data-theme="warm-light"] {
   color-scheme: light;
 
-  --lightink-bg: #f7f3ea; /* 暖纸色，护眼、非纯白 */
-  --lightink-bg-elevated: #fdfaf2;
-  --lightink-fg: #3f3a32;
-  --lightink-muted: #8a8171;
-  --lightink-accent: #b0703c;
-  --lightink-accent-soft: #e9dcc4;
-  --lightink-border: #ddd2bd;
-  --lightink-code-bg: #efe8d7;
-  --lightink-code-fg: #4a4438;
-  --lightink-selection: rgba(176, 112, 60, 0.18);
+  --lightink-bg: #f5f0e4; /* 暖宣纸色，护眼、非纯白 */
+  --lightink-bg-elevated: #fbf8ef;
+  --lightink-fg: #38342b;
+  --lightink-muted: #8c8471;
+  --lightink-accent: #a3602b; /* 赭石 */
+  --lightink-accent-soft: #ecdfc6;
+  --lightink-border: #ddd3ba;
+  --lightink-code-bg: #ece5d1;
+  --lightink-code-fg: #474134;
+  --lightink-selection: rgba(163, 96, 43, 0.2);
+  --lightink-selection-strong: rgba(163, 96, 43, 0.38);
+  --lightink-danger: #a83a2e;
 
-  /* 语法高亮令牌（hljs-* 类映射见文件底部，两主题配色各自协调） */
-  --lightink-syntax-keyword: #9a4d6e;
-  --lightink-syntax-comment: #96907f;
-  --lightink-syntax-string: #5f7a3d;
-  --lightink-syntax-number: #b0703c;
-  --lightink-syntax-function: #38618f;
-  --lightink-syntax-title: #38618f;
-  --lightink-syntax-attr: #7a6a3a;
-  --lightink-syntax-builtin: #6b5ca5;
-  --lightink-syntax-literal: #b0703c;
+  /* 语法高亮令牌（hljs-* 类映射见文件底部，各主题配色各自协调） */
+  --lightink-syntax-keyword: #96425f;
+  --lightink-syntax-comment: #9a9279;
+  --lightink-syntax-string: #5c7534;
+  --lightink-syntax-number: #a3602b;
+  --lightink-syntax-function: #31587f;
+  --lightink-syntax-title: #31587f;
+  --lightink-syntax-attr: #77622f;
+  --lightink-syntax-builtin: #6554a0;
+  --lightink-syntax-literal: #a3602b;
 }
 
-[data-theme="dark"] {
-  color-scheme: dark;
-
-  --lightink-bg: #242220;
-  --lightink-bg-elevated: #2c2a27;
-  --lightink-fg: #d9d2c3;
-  --lightink-muted: #8d8678;
-  --lightink-accent: #d19a5b;
-  --lightink-accent-soft: #3d372e;
-  --lightink-border: #453f36;
-  --lightink-code-bg: #2b2823;
-  --lightink-code-fg: #cfc6b2;
-  --lightink-selection: rgba(209, 154, 91, 0.25);
-
-  --lightink-syntax-keyword: #d18ba6;
-  --lightink-syntax-comment: #7d7768;
-  --lightink-syntax-string: #a3b86b;
-  --lightink-syntax-number: #d19a5b;
-  --lightink-syntax-function: #7ea8d1;
-  --lightink-syntax-title: #7ea8d1;
-  --lightink-syntax-attr: #c2ab6a;
-  --lightink-syntax-builtin: #b39ddb;
-  --lightink-syntax-literal: #d19a5b;
-}
-
-/* 冷调浅色：冷灰蓝背景、蓝色强调。 */
+/* 云白浅色：雾白底、青蓝强调，干净利落。 */
 [data-theme="cool-light"] {
   color-scheme: light;
 
-  --lightink-bg: #f3f5f8;
-  --lightink-bg-elevated: #ffffff;
-  --lightink-fg: #2f3742;
-  --lightink-muted: #7a8696;
-  --lightink-accent: #3a7bd5;
-  --lightink-accent-soft: #dfe7f3;
-  --lightink-border: #d3dae3;
-  --lightink-code-bg: #e8edf3;
-  --lightink-code-fg: #36404c;
-  --lightink-selection: rgba(58, 123, 213, 0.16);
+  --lightink-bg: #f2f4f6;
+  --lightink-bg-elevated: #fbfcfd;
+  --lightink-fg: #2b3038;
+  --lightink-muted: #79818d;
+  --lightink-accent: #2e6db4;
+  --lightink-accent-soft: #e2e9f2;
+  --lightink-border: #d7dce2;
+  --lightink-code-bg: #e9edf1;
+  --lightink-code-fg: #333a44;
+  --lightink-selection: rgba(46, 109, 180, 0.18);
+  --lightink-selection-strong: rgba(46, 109, 180, 0.35);
+  --lightink-danger: #b03a30;
 
-  --lightink-syntax-keyword: #9c4474;
-  --lightink-syntax-comment: #8b95a3;
-  --lightink-syntax-string: #2f7d5b;
-  --lightink-syntax-number: #b06a3c;
-  --lightink-syntax-function: #2f5fa6;
-  --lightink-syntax-title: #2f5fa6;
-  --lightink-syntax-attr: #7a5a8a;
-  --lightink-syntax-builtin: #5a4fb0;
-  --lightink-syntax-literal: #b06a3c;
+  --lightink-syntax-keyword: #8c3f6d;
+  --lightink-syntax-comment: #8b93a1;
+  --lightink-syntax-string: #2e7355;
+  --lightink-syntax-number: #a36130;
+  --lightink-syntax-function: #2b5d9e;
+  --lightink-syntax-title: #2b5d9e;
+  --lightink-syntax-attr: #6f5a2f;
+  --lightink-syntax-builtin: #574aa6;
+  --lightink-syntax-literal: #a36130;
 }
 
-/* 复古褐黄：更深的暖纸 / 褐色，旧书质感。 */
-[data-theme="sepia"] {
-  color-scheme: light;
+/* 墨夜深色：暖炭底、蜜蜡强调，夜间护眼。 */
+[data-theme="dark"] {
+  color-scheme: dark;
 
-  --lightink-bg: #efe2c8;
-  --lightink-bg-elevated: #f6ecd6;
-  --lightink-fg: #43352a;
-  --lightink-muted: #95806a;
-  --lightink-accent: #9a5a2b;
-  --lightink-accent-soft: #e6d3a8;
-  --lightink-border: #d8c298;
-  --lightink-code-bg: #e4d4b0;
-  --lightink-code-fg: #4a3c2c;
-  --lightink-selection: rgba(154, 90, 43, 0.18);
+  --lightink-bg: #211f1c;
+  --lightink-bg-elevated: #2a2825;
+  --lightink-fg: #d8d1c1;
+  --lightink-muted: #8f8776;
+  --lightink-accent: #cf9a5c;
+  --lightink-accent-soft: #3a352c;
+  --lightink-border: #403b33;
+  --lightink-code-bg: #2a2721;
+  --lightink-code-fg: #cec4af;
+  --lightink-selection: rgba(207, 154, 92, 0.28);
+  --lightink-selection-strong: rgba(207, 154, 92, 0.45);
+  --lightink-danger: #d4786a;
 
-  --lightink-syntax-keyword: #8a3d5a;
-  --lightink-syntax-comment: #9a8a6f;
-  --lightink-syntax-string: #6a7a35;
-  --lightink-syntax-number: #9a5a2b;
-  --lightink-syntax-function: #3a5a8a;
-  --lightink-syntax-title: #3a5a8a;
-  --lightink-syntax-attr: #7a5a2a;
-  --lightink-syntax-builtin: #5a4a95;
-  --lightink-syntax-literal: #9a5a2b;
+  --lightink-syntax-keyword: #d18ba0;
+  --lightink-syntax-comment: #7d7666;
+  --lightink-syntax-string: #a4b86c;
+  --lightink-syntax-number: #cf9a5c;
+  --lightink-syntax-function: #82a8cf;
+  --lightink-syntax-title: #82a8cf;
+  --lightink-syntax-attr: #c0a966;
+  --lightink-syntax-builtin: #b19cd9;
+  --lightink-syntax-literal: #cf9a5c;
 }
 
-/* 午夜深蓝：冷调深色，蓝色强调。 */
+/* 深空深色：夜空蓝底、星蓝强调，冷调沉静。 */
 [data-theme="midnight"] {
   color-scheme: dark;
 
-  --lightink-bg: #1b1f27;
-  --lightink-bg-elevated: #232833;
-  --lightink-fg: #c8d0dc;
-  --lightink-muted: #7a8493;
-  --lightink-accent: #6fa8dc;
-  --lightink-accent-soft: #2c3647;
-  --lightink-border: #353d4a;
-  --lightink-code-bg: #232a35;
-  --lightink-code-fg: #c2cad6;
-  --lightink-selection: rgba(111, 168, 220, 0.22);
+  --lightink-bg: #171b22;
+  --lightink-bg-elevated: #1f242e;
+  --lightink-fg: #c9d1dd;
+  --lightink-muted: #7b8492;
+  --lightink-accent: #76a6dd;
+  --lightink-accent-soft: #28303e;
+  --lightink-border: #333b48;
+  --lightink-code-bg: #1d232d;
+  --lightink-code-fg: #c0c9d5;
+  --lightink-selection: rgba(118, 166, 221, 0.26);
+  --lightink-selection-strong: rgba(118, 166, 221, 0.42);
+  --lightink-danger: #d07878;
 
-  --lightink-syntax-keyword: #d18ba6;
-  --lightink-syntax-comment: #6a7484;
-  --lightink-syntax-string: #a3c97a;
-  --lightink-syntax-number: #e0a060;
-  --lightink-syntax-function: #82b8e6;
-  --lightink-syntax-title: #82b8e6;
-  --lightink-syntax-attr: #cbb86a;
-  --lightink-syntax-builtin: #b39ddb;
-  --lightink-syntax-literal: #e0a060;
-}
-
-/* 墨绿深色：冷绿深色，绿色强调。 */
-[data-theme="forest"] {
-  color-scheme: dark;
-
-  --lightink-bg: #1c2220;
-  --lightink-bg-elevated: #242b28;
-  --lightink-fg: #cbd6cf;
-  --lightink-muted: #7c8a82;
-  --lightink-accent: #6fae7d;
-  --lightink-accent-soft: #2c3833;
-  --lightink-border: #384540;
-  --lightink-code-bg: #232b28;
-  --lightink-code-fg: #c0ccc5;
-  --lightink-selection: rgba(111, 174, 125, 0.22);
-
-  --lightink-syntax-keyword: #d59a9a;
-  --lightink-syntax-comment: #6f7d75;
-  --lightink-syntax-string: #b7c97a;
-  --lightink-syntax-number: #d6b06a;
-  --lightink-syntax-function: #7fb0c4;
-  --lightink-syntax-title: #7fb0c4;
-  --lightink-syntax-attr: #c2b06a;
-  --lightink-syntax-builtin: #b39ddb;
-  --lightink-syntax-literal: #d6b06a;
+  --lightink-syntax-keyword: #cf8ea8;
+  --lightink-syntax-comment: #6b7482;
+  --lightink-syntax-string: #9cc176;
+  --lightink-syntax-number: #d69f62;
+  --lightink-syntax-function: #84b4e2;
+  --lightink-syntax-title: #84b4e2;
+  --lightink-syntax-attr: #c4b267;
+  --lightink-syntax-builtin: #ad9bd6;
+  --lightink-syntax-literal: #d69f62;
 }
 
 /* hljs 类 → 主题令牌映射：T5 的 code-highlight 只输出 hljs-* 类名，

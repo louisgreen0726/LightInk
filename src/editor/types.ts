@@ -137,6 +137,11 @@ export interface EditorInstance {
    * 无选区或未就绪时为空操作。供 R3 上下文菜单链接操作使用。
    */
   setLink(href: string): void;
+  /**
+   * 在当前选区插入图片节点（url 为文档相对引用 `assets/<name>.<ext>`）。
+   * schema 无 image 节点或未就绪时为空操作。供「插入图片」本地文件选择流程使用。
+   */
+  insertImage(url: string, alt: string): void;
   /** Tear the editor down (removes DOM, nulls listeners). */
   destroy(): Promise<void>;
 }

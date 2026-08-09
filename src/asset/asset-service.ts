@@ -37,6 +37,25 @@ export function extFromMime(mime: string): string | null {
   }
 }
 
+/** 扩展名 → MIME 类型（data URL 显示用）；未知返回 application/octet-stream。 */
+export function mimeFromExt(ext: string): string {
+  switch (ext.trim().toLowerCase()) {
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 /** 文件名 → 图片扩展名（拖拽本地文件时 MIME 可能缺失，作兜底）。 */
 export function extFromFileName(name: string): string | null {
   const dot = name.lastIndexOf('.');
@@ -92,6 +111,71 @@ export async function migrateStagingAssets(
   docPath: string,
 ): Promise<string[]> {
   return invoke<string[]>('migrate_staging_assets', { sessionId, docPath });
+}
+
+/**
+ * 「插入图片」从本地文件导入：Rust 侧读取源文件并按与粘贴/拖拽相同的规则
+ * 落盘（文档旁 assets/ 或会话暂存目录），resolve 为相对引用
+ * `assets/<name>.<ext>`；读取失败/格式不支持时 reject —— 调用方必须不插入引用。
+ */
+export async function importImageAsset(
+  docPath: string | null,
+  sessionId: string,
+  sourcePath: string,
+): Promise<string> {
+  return invoke<string>('import_image_asset', { docPath, sessionId, sourcePath });
+}
+
+/**
+ * 读取文档引用的相对路径图片（base64）：文档已保存按 `<文档目录>/assets/…`
+ * 解析，未保存按会话暂存目录解析（与导出共用同一 Rust 命令）。
+ */
+export async function readImageBase64(
+  docPath: string | null,
+  sessionId: string,
+  relPath: string,
+): Promise<string> {
+  return invoke<string>('read_image_base64', { docPath, sessionId, relPath });
+}
+
+// ---------------------------------------------------------------------------
+// 编辑器图片显示：相对引用 → data URL 解析器
+// ---------------------------------------------------------------------------
+
+/** `createImageSrcResolver` 的可注入依赖。 */
+export interface ImageSrcResolverDeps {
+  readonly readImageBase64: (
+    docPath: string | null,
+    sessionId: string,
+    relPath: string,
+  ) => Promise<string>;
+  /** 读取该标签当前的文档路径（未保存为 null → 走暂存解析）。 */
+  readonly getDocPath: () => string | null;
+  readonly sessionId: string;
+}
+
+/**
+ * 为某个标签构建图片显示解析器：把文档内的相对引用 `assets/<name>.<ext>`
+ * 解析为可在 webview 直接显示的 data URL（相对路径在 webview 里没有静态
+ * 服务，直接塞进 <img src> 会裂图）。按 (文档路径, 相对引用) 缓存——另存为
+ * 后文档路径变化自动用新键重新解析；同一文件重复渲染不重复走 IPC。
+ */
+export function createImageSrcResolver(
+  deps: ImageSrcResolverDeps,
+): (relPath: string) => Promise<string> {
+  const cache = new Map<string, Promise<string>>();
+  return (relPath) => {
+    const key = `${deps.getDocPath() ?? ''}|${relPath}`;
+    let pending = cache.get(key);
+    if (pending === undefined) {
+      const ext = relPath.split('.').pop() ?? '';
+      pending = deps
+        .readImageBase64(deps.getDocPath(), deps.sessionId, relPath)
+        .then((base64) => `data:${mimeFromExt(ext)};base64,${base64}`);
+      cache.set(key, pending);
+    }
+    return pending;
+  };
 }
 
 /** `createAssetSaver` 的可注入依赖（测试可整体替换 invoke 层）。 */

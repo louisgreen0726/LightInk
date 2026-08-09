@@ -77,6 +77,21 @@ describe('buildEditorContextMenuItems (R3)', () => {
     const seps = items.filter((i) => i.separator === true);
     expect(seps.length).toBe(2);
   });
+
+  it('returns only clipboard items in source mode (format/link act on the hidden WYSIWYG editor)', () => {
+    const items = buildEditorContextMenuItems(
+      { hasSelection: true, hasLink: true, inSourceMode: true },
+      noopActions(),
+    );
+    expect(items.map((i) => i.id)).toEqual(['cut', 'copy', 'paste', 'paste-plain']);
+    // 选区判定仍然生效。
+    const noSel = enabledMap(
+      buildEditorContextMenuItems({ hasSelection: false, hasLink: false, inSourceMode: true }, noopActions()),
+    );
+    expect(noSel['cut']).toBe(false);
+    expect(noSel['copy']).toBe(false);
+    expect(noSel['paste']).toBe(true);
+  });
 });
 
 describe('buildTabContextMenuItems (R3)', () => {

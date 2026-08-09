@@ -23,7 +23,7 @@
  * 全部通过 `TabManagerDeps` 注入，vitest 可在 node 环境下以 fake 替换。
  */
 
-import { createAssetSaver } from '../asset/asset-service.js';
+import { createAssetSaver, createImageSrcResolver } from '../asset/asset-service.js';
 import * as assetService from '../asset/asset-service.js';
 import type { EditorInstance, MountOptions } from '../editor/types.js';
 import type { ImageAssetMountOptions } from '../editor/plugins/image.js';
@@ -104,6 +104,12 @@ export interface TabManagerDeps {
   ) => Promise<string>;
   /** T4：另存为后迁移该会话暂存图片到文档旁 assets/。 */
   migrateStagingAssets?: (sessionId: string, docPath: string) => Promise<string[]>;
+  /** 读取文档相对引用图片（base64），供编辑器把 assets/… 解析为 data URL 显示。 */
+  readImageBase64?: (
+    docPath: string | null,
+    sessionId: string,
+    relPath: string,
+  ) => Promise<string>;
 }
 
 /** 有效快照键：有文件路径用路径（与 Rust 侧哈希命名一致），否则用合成 id。 */
@@ -132,6 +138,7 @@ export class TabManager {
       listUntitledDrafts: fileService.listUntitledDrafts,
       saveAsset: assetService.saveAsset,
       migrateStagingAssets: assetService.migrateStagingAssets,
+      readImageBase64: assetService.readImageBase64,
       snapshotDebounceMs: DEFAULT_DEBOUNCE_MS,
       reportError: (message, error) => {
         // eslint-disable-next-line no-console
@@ -432,6 +439,13 @@ export class TabManager {
       // （sessionId = syntheticId），保存时由 saveTabAs 迁移。
       assetSaver: createAssetSaver({
         saveAsset: this.deps.saveAsset,
+        sessionId: args.syntheticId,
+        getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
+      }),
+      // 图片显示：文档内 assets/… 相对引用经 Rust 解析为 data URL（按标签缓存，
+      // 另存为后文档路径变化自动换键重解析）。
+      imageSrcResolver: createImageSrcResolver({
+        readImageBase64: this.deps.readImageBase64,
         sessionId: args.syntheticId,
         getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
       }),

@@ -35,8 +35,16 @@ export const FORMAT_TOOLS: readonly FormatTool[] = [
   { id: 'italic', label: 'I', title: '斜体', markName: 'emphasis' },
   { id: 'strikethrough', label: 'S', title: '删除线', markName: 'strike_through' },
   { id: 'code', label: '</>', title: '行内代码', markName: 'inlineCode' },
-  { id: 'link', label: '🔗', title: '链接', markName: 'link' },
+  { id: 'link', label: 'link', title: '链接', markName: 'link' },
 ];
+
+/** 链接按钮的内联 SVG（描边取 currentColor，随主题令牌着色；替代风格不一的 emoji）。 */
+const LINK_ICON_SVG =
+  '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.6" stroke-linecap="round" aria-hidden="true">' +
+  '<path d="M6.6 9.4a2.8 2.8 0 0 0 4 0l1.8-1.8a2.83 2.83 0 0 0-4-4l-1 1"/>' +
+  '<path d="M9.4 6.6a2.8 2.8 0 0 0-4 0L3.6 8.4a2.83 2.83 0 0 0 4 4l1-1"/>' +
+  '</svg>';
 
 export interface ToolbarPlacement {
   readonly top: number;
@@ -76,7 +84,11 @@ function createToolbarElement(): HTMLElement {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `lightink-format-tool lightink-format-tool--${tool.id}`;
-    btn.textContent = tool.label;
+    if (tool.id === 'link') {
+      btn.innerHTML = LINK_ICON_SVG;
+    } else {
+      btn.textContent = tool.label;
+    }
     btn.title = tool.title;
     btn.setAttribute('aria-label', tool.title);
     btn.dataset['tool'] = tool.id;

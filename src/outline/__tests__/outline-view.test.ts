@@ -272,6 +272,7 @@ describe('大纲与 TabManager 接线', () => {
       getLinkAtPoint: () => null,
       toggleMark: () => undefined,
       setLink: () => undefined,
+      insertImage: () => undefined,
       destroy: vi.fn(async () => undefined),
     };
   }

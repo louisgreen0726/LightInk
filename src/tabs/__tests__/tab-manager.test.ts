@@ -38,6 +38,7 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     getLinkAtPoint: () => null,
     toggleMark: () => undefined,
     setLink: () => undefined,
+    insertImage: () => undefined,
     destroy: vi.fn(async () => undefined),
   };
 }

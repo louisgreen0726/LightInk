@@ -84,7 +84,10 @@ function applySourceMetrics(el: HTMLElement): void {
   el.style.margin = '0';
   el.style.border = 'none';
   el.style.padding = '8px';
-  el.style.fontFamily = 'monospace';
+  // 与 theme.css 编辑器代码字体同一字体栈：高亮层 <code> 受
+  // `.lightink-tab-host code` 规则影响，若两层字体不同，字形宽度逐字漂移，
+  // 选区洗色与可见文字错位（用户感知为「源码模式选中有问题」）。
+  el.style.fontFamily = '"Cascadia Code", "JetBrains Mono", Consolas, monospace';
   el.style.fontSize = '14px';
   el.style.lineHeight = '1.5';
   el.style.whiteSpace = 'pre-wrap';
@@ -106,7 +109,13 @@ export class SourceView {
   private readonly controller: SourceModeController;
   private wrapper: HTMLDivElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
+  /** 高亮层 <code> 元素（enter 时创建，随 overlay 移除）。 */
+  private codeEl: HTMLElement | null = null;
   private savedHostPosition = '';
+  private savedHostHeight = '';
+  private savedHostOverflow = '';
+  /** 源码态视口尺寸跟随（enter 注册，exit 移除）。 */
+  private onWindowResize: (() => void) | null = null;
   /** 最近一次同步到编辑器的文本（用于跳过无变化的冗余 setMarkdown/解析）。 */
   private lastSynced = '';
 
@@ -137,11 +146,17 @@ export class SourceView {
     wrapper.style.overflow = 'hidden';
 
     const pre = doc.createElement('pre');
+    // 专用类：theme.css 据此中和 `.lightink-tab-host pre` 的代码块样式
+    //（背景/边框/圆角/滚动条样式会泄漏进源码叠加层）。
+    pre.className = 'lightink-source-highlight';
     pre.style.position = 'absolute';
     pre.style.inset = '0';
-    pre.style.overflow = 'auto';
+    // overflow hidden：滚动只由 textarea 同步驱动（hidden 仍可编程滚动），
+    // 否则 pre/textarea/编辑区三层各出一条滚动条（双滚动条问题）。
+    pre.style.overflow = 'hidden';
     pre.style.pointerEvents = 'none';
     pre.style.color = 'var(--lightink-fg)';
+    pre.style.background = 'transparent';
     applySourceMetrics(pre);
 
     const code = doc.createElement('code');
@@ -164,10 +179,7 @@ export class SourceView {
     textarea.spellcheck = false;
 
     const onInput = (): void => {
-      code.innerHTML = renderHighlightedSource(textarea.value);
-      // 即时同步（target 阶段，先于 host 的 handleContentChanged 冒泡）：让背后编辑器
-      // 跟随 textarea，使脏标记/崩溃快照/导出/大纲等所有读取 editor 的站点都读到最新源码。
-      this.syncIfChanged();
+      this.refreshFromTextarea();
     };
     const onScroll = (): void => {
       pre.scrollTop = textarea.scrollTop;
@@ -180,23 +192,79 @@ export class SourceView {
     wrapper.appendChild(textarea);
 
     this.savedHostPosition = this.host.style.position;
+    this.savedHostHeight = this.host.style.height;
+    this.savedHostOverflow = this.host.style.overflow;
     this.host.style.position = 'relative';
+    // 源码态把宿主钳制到编辑区视口高并裁掉溢出：背后的 WYSIWYG 内容不再
+    // 撑长页面（编辑区不出现页面级滚动条），滚动完全由 textarea 承担，
+    // 整个源码模式只留一条滚动条。
+    this.host.style.overflow = 'hidden';
+    const area = this.host.parentElement;
+    const fitViewport = (): void => {
+      if (area !== null) {
+        this.host.style.height = `${area.clientHeight}px`;
+      }
+    };
+    fitViewport();
+    window.addEventListener('resize', fitViewport);
+    this.onWindowResize = fitViewport;
     this.host.appendChild(wrapper);
 
     this.wrapper = wrapper;
     this.textarea = textarea;
+    this.codeEl = code;
     this.lastSynced = text;
     textarea.focus();
+  }
+
+  /** 高亮层重绘 + 变更同步（textarea 内容变化的统一入口）。 */
+  private refreshFromTextarea(): void {
+    if (this.codeEl !== null && this.textarea !== null) {
+      this.codeEl.innerHTML = renderHighlightedSource(this.textarea.value);
+    }
+    // 即时同步（先于 host 的 handleContentChanged 冒泡）：让背后编辑器
+    // 跟随 textarea，使脏标记/崩溃快照/导出/大纲等所有读取 editor 的站点都读到最新源码。
+    this.syncIfChanged();
+  }
+
+  /**
+   * 在源码 textarea 光标处插入片段并同步回编辑器（源码态下「插入」菜单的
+   * 统一路径；非源码态为空操作）。插入后光标落在片段末尾。
+   */
+  insertSnippetAtCursor(text: string): void {
+    if (!this.controller.isSourceMode() || this.textarea === null) return;
+    const ta = this.textarea;
+    ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
+    this.refreshFromTextarea();
+    ta.focus();
+  }
+
+  /** 源码 textarea 是否有非空选区（源码态右键菜单的启用判定）。 */
+  hasTextSelection(): boolean {
+    if (!this.controller.isSourceMode() || this.textarea === null) return false;
+    return this.textarea.selectionEnd > this.textarea.selectionStart;
+  }
+
+  /** 聚焦源码 textarea（右键菜单剪贴板动作执行前确保 execCommand 作用于它）。 */
+  focusEditor(): void {
+    this.textarea?.focus();
   }
 
   /** 退出源码模式，把 textarea 文本写回编辑器。 */
   exit(): void {
     if (!this.controller.isSourceMode() || this.wrapper === null) return;
     this.controller.exitSource(this.currentText());
+    if (this.onWindowResize !== null) {
+      window.removeEventListener('resize', this.onWindowResize);
+      this.onWindowResize = null;
+    }
     this.wrapper.remove();
     this.wrapper = null;
     this.textarea = null;
+    this.codeEl = null;
     this.host.style.position = this.savedHostPosition;
+    this.host.style.height = this.savedHostHeight;
+    this.host.style.overflow = this.savedHostOverflow;
   }
 
   /** 切换模式。 */

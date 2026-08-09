@@ -259,12 +259,16 @@ export function buildCodeDecorations(doc: PMNode): DecorationSet {
 // ---------------------------------------------------------------------------
 //
 // 设计取舍（见 02-technical-solution.md R8）：高亮继续走 decoration（不变）；
-// 复制按钮用 nodeView 叠加——因为「悬停浮现、覆盖在代码块右上角」的按钮必须作为
-// code_block 外层 <pre> 的非内容子节点存在（contentDOM 仍是 <code>，PM 独占文本
-// 管理）。Decoration.widget 只能插入文档流中的兄弟节点，无法相对 <pre> 定位，故
-// 按钮态叠加采用 nodeView（业内代码块复制按钮的标准做法）；hljs 高亮仍由上方
+// 复制按钮用 nodeView 叠加——因为「覆盖在代码块右上角」的按钮必须作为
+// code_block 的非内容子节点存在（contentDOM 仍是 <code>，PM 独占文本
+// 管理）。Decoration.widget 只能插入文档流中的兄弟节点，无法相对代码块定位，故
+// 按钮叠加采用 nodeView（业内代码块复制按钮的标准做法）；hljs 高亮仍由上方
 // decoration 提供，PM 会把 Decoration.node 的 class（含 data-language）作用到本
-// nodeView 的 <pre> 上，复用既有 data-language 作用域。
+// nodeView 的外层包裹 div 上（颜色经继承进入 <code>）。
+//
+// 按钮位于外层包裹 div 而非滚动容器 <pre> 内：绝对定位在滚动容器内的元素会
+// 随横向滚动被带走，且悬停显隐在触达边缘时不可发现——故按钮固定在包裹层
+// 右上角、始终可见（视觉弱化，悬停全显，CSS 见 theme.css）。
 //
 // 纯逻辑（copyButtonLabel / copyButtonClassName / readCodeSource）headless 可测；
 // nodeView 装配与剪贴板写入属编辑器集成面（同既有插件，仅断言工厂形态）。
@@ -348,37 +352,29 @@ function legacyClipboardCopy(text: string): boolean {
 }
 
 /**
- * code_block nodeView：渲染默认 `<pre><code>`（contentDOM=<code>，PM 独占文本）
- * 并叠加一个右上角复制按钮——悬停（mouseenter/mouseleave）显隐，点击复制源码并
- * 闪现「已复制」反馈。高亮 decoration 由 PM 作用到返回的 <pre> 上。
+ * code_block nodeView：外层定位包裹 div（`lightink-code-block`，复制按钮的
+ * 定位上下文，非滚动容器）内嵌 `<pre><code>`（contentDOM=<code>，PM 独占文本，
+ * <pre> 是唯一横向滚动容器）。复制按钮固定在包裹层右上角、始终可见（CSS 控制
+ * 低透明度 → 悬停全显），不随代码横向滚动被带走；滚轮在代码块上纵向滚动时
+ * 转为横向滚动（Chromium 不会自动把垂直滚轮映射到横向滚动容器）。
+ * 高亮 decoration 由 PM 作用到返回的外层 div 上（hljs 颜色经继承进入 <code>）。
  */
 function createCodeBlockNodeView(node: PMNode): NodeView {
-  const dom = document.createElement('pre');
+  const dom = document.createElement('div');
   dom.className = 'lightink-code-block';
   dom.setAttribute('data-lightink-code', '');
-  // 作为按钮绝对定位的上下文。
+  // 作为按钮绝对定位的上下文（按钮在滚动容器之外）。
   dom.style.position = 'relative';
 
+  const pre = document.createElement('pre');
+  pre.className = 'lightink-code-pre';
   const contentDOM = document.createElement('code');
-  dom.appendChild(contentDOM);
+  pre.appendChild(contentDOM);
+  dom.appendChild(pre);
 
   const btn = createCopyButton();
-  btn.style.position = 'absolute';
-  btn.style.top = '0.4em';
-  btn.style.right = '0.4em';
-  btn.style.opacity = '0';
-  btn.style.pointerEvents = 'none';
-  btn.style.transition = 'opacity 120ms ease';
   dom.appendChild(btn);
 
-  const reveal = (): void => {
-    btn.style.opacity = '1';
-    btn.style.pointerEvents = 'auto';
-  };
-  const hide = (): void => {
-    btn.style.opacity = '0';
-    btn.style.pointerEvents = 'none';
-  };
   const onCopy = async (): Promise<void> => {
     const ok = await writeClipboardText(readCodeSource(contentDOM));
     if (ok) {
@@ -386,10 +382,26 @@ function createCodeBlockNodeView(node: PMNode): NodeView {
       window.setTimeout(() => setCopiedState(btn, false), COPY_FEEDBACK_MS);
     }
   };
+  // 阻止按钮 mousedown 抢走编辑器焦点/选区（preventDefault 不影响 click 本身）。
+  const onBtnMouseDown = (event: MouseEvent): void => {
+    event.preventDefault();
+  };
+  // 垂直滚轮 → 横向滚动：代码块只能横向溢出时，滚轮直接驱动 scrollLeft
+  // （否则 Chromium 会把滚轮事件链到页面滚动，用户感知为「代码块无法滚动」）。
+  const onWheel = (event: WheelEvent): void => {
+    if (event.deltaY === 0) return;
+    if (pre.scrollWidth <= pre.clientWidth) return;
+    const before = pre.scrollLeft;
+    pre.scrollLeft += event.deltaY;
+    // 已到端点时放行，让页面继续滚动（滚轮链语义）。
+    if (pre.scrollLeft !== before) {
+      event.preventDefault();
+    }
+  };
 
-  dom.addEventListener('mouseenter', reveal);
-  dom.addEventListener('mouseleave', hide);
+  btn.addEventListener('mousedown', onBtnMouseDown);
   btn.addEventListener('click', onCopy);
+  pre.addEventListener('wheel', onWheel, { passive: false });
 
   return {
     dom,
@@ -397,9 +409,9 @@ function createCodeBlockNodeView(node: PMNode): NodeView {
     // 同类型节点（含 language attr 变化、文本编辑）复用本视图；PM 据此同步 <code>。
     update: (incoming: PMNode) => incoming.type === node.type,
     destroy(): void {
-      dom.removeEventListener('mouseenter', reveal);
-      dom.removeEventListener('mouseleave', hide);
+      btn.removeEventListener('mousedown', onBtnMouseDown);
       btn.removeEventListener('click', onCopy);
+      pre.removeEventListener('wheel', onWheel);
     },
   };
 }

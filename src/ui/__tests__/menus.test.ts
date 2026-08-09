@@ -16,30 +16,68 @@ interface FakeEvent {
 
 class FakeEl {
   readonly tagName: string;
-  textContent = '';
+  private ownText = '';
   className = '';
   hidden = false;
   disabled = false;
   type = '';
   title = '';
   dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
   children: FakeEl[] = [];
+  parent: FakeEl | null = null;
   private readonly listeners = new Map<string, Array<(e: FakeEvent) => void>>();
   readonly classList = {
     contains: (c: string): boolean => this.className.split(/\s+/).includes(c),
+    add: (c: string): void => {
+      if (!this.classList.contains(c)) {
+        this.className = this.className === '' ? c : `${this.className} ${c}`;
+      }
+    },
   };
 
   constructor(tag: string) {
     this.tagName = tag.toUpperCase();
   }
 
+  get textContent(): string {
+    return this.ownText + this.children.map((c) => c.textContent).join('');
+  }
+
+  set textContent(value: string) {
+    this.ownText = value;
+    this.children = [];
+  }
+
   appendChild<T extends FakeEl>(child: T): T {
+    child.parent = this;
     this.children.push(child);
     return child;
   }
 
   append(...kids: FakeEl[]): void {
+    for (const kid of kids) {
+      kid.parent = this;
+    }
     this.children.push(...kids);
+  }
+
+  replaceChildren(...kids: FakeEl[]): void {
+    for (const kid of kids) {
+      kid.parent = this;
+    }
+    this.children = [...kids];
+  }
+
+  remove(): void {
+    if (this.parent !== null) {
+      this.parent.children = this.parent.children.filter((c) => c !== this);
+      this.parent = null;
+    }
+  }
+
+  getBoundingClientRect(): { right: number; width: number } {
+    return { right: 0, width: 0 };
   }
 
   addEventListener(type: string, fn: (e: FakeEvent) => void): void {
@@ -48,15 +86,19 @@ class FakeEl {
     this.listeners.set(type, list);
   }
 
-  click(overrides: Partial<FakeEvent> = {}): void {
+  fire(type: string, overrides: Partial<FakeEvent> = {}): void {
     const event: FakeEvent = {
       stopPropagation: () => undefined,
       preventDefault: () => undefined,
       ...overrides,
     };
-    for (const fn of this.listeners.get('click') ?? []) {
+    for (const fn of this.listeners.get(type) ?? []) {
       fn(event);
     }
+  }
+
+  click(overrides: Partial<FakeEvent> = {}): void {
+    this.fire('click', overrides);
   }
 
   contains(node: unknown): boolean {
@@ -198,5 +240,123 @@ describe('展开/关闭与派发', () => {
     bar.openMenu('file');
     doc.dispatch('keydown', { key: 'Escape' });
     expect(panelEl(bar).hidden).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 子菜单（VS Code 式「最近打开」）与菜单栏悬停跟踪
+// ---------------------------------------------------------------------------
+
+interface SubSpec {
+  specObj: MenuBarSpec;
+  subItems: Array<{ id: string; label: string; action: ReturnType<typeof vi.fn> }>;
+}
+
+function specWithSubmenu(): SubSpec {
+  const subItems = [
+    { id: 'recent-0', label: 'a.md', action: vi.fn() },
+    { id: 'recents-clear', label: '清空最近打开', action: vi.fn() },
+  ];
+  return {
+    subItems,
+    specObj: {
+      menus: [
+        {
+          id: 'file',
+          label: '文件',
+          items: [
+            { id: 'new', label: '新建', action: vi.fn() },
+            {
+              id: 'recents',
+              label: '最近打开',
+              action: vi.fn(),
+              submenu: () => Promise.resolve(subItems),
+            },
+          ],
+        },
+        { id: 'edit', label: '编辑', items: [{ id: 'undo', label: '撤销', action: vi.fn() }] },
+      ],
+    },
+  };
+}
+
+function panelByMenuId(bar: { element: HTMLDivElement }, menuId: string): FakeEl {
+  const wraps = asEl(bar.element).children;
+  const wrap = wraps.find((w) => w.children[0]?.dataset.menuId === menuId) as FakeEl;
+  return wrap.children[1];
+}
+
+function flyoutOf(bar: { element: HTMLDivElement }, menuId: string): FakeEl | undefined {
+  return panelByMenuId(bar, menuId).children.find((c) =>
+    c.classList.contains('lightink-menu-flyout'),
+  );
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe('子菜单浮层', () => {
+  it('悬停子菜单触发器展开浮层并异步填充子项', async () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    bar.openMenu('file');
+    const triggerItem = panelByMenuId(bar, 'file').children.find(
+      (c) => c.dataset.itemId === 'recents',
+    ) as FakeEl;
+    triggerItem.fire('mouseenter');
+    // 立即出现加载占位。
+    expect(flyoutOf(bar, 'file')).toBeDefined();
+    await flushMicrotasks();
+    const flyout = flyoutOf(bar, 'file') as FakeEl;
+    expect(flyout.children.map((c) => c.dataset.itemId)).toEqual(['recent-0', 'recents-clear']);
+  });
+
+  it('点击子项派发其 action 并关闭整个菜单', async () => {
+    const { specObj, subItems } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    bar.openMenu('file');
+    const triggerItem = panelByMenuId(bar, 'file').children.find(
+      (c) => c.dataset.itemId === 'recents',
+    ) as FakeEl;
+    triggerItem.fire('mouseenter');
+    await flushMicrotasks();
+    const flyout = flyoutOf(bar, 'file') as FakeEl;
+    (flyout.children[0] as FakeEl).click();
+    expect(subItems[0].action).toHaveBeenCalledTimes(1);
+    expect(panelByMenuId(bar, 'file').hidden).toBe(true);
+    expect(flyoutOf(bar, 'file')).toBeUndefined();
+  });
+
+  it('悬停同面板的普通项时关闭浮层', async () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    bar.openMenu('file');
+    const panel = panelByMenuId(bar, 'file');
+    (panel.children.find((c) => c.dataset.itemId === 'recents') as FakeEl).fire('mouseenter');
+    await flushMicrotasks();
+    expect(flyoutOf(bar, 'file')).toBeDefined();
+    (panel.children.find((c) => c.dataset.itemId === 'new') as FakeEl).fire('mouseenter');
+    expect(flyoutOf(bar, 'file')).toBeUndefined();
+  });
+});
+
+describe('菜单栏悬停跟踪（VS Code 式）', () => {
+  it('已有菜单展开时悬停其他触发器自动切换', () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    bar.openMenu('file');
+    const editTrigger = asEl(bar.element).children[1].children[0];
+    editTrigger.fire('mouseenter');
+    expect(panelByMenuId(bar, 'file').hidden).toBe(true);
+    expect(panelByMenuId(bar, 'edit').hidden).toBe(false);
+  });
+
+  it('无菜单展开时悬停不打开', () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    const editTrigger = asEl(bar.element).children[1].children[0];
+    editTrigger.fire('mouseenter');
+    expect(panelByMenuId(bar, 'edit').hidden).toBe(true);
   });
 });

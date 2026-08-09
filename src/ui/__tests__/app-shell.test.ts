@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { InsertElementId } from '../../editor/insert-commands.js';
 import type { BuiltinThemeId } from '../../theme/theme-service.js';
-import { buildMenus, type AppShellActions } from '../app-shell.js';
+import { buildMenus, buildRecentsMenuItems, pathBaseName, pathDirName, type AppShellActions } from '../app-shell.js';
 
 function stubActions(currentThemeId = 'warm-light'): AppShellActions {
   const noop = (): void => undefined;
@@ -54,8 +54,10 @@ describe('buildMenus 生产结构', () => {
     expect(edit?.items.some((i) => i.separator === true)).toBe(true);
   });
 
-  it('文件菜单含「最近打开…」入口（R12）', () => {
-    expect(file?.items.some((i) => i.id === 'file-recents' && i.label === '最近打开…')).toBe(true);
+  it('文件菜单含「最近打开」子菜单入口（R12，VS Code 式）', () => {
+    const item = file?.items.find((i) => i.id === 'file-recents');
+    expect(item?.label).toBe('最近打开');
+    expect(typeof item?.submenu).toBe('function');
   });
 
   it('文件菜单含「版本历史…」入口，无活动文件时禁用（R13）', () => {
@@ -77,19 +79,57 @@ describe('buildMenus 生产结构', () => {
   });
 
   it('视图菜单逐项列出全部预设主题，当前主题项禁用（R15）', () => {
-    const viewMenus = buildMenus(stubActions('sepia'));
+    const viewMenus = buildMenus(stubActions('midnight'));
     const view = viewMenus.find((m) => m.id === 'view');
-    const presetIds = ['warm-light', 'cool-light', 'sepia', 'dark', 'midnight', 'forest'].map(
+    const presetIds = ['warm-light', 'cool-light', 'dark', 'midnight'].map(
       (id) => `view-theme-${id}`,
     );
     const presetItems = view?.items.filter(
       (i) => i.separator !== true && i.id !== 'view-theme-toggle' && presetIds.includes(i.id),
     );
     expect(presetItems?.map((i) => i.id)).toEqual(presetIds);
-    // 当前主题 sepia 禁用、其余启用。
-    expect(presetItems?.find((i) => i.id === 'view-theme-sepia')?.enabled?.()).toBe(false);
+    // 当前主题 midnight 禁用、其余启用。
+    expect(presetItems?.find((i) => i.id === 'view-theme-midnight')?.enabled?.()).toBe(false);
     expect(presetItems?.find((i) => i.id === 'view-theme-warm-light')?.enabled?.()).toBe(true);
     // 热重载自定义主题入口存在。
     expect(view?.items.some((i) => i.id === 'view-reload-custom-theme')).toBe(true);
+  });
+});
+
+describe('buildRecentsMenuItems（R12 最近打开子菜单）', () => {
+  it('路径拆分为文件名 + 目录（兼容 / 与 \\）', () => {
+    expect(pathBaseName('C:\\docs\\笔记.md')).toBe('笔记.md');
+    expect(pathBaseName('/home/u/a.md')).toBe('a.md');
+    expect(pathDirName('C:\\docs\\笔记.md')).toBe('C:\\docs');
+    expect(pathDirName('/home/u/a.md')).toBe('/home/u');
+    // 无目录段 → 空串（hint 不渲染）。
+    expect(pathDirName('a.md')).toBe('');
+  });
+
+  it('空列表返回占位禁用项', () => {
+    const items = buildRecentsMenuItems([], { open: () => undefined, clear: () => undefined });
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('recents-empty');
+    expect(items[0].enabled?.()).toBe(false);
+  });
+
+  it('每项 = 文件名 + 目录提示，末尾接清空入口；open/clear 正确派发', () => {
+    const opened: string[] = [];
+    let cleared = 0;
+    const items = buildRecentsMenuItems(['C:\\docs\\a.md', '/home/u/b.md'], {
+      open: (p) => opened.push(p),
+      clear: () => {
+        cleared += 1;
+      },
+    });
+    expect(items.map((i) => i.id)).toEqual(['recent-0', 'recent-1', 'recents-sep', 'recents-clear']);
+    expect(items[0].label).toBe('a.md');
+    expect(items[0].hint).toBe('C:\\docs');
+    expect(items[1].label).toBe('b.md');
+    expect(items[2].separator).toBe(true);
+    items[0].action();
+    items[3].action();
+    expect(opened).toEqual(['C:\\docs\\a.md']);
+    expect(cleared).toBe(1);
   });
 });

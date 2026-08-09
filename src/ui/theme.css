@@ -197,22 +197,6 @@ body {
   overflow-y: auto;
 }
 
-/* R6 底部状态栏：固定高度、不抢占编辑区（编辑区 flex:1 自适应）。 */
-#lightink-statusbar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex: none;
-  height: 26px;
-  padding: 0 12px;
-  border-top: 1px solid var(--lightink-border);
-  background: var(--lightink-bg-elevated);
-  color: var(--lightink-fg);
-  opacity: 0.7;
-  font-size: 12px;
-  user-select: none;
-}
-
 .lightink-tab-host {
   max-width: 860px;
   margin: 0 auto;
@@ -233,6 +217,113 @@ body {
   overflow-x: auto;
   font-size: 13px;
   line-height: 1.5;
+  user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lightink-border) transparent;
+}
+
+/* 代码块横向滚动条 / 源码模式主滚动条 / 斜杠菜单滚动条：细轨、贴主题
+   （原生经典滚动条的箭头按钮/宽轨在暖色背景上像一条脱落的白条——隐藏
+   按钮、thumb 用透明描边内缩）。 */
+.lightink-tab-host pre::-webkit-scrollbar,
+.lightink-source-editor::-webkit-scrollbar,
+.lightink-slash-menu::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+.lightink-tab-host pre::-webkit-scrollbar-track,
+.lightink-source-editor::-webkit-scrollbar-track,
+.lightink-slash-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.lightink-tab-host pre::-webkit-scrollbar-thumb,
+.lightink-source-editor::-webkit-scrollbar-thumb,
+.lightink-slash-menu::-webkit-scrollbar-thumb {
+  background: var(--lightink-border);
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: content-box;
+}
+
+.lightink-tab-host pre::-webkit-scrollbar-thumb:hover,
+.lightink-source-editor::-webkit-scrollbar-thumb:hover,
+.lightink-slash-menu::-webkit-scrollbar-thumb:hover {
+  background: var(--lightink-muted);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.lightink-tab-host pre::-webkit-scrollbar-button,
+.lightink-source-editor::-webkit-scrollbar-button,
+.lightink-slash-menu::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* R8 代码块复制按钮：固定在外层包裹（非滚动容器）右上角，常态弱化、
+   悬停代码块或按钮时全显——始终可发现，不被横向滚动带走。 */
+.lightink-code-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  border: 1px solid var(--lightink-border);
+  border-radius: 5px;
+  background: var(--lightink-bg-elevated);
+  color: var(--lightink-muted);
+  padding: 1px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.lightink-code-block:hover .lightink-code-copy-btn,
+.lightink-code-copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.lightink-code-copy-btn:hover {
+  opacity: 1;
+  color: var(--lightink-fg);
+  background: var(--lightink-accent-soft);
+  border-color: var(--lightink-accent);
+}
+
+.lightink-code-copy-btn--copied {
+  opacity: 1;
+  color: var(--lightink-accent);
+  border-color: var(--lightink-accent);
+}
+
+/* 源码模式选区（R10）：textarea 文字透明（高亮层在背后渲染），全局 18%
+   透明度的 selection 洗色几乎不可见，用户感知为「无法选中」——用更强的
+   accent 洗色让选中范围明确可读（文字仍由背后高亮层透出）。 */
+.lightink-source-editor {
+  user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lightink-border) transparent;
+}
+
+.lightink-source-editor::selection {
+  background: var(--lightink-selection-strong);
+}
+
+/* 源码叠加层的高亮 pre 位于 .lightink-tab-host 内：中和代码块外壳样式
+   （背景/边框/圆角/内边距由 source-view.ts 内联度量统一掌管），并让 <code>
+   继承高亮 pre 的字体栈——否则 `.lightink-tab-host code` 的字体与 textarea
+   不同，选区洗色与可见文字逐字错位。 */
+.lightink-tab-host pre.lightink-source-highlight {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 8px;
+}
+
+.lightink-tab-host .lightink-source-highlight code {
+  font-family: inherit;
 }
 
 .lightink-tab-host code {
@@ -296,7 +387,11 @@ body {
 }
 
 .lightink-tab-host img {
+  /* 小图按原始尺寸显示（不放大的关键：只设 max 约束，浏览器保持固有宽高比）；
+     大图双向约束——宽度不超栏宽，高度不超 60vh，避免一张高图占满整个视口。 */
   max-width: 100%;
+  max-height: 60vh;
+  border-radius: 4px;
 }
 
 /* 下拉菜单栏（R2）：与原工具栏同高，不挤占编辑区纵向空间。 */
@@ -348,7 +443,10 @@ body {
 }
 
 .lightink-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
   width: 100%;
   text-align: left;
   border: none;
@@ -370,10 +468,226 @@ body {
   cursor: default;
 }
 
+/* 菜单项右侧弱化提示：快捷键 / 最近文件的目录路径。 */
+.lightink-menu-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lightink-menu-item-hint {
+  margin-left: auto;
+  color: var(--lightink-muted);
+  font-size: 12px;
+}
+
+/* 路径提示：头部省略（保留最有区分度的末尾目录段）。 */
+.lightink-menu-item-hint--path {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+
+.lightink-menu-item:hover:not(:disabled) .lightink-menu-item-hint {
+  color: var(--lightink-fg);
+}
+
+/* 子菜单触发器的 ▸ 指示。 */
+.lightink-menu-item-sub-arrow {
+  margin-left: auto;
+  color: var(--lightink-muted);
+}
+
+.lightink-menu-item:hover:not(:disabled) .lightink-menu-item-sub-arrow {
+  color: var(--lightink-fg);
+}
+
+/* 子菜单浮层（VS Code 式「最近打开」）：挂在触发项右侧，放不下时翻到左侧。 */
+.lightink-menu-flyout {
+  position: absolute;
+  z-index: 60;
+  min-width: 240px;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 6px;
+  background: var(--lightink-bg-elevated);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
 .lightink-menu-separator {
   margin: 4px 0;
   border: none;
   border-top: 1px solid var(--lightink-border);
+}
+
+/* 右键上下文菜单（R3）：与下拉菜单同源的浮层语言——圆角面板、细边框、
+   柔和投影；菜单项整行 hover 高亮，快捷键提示右对齐弱化显示。 */
+.lightink-context-menu {
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 8px;
+  background: var(--lightink-bg-elevated);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.08);
+  font-size: 13px;
+  animation: lightink-context-menu-in 90ms ease-out;
+}
+
+@keyframes lightink-context-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lightink-context-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lightink-fg);
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lightink-context-menu__item:hover:not(:disabled) {
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-context-menu__item:disabled {
+  color: var(--lightink-muted);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.lightink-context-menu__shortcut {
+  margin-left: auto;
+  color: var(--lightink-muted);
+  font-size: 12px;
+}
+
+.lightink-context-menu__item:hover:not(:disabled) .lightink-context-menu__shortcut {
+  color: var(--lightink-fg);
+}
+
+.lightink-context-menu__separator {
+  margin: 5px 2px;
+  border: none;
+  border-top: 1px solid var(--lightink-border);
+}
+
+/* 选中文字浮出的格式工具条（R7）：圆角浮层 + 紧凑图标按钮组，
+   与右键菜单同一浮层语言（细边框、柔和投影、hover 高亮）。 */
+.lightink-format-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 8px;
+  background: var(--lightink-bg-elevated);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.08);
+  animation: lightink-context-menu-in 90ms ease-out;
+}
+
+.lightink-format-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lightink-fg);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lightink-format-tool:hover {
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-format-tool--bold {
+  font-weight: 700;
+}
+
+.lightink-format-tool--italic {
+  font-style: italic;
+}
+
+.lightink-format-tool--strikethrough {
+  text-decoration: line-through;
+}
+
+.lightink-format-tool--code {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.lightink-format-tool--link svg {
+  display: block;
+}
+
+/* 斜杠命令菜单（R11）：与右键菜单/格式工具条同一浮层语言；
+   键盘选中项左侧加一道 accent 指示条与 hover 区分。 */
+.lightink-slash-menu {
+  min-width: 160px;
+  max-height: 264px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 8px;
+  background: var(--lightink-bg-elevated);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.08);
+  font-size: 13px;
+  animation: lightink-context-menu-in 90ms ease-out;
+}
+
+.lightink-slash-menu__item {
+  padding: 6px 10px;
+  border-radius: 5px;
+  color: var(--lightink-fg);
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lightink-slash-menu__item:hover {
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-slash-menu__item--active,
+.lightink-slash-menu__item--active:hover {
+  background: var(--lightink-accent-soft);
+  box-shadow: inset 2px 0 0 var(--lightink-accent);
+}
+
+.lightink-slash-menu__empty {
+  padding: 6px 10px;
+  color: var(--lightink-muted);
+  font-size: 12.5px;
 }
 
 /* 快捷键速查表（R5）。 */
@@ -441,4 +755,158 @@ body {
   padding: 4px 14px;
   font-size: 13px;
   cursor: pointer;
+}
+
+/* 应用内确认弹层（未保存关闭三选一 / 崩溃恢复）：消息 + 右下按钮排。 */
+.lightink-confirm-dialog {
+  min-width: 340px;
+}
+
+.lightink-modal-message {
+  margin: 2px 0 18px;
+  color: var(--lightink-fg);
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre-line;
+  word-break: break-all;
+}
+
+.lightink-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.lightink-modal-btn {
+  border: 1px solid var(--lightink-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lightink-fg);
+  padding: 4px 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.lightink-modal-btn:hover {
+  background: var(--lightink-accent-soft);
+  border-color: var(--lightink-accent);
+}
+
+.lightink-modal-btn:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
+}
+
+/* 主按钮：accent 实底（文字取背景色令牌，深浅主题均有对比度）。 */
+.lightink-modal-btn--primary {
+  background: var(--lightink-accent);
+  border-color: var(--lightink-accent);
+  color: var(--lightink-bg);
+}
+
+.lightink-modal-btn--primary:hover {
+  background: var(--lightink-accent);
+  border-color: var(--lightink-accent);
+  color: var(--lightink-bg);
+  opacity: 0.88;
+}
+
+/* 危险按钮（不保存）：danger 描边文字，hover 实底反白。 */
+.lightink-modal-btn--danger {
+  color: var(--lightink-danger);
+  border-color: var(--lightink-danger);
+}
+
+.lightink-modal-btn--danger:hover {
+  background: var(--lightink-danger);
+  border-color: var(--lightink-danger);
+  color: var(--lightink-bg);
+}
+
+/* 版本历史弹层（R13）：双栏——左版本时间线 / 右内容预览。 */
+.lightink-versions-dialog {
+  width: min(780px, 92vw);
+  max-width: 92vw;
+}
+
+.lightink-versions-body {
+  display: flex;
+  gap: 12px;
+  min-height: 180px;
+  margin-bottom: 16px;
+}
+
+.lightink-versions-list {
+  flex: none;
+  width: 220px;
+  max-height: 52vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 6px;
+}
+
+.lightink-versions-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lightink-fg);
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lightink-versions-item:hover {
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-versions-item.selected,
+.lightink-versions-item.selected:hover {
+  background: var(--lightink-accent-soft);
+  box-shadow: inset 2px 0 0 var(--lightink-accent);
+}
+
+.lightink-versions-item-rel {
+  font-weight: 500;
+}
+
+.lightink-versions-item-abs {
+  font-size: 11.5px;
+  color: var(--lightink-muted);
+}
+
+.lightink-versions-empty {
+  padding: 14px 10px;
+  color: var(--lightink-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.lightink-versions-preview {
+  flex: 1;
+  min-width: 0;
+  max-height: 52vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 6px;
+  background: var(--lightink-code-bg);
+  color: var(--lightink-code-fg);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }

@@ -18,6 +18,7 @@ import type { EditorView } from '@milkdown/prose/view';
 
 import {
   insertImageAt,
+  isRelativeAssetSrc,
   processImageDrop,
   processImagePaste,
   type ImageAssetDeps,
@@ -189,5 +190,24 @@ describe('processImageDrop', () => {
     expect(dispatched).toHaveLength(1);
     expect(imageUrlsOf(dispatched[0]!)).toEqual(['assets/img-good.png']);
     expect(deps.onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isRelativeAssetSrc（图片显示解析判定）', () => {
+  it('文档内 assets/… 相对引用需要解析', () => {
+    expect(isRelativeAssetSrc('assets/img-x.png')).toBe(true);
+    expect(isRelativeAssetSrc('assets/sub/图.jpg')).toBe(true);
+  });
+
+  it('外链/协议相对/data/blob/file/绝对路径不需要解析', () => {
+    expect(isRelativeAssetSrc('https://example.com/a.png')).toBe(false);
+    expect(isRelativeAssetSrc('http://example.com/a.png')).toBe(false);
+    expect(isRelativeAssetSrc('//example.com/a.png')).toBe(false);
+    expect(isRelativeAssetSrc('data:image/png;base64,QUJD')).toBe(false);
+    expect(isRelativeAssetSrc('blob:http://x/y')).toBe(false);
+    expect(isRelativeAssetSrc('file:///C:/pics/a.png')).toBe(false);
+    expect(isRelativeAssetSrc('/abs/path/a.png')).toBe(false);
+    expect(isRelativeAssetSrc('C:\\pics\\a.png')).toBe(false);
+    expect(isRelativeAssetSrc('')).toBe(false);
   });
 });
