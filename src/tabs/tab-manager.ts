@@ -464,6 +464,13 @@ export class TabManager {
     };
     this.tabs.push(tab);
     this.switchTab(id);
+    // Immersive shell R4: after mount, place caret so typing can start without a click.
+    // ready is already resolved by mountEditor before return; still await for fakes/async mounts.
+    void tab.editor.ready.then(() => {
+      if (this.activeId === id) {
+        tab.editor.focus();
+      }
+    });
     return tab;
   }
 

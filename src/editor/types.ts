@@ -142,6 +142,11 @@ export interface EditorInstance {
    * schema 无 image 节点或未就绪时为空操作。供「插入图片」本地文件选择流程使用。
    */
   insertImage(url: string, alt: string): void;
+  /**
+   * Focus the ProseMirror surface so typing can start without hunting the caret
+   * (immersive shell R4 empty/new-tab path). No-op if the editor is not ready.
+   */
+  focus(): void;
   /** Tear the editor down (removes DOM, nulls listeners). */
   destroy(): Promise<void>;
 }

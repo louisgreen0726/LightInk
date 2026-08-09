@@ -39,6 +39,7 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     toggleMark: () => undefined,
     setLink: () => undefined,
     insertImage: () => undefined,
+    focus: vi.fn(),
     destroy: vi.fn(async () => undefined),
   };
 }
@@ -111,6 +112,13 @@ describe('新建与切换', () => {
     expect(tab.filePath).toBeNull();
     expect(tab.dirty).toBe(false);
     expect(snapshotKeyOf(tab)).toMatch(/^untitled-/);
+  });
+
+  it('newTab focuses the editor after ready so typing can start', async () => {
+    const { manager, editors } = makeHarness();
+    await manager.newTab('开始书写。');
+    await Promise.resolve();
+    expect(editors[0]?.focus).toHaveBeenCalled();
   });
 
   it('两个未命名标签的快照键互不相同（跨会话唯一 token）', async () => {

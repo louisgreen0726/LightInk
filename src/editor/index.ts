@@ -279,6 +279,11 @@ export async function mountEditor(
       if (view === null) return;
       insertImageAt(view, null, url, alt);
     },
+    focus(): void {
+      const view = getView(state);
+      if (view === null) return;
+      view.focus();
+    },
     async destroy(): Promise<void> {
       try {
         if (state.cursorBinding !== null) {

@@ -81,14 +81,19 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
 
   /** 点击跳转：按序号锚点取活动宿主中第 n 个 h1-h6 并滚动到视口顶部。 */
   function scrollToItem(item: OutlineItem): void {
-    const host = deps.getActiveHost();
-    if (host === null || typeof host.querySelectorAll !== 'function') {
-      return;
-    }
-    const headings = host.querySelectorAll(HEADING_SELECTOR);
-    const el = headings[item.anchor] as HTMLElement | undefined;
-    if (el !== undefined && typeof el.scrollIntoView === 'function') {
-      el.scrollIntoView({ block: 'start' });
+    try {
+      const host = deps.getActiveHost();
+      if (host === null || typeof host.querySelectorAll !== 'function') {
+        return;
+      }
+      const headings = host.querySelectorAll(HEADING_SELECTOR);
+      const el = headings[item.anchor] as HTMLElement | undefined;
+      // Source-mode overlay may hide WYSIWYG headings; never throw on missing target.
+      if (el !== undefined && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'start' });
+      }
+    } catch {
+      // Defensive: outline jump must not break immersive shell (R4).
     }
   }
 
