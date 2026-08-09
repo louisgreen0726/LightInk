@@ -42,6 +42,7 @@ import { attachCursorListeners, type CursorEventBinding } from './dom-events.js'
 import { insertMarkdownAtSelection } from './insert-markdown.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
+import { emojiCompletePlugin } from './plugins/emoji-complete.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
 import { frontmatterPlugin } from './plugins/front-matter.js';
 import { linkExclusiveEndsPlugin, linkNavigationPlugin } from './link-navigation.js';
@@ -180,6 +181,9 @@ export async function mountEditor(
         .use(formatToolbarPlugin)
         // T6：行首斜杠快速插入菜单（R11），元素集合与 R2 插入菜单同源。
         .use(slashMenuPlugin)
+        // T3：`:` 短码 emoji 自动补全（R7），交互模式复用 slash-menu；
+        // 注册于 slashMenuPlugin 之后，两者触发符互斥（行首 `/` vs 行中 `:`）。
+        .use(emojiCompletePlugin)
         // T4：Markdown 源复制 / 粘贴解析（R9）。注册于图片插件之前：clipboard-md 对
         // 非空 files（图片粘贴）直接返回 false，交 imageAssetPlugin 优先拦截。
         .use(clipboardMdPlugin)
