@@ -43,6 +43,7 @@ import { insertMarkdownAtSelection } from './insert-markdown.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
+import { frontmatterPlugin } from './plugins/front-matter.js';
 import { linkExclusiveEndsPlugin, linkNavigationPlugin } from './link-navigation.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, imageDisplayPlugin, insertImageAt, type ImageAssetMountOptions } from './plugins/image.js';
@@ -168,6 +169,10 @@ export async function mountEditor(
         .use(commonmark)
         .use(gfm)
         .use(history)
+        // T1：YAML front matter 原样往返（R5）：remark-frontmatter + frontmatter
+        // atom 节点；必须在 commonmark/gfm 之后注册以扩展其 remark 实例。
+        // 脚注（R4）由 preset-gfm 自带 footnote schemas + remark-gfm 覆盖。
+        .use(frontmatterPlugin)
         // T5：代码块语法高亮（highlight.js decoration 插件，见 R4）。
         .use(codeHighlightPlugin)
         // T5：选中文字浮出格式工具条（R7）。

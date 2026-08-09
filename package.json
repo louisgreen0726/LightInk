@@ -28,8 +28,10 @@
     "highlight.js": "^11.11.1",
     "katex": "^0.18.1",
     "mermaid": "^11.16.1",
+    "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
+    "remark-stringify": "^11.0.0",
     "unified": "^11.0.3"
   },
   "devDependencies": {

@@ -13,18 +13,46 @@
 import { unified, type Processor } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkFrontmatter from 'remark-frontmatter';
+import remarkStringify from 'remark-stringify';
 import type { Root as MdastRoot } from 'mdast';
 
 import type { ParsedDocument } from './types.js';
 
-/** Get (and cache) a configured `unified` processor instance. */
-let cachedProcessor: Processor<MdastRoot> | null = null;
+/**
+ * Get (and cache) a configured `unified` processor instance.
+ *
+ * Plugin parity with the Milkdown stack (T1 / R4-R5):
+ *   - `remark-gfm` matches `@milkdown/preset-gfm` (which registers the same
+ *     plugin internally, including GFM footnotes `[^id]`).
+ *   - `remark-frontmatter` matches the `remarkFrontmatter` plugin registered
+ *     in `plugins/front-matter.ts`, so YAML front matter parses to a `yaml`
+ *     node here too instead of being misread as `---` + setext heading.
+ *   - `remark-stringify` adds a compiler so `serializeMdastToMarkdown` can
+ *     verify pure-stack round-trips without a DOM. It does not affect
+ *     `parse` output.
+ */
+let cachedProcessor: Processor<
+  MdastRoot,
+  undefined,
+  undefined,
+  MdastRoot,
+  string
+> | null = null;
 
-export function getProcessor(): Processor<MdastRoot> {
+export function getProcessor(): Processor<
+  MdastRoot,
+  undefined,
+  undefined,
+  MdastRoot,
+  string
+> {
   if (cachedProcessor === null) {
     const built = unified()
       .use(remarkParse)
-      .use(remarkGfm) as Processor<MdastRoot>;
+      .use(remarkGfm)
+      .use(remarkFrontmatter)
+      .use(remarkStringify);
     cachedProcessor = built.freeze();
   }
   return cachedProcessor;
@@ -40,6 +68,24 @@ export function parseMarkdownToMdast(source: string): MdastRoot {
   const processor = getProcessor();
   const tree = processor.parse(source) as MdastRoot;
   return tree;
+}
+
+/**
+ * Serialize an MDAST tree back to markdown using the same plugin set as
+ * parsing (GFM + front matter). Used by round-trip tests and any pure-stack
+ * caller that needs "parse → transform → save" without a Milkdown editor.
+ */
+export function serializeMdastToMarkdown(root: MdastRoot): string {
+  return getProcessor().stringify(root);
+}
+
+/**
+ * Parse a markdown string, serialize it back, and return the result. This is
+ * the pure-stack round trip — the WYSIWYG stack performs the equivalent via
+ * Milkdown's remark instance (see `plugins/front-matter.ts`).
+ */
+export function roundTripMarkdown(source: string): string {
+  return serializeMdastToMarkdown(parseMarkdownToMdast(source));
 }
 
 /**

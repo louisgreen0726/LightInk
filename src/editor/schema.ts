@@ -6,7 +6,10 @@
  *   - `commonmark` provides headings, paragraph, blockquote, code-block,
  *     bullet/ordered list, list-item, hr, image, inline-code, link, strong,
  *     emphasis, hard-break, text.
- *   - `gfm` adds table, task-list-item and strike-through (delete).
+ *   - `gfm` adds table, task-list-item, strike-through (delete) and GFM
+ *     footnotes (`footnoteReference` / `footnoteDefinition`).
+ *   - `plugins/front-matter.ts` adds YAML front matter (mdast `yaml` node)
+ *     via `remark-frontmatter`.
  *
  * The pure helper functions below classify MDAST nodes by their ProseMirror
  * schema equivalent — useful for tests that want to assert "given this
@@ -69,6 +72,11 @@ export function mdastTypeToSyntaxKind(
       return 'strikethrough';
     case 'thematicBreak':
       return 'thematic-break';
+    case 'yaml':
+      return 'front-matter';
+    case 'footnoteReference':
+    case 'footnoteDefinition':
+      return 'footnote';
     case 'text':
       return 'text';
     default:

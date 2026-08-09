@@ -8,7 +8,7 @@
 
 import type { Root as MdastRoot } from 'mdast';
 
-/** All CommonMark + GFM syntax kinds T2 must cover (R1 + R10). */
+/** All CommonMark + GFM + front matter syntax kinds the editor covers. */
 export type SyntaxKind =
   | 'heading-1'
   | 'heading-2'
@@ -30,6 +30,8 @@ export type SyntaxKind =
   | 'emphasis'
   | 'strikethrough'
   | 'thematic-break'
+  | 'front-matter'
+  | 'footnote'
   | 'text';
 
 /**
@@ -59,7 +61,8 @@ export type MdastType =
   | 'html'
   | 'definition'
   | 'footnoteDefinition'
-  | 'footnoteReference';
+  | 'footnoteReference'
+  | 'yaml';
 
 /** Lightweight wrapper around a parsed MDAST tree with metadata. */
 export interface ParsedDocument {

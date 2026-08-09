@@ -186,6 +186,25 @@ describe('syntax coverage — R1', () => {
     expect(mdastTypeToSyntaxKind('thematicBreak')).toBe('thematic-break');
   });
 
+  it('covers YAML front matter (R5)', () => {
+    const md = '---\ntitle: hello\n---\n\n# Body\n';
+    const parsed = parseDocument(md);
+    const first = parsed.root.children[0];
+    // Regression pin: front matter must parse as a `yaml` node, NOT as a
+    // thematic break + setext heading (the old silent-rewrite defect).
+    expect(isMdastType(first!, 'yaml')).toBe(true);
+    expect(mdastTypeToSyntaxKind('yaml')).toBe('front-matter');
+  });
+
+  it('covers footnotes (GFM, R4)', () => {
+    const md = 'Text with a note[^1].\n\n[^1]: the definition\n';
+    const parsed = parseDocument(md);
+    expect(hasNode(parsed, 'footnoteReference')).toBe(true);
+    expect(hasNode(parsed, 'footnoteDefinition')).toBe(true);
+    expect(mdastTypeToSyntaxKind('footnoteReference')).toBe('footnote');
+    expect(mdastTypeToSyntaxKind('footnoteDefinition')).toBe('footnote');
+  });
+
   it('classifies every relevant MDAST type into a known SyntaxKind', () => {
     const md = [
       '# h1',
