@@ -1,37 +1,38 @@
 /**
- * `link-navigation` — 文档链接点击跳转（R14）。
+ * `link-navigation` — document link open (R14) + exclusive link ends.
  *
- * 纯逻辑 [`classifyLink`] 按链接把目标分为 external（http(s)/其他 scheme，走系统
- * 浏览器）/ localMd（相对或绝对 .md，应用内新标签）/ localFile（其他本地文件，
- * 系统默认程序）/ invalid，可单测。`currentDocDir` 为当前文档所在目录，用于
- * 解析相对 .md 链接。
+ * Pure [`classifyLink`] splits targets into external / localMd / localFile /
+ * invalid. [`linkNavigationPlugin`] opens only on **Ctrl/Cmd + click** after the
+ * host confirms; plain click places the caret so links stay editable.
  *
- * [`linkNavigationPlugin`] 是 ProseMirror `$prose` 插件：单击链接 mark 时调用
- * 注入的 `onLinkNavigate(href)`（由 main.ts 经 classifyLink 分类后分派到 opener
- * 命令 / openFile），并 `return true` 阻止默认光标定位——满足「可点击跳转」。
+ * [`linkExclusiveEndsPlugin`] clears the link mark from storedMarks when the
+ * caret sits at the end of a link, so typing after a hyperlink does not keep
+ * extending the link title (inclusive-mark pitfall).
  */
 
 import { $prose } from '@milkdown/utils';
 import { Plugin } from '@milkdown/prose/state';
+import type { EditorView } from '@milkdown/prose/view';
+import type { Mark, Node as PMNode } from '@milkdown/prose/model';
 
 export type LinkKind = 'external' | 'localMd' | 'localFile' | 'invalid';
 
 export interface ClassifiedLink {
   kind: LinkKind;
-  /** external: 原始 url；local*: 解析后的（尽量绝对）路径；invalid: 空串。 */
+  /** external: raw url; local*: resolved path; invalid: empty. */
   target: string;
 }
 
 const MARKDOWN_EXT = /\.(md|markdown|mdown|mkd)$/i;
 /**
- * 外部 scheme：至少两字符的 scheme（排除 Windows 单字母盘符 `C:`），
- * 及协议相对 `//host`。
+ * External scheme: at least two-char scheme (exclude Windows drive `C:`),
+ * and protocol-relative `//host`.
  */
 const EXTERNAL_SCHEME = /^[a-z][a-z0-9+.-]+:/i;
 const PROTOCOL_RELATIVE = /^\/\//;
 const WINDOWS_DRIVE_ABS = /^[a-z]:[\\/]/i;
 
-/** 纯逻辑：分类链接 href。`currentDocDir` 为当前文档目录绝对路径（无则 ''）。 */
+/** Pure: classify href with optional current document directory. */
 export function classifyLink(href: string, currentDocDir: string): ClassifiedLink {
   const h = typeof href === 'string' ? href.trim() : '';
   if (h === '') {
@@ -40,7 +41,6 @@ export function classifyLink(href: string, currentDocDir: string): ClassifiedLin
   if (EXTERNAL_SCHEME.test(h) || PROTOCOL_RELATIVE.test(h)) {
     return { kind: 'external', target: h };
   }
-  // 本地：剥锚点/查询取路径部分。
   const pathPart = h.split(/[#?]/)[0] ?? '';
   if (pathPart === '') {
     return { kind: 'invalid', target: '' };
@@ -51,7 +51,7 @@ export function classifyLink(href: string, currentDocDir: string): ClassifiedLin
     : { kind: 'localFile', target: resolved };
 }
 
-/** 解析本地路径：绝对原样返回，相对按当前文档目录拼接。 */
+/** Resolve local path: absolute as-is, relative against current doc dir. */
 export function resolveLocalPath(pathPart: string, currentDocDir: string): string {
   if (pathPart === '') {
     return '';
@@ -67,32 +67,209 @@ export function resolveLocalPath(pathPart: string, currentDocDir: string): strin
 }
 
 export interface LinkNavigationOptions {
+  /**
+   * Called only for Ctrl/Cmd+click on a link mark after the host may confirm.
+   * Synchronous or fire-and-forget is fine; return value is ignored.
+   */
   onLinkNavigate: (href: string) => void;
+  /**
+   * Optional gate: return false / Promise<false> to cancel navigation.
+   * Default: always allow.
+   */
+  confirmOpen?: (href: string) => boolean | Promise<boolean>;
 }
 
-/** ProseMirror 插件：单击链接 mark 时跳转（阻止默认光标定位）。 */
+function isModifiedClick(event: MouseEvent | undefined): boolean {
+  if (event === undefined) return false;
+  // Ctrl on Windows/Linux, Meta (⌘) on macOS — never plain click.
+  return event.ctrlKey === true || event.metaKey === true;
+}
+
+/** Resolve href of a link mark at a document position, or null. */
+export function hrefAtPos(view: EditorView, pos: number): string | null {
+  try {
+    const marks = view.state.doc.resolve(pos).marks();
+    const link = marks.find((m) => m.type.name === 'link');
+    if (link === undefined) return null;
+    const href = typeof link.attrs['href'] === 'string' ? (link.attrs['href'] as string) : '';
+    return href === '' ? null : href;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find [from, to) of the continuous link mark covering `pos`.
+ * Scans the parent textblock for contiguous text nodes sharing the same link.
+ */
+export function findMarkRange(
+  doc: PMNode,
+  pos: number,
+  typeName: string,
+): { from: number; to: number; mark: Mark } | null {
+  let $pos;
+  try {
+    $pos = doc.resolve(pos);
+  } catch {
+    return null;
+  }
+  const mark = $pos.marks().find((m) => m.type.name === typeName);
+  if (mark === undefined) {
+    // Also try marks just before pos (exclusive end / after last char).
+    if (pos > 0) {
+      try {
+        const before = doc.resolve(pos - 1).marks().find((m) => m.type.name === typeName);
+        if (before !== undefined) {
+          return findMarkRangeFromMark(doc, pos - 1, before);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return null;
+  }
+  return findMarkRangeFromMark(doc, pos, mark);
+}
+
+function findMarkRangeFromMark(
+  doc: PMNode,
+  pos: number,
+  mark: Mark,
+): { from: number; to: number; mark: Mark } {
+  const same = (m: Mark): boolean =>
+    m.type === mark.type && m.attrs['href'] === mark.attrs['href'];
+  const $pos = doc.resolve(pos);
+  const parent = $pos.parent;
+  const parentStart = $pos.start();
+
+  if (!parent.isTextblock) {
+    return { from: pos, to: pos, mark };
+  }
+
+  let runStart: number | null = null;
+  let runEnd: number | null = null;
+  let foundFrom: number | null = null;
+  let foundTo: number | null = null;
+
+  parent.forEach((child, offset) => {
+    const start = parentStart + offset;
+    const end = start + child.nodeSize;
+    const has = child.isText && child.marks.some(same);
+    if (has) {
+      if (runStart === null) runStart = start;
+      runEnd = end;
+    } else if (runStart !== null) {
+      if (pos >= runStart && pos <= (runEnd as number)) {
+        foundFrom = runStart;
+        foundTo = runEnd;
+      }
+      runStart = null;
+      runEnd = null;
+    }
+  });
+  if (runStart !== null && runEnd !== null && pos >= runStart && pos <= runEnd) {
+    foundFrom = runStart;
+    foundTo = runEnd;
+  }
+  // Caret exactly at end after last linked char: pos === runEnd of a finished run
+  // already covered by `pos <= runEnd`. If still null, expand by walking marks.
+  if (foundFrom === null || foundTo === null) {
+    let from = pos;
+    while (from > 0 && doc.resolve(from - 1).marks().some(same)) {
+      from -= 1;
+    }
+    let to = pos;
+    while (to < doc.content.size && doc.resolve(to).marks().some(same)) {
+      to += 1;
+    }
+    return { from, to, mark };
+  }
+  return { from: foundFrom, to: foundTo, mark };
+}
+
+/**
+ * ProseMirror plugin: Ctrl/Cmd+click on a link mark → confirm → navigate.
+ * Plain click returns false so the caret can move into the link for editing.
+ */
 export function linkNavigationPlugin(opts: LinkNavigationOptions) {
   return $prose(
     () =>
       new Plugin({
         props: {
-          handleClick(view, pos) {
-            const link = view.state.doc
-              .resolve(pos)
-              .marks()
-              .find((m) => m.type.name === 'link');
-            if (link !== undefined) {
-              const href =
-                typeof link.attrs['href'] === 'string'
-                  ? (link.attrs['href'] as string)
-                  : '';
-              if (href !== '') {
+          handleClick(view, pos, event) {
+            if (!isModifiedClick(event)) {
+              // Plain click: let ProseMirror place the caret (editable links).
+              return false;
+            }
+            const href = hrefAtPos(view, pos);
+            if (href === null) {
+              return false;
+            }
+            // Prevent default focus/selection jump while we confirm.
+            event.preventDefault();
+            const gate = opts.confirmOpen;
+            if (gate === undefined) {
+              opts.onLinkNavigate(href);
+              return true;
+            }
+            void Promise.resolve(gate(href)).then((ok) => {
+              if (ok) {
                 opts.onLinkNavigate(href);
               }
-              return true; // 阻止默认光标定位（点击即跳转）
-            }
-            return false;
+            });
+            return true;
           },
+        },
+      }),
+  );
+}
+
+/**
+ * Clear link from storedMarks when the caret is at the exclusive end of a link,
+ * so further typing does not extend the hyperlink title.
+ */
+export function linkExclusiveEndsPlugin() {
+  return $prose(
+    () =>
+      new Plugin({
+        view(view) {
+          let scheduled = false;
+          const clearIfAtLinkEnd = (): void => {
+            scheduled = false;
+            if (view.isDestroyed) return;
+            const { state } = view;
+            if (!state.selection.empty) return;
+            const linkType = state.schema.marks['link'];
+            if (linkType === undefined) return;
+            const pos = state.selection.from;
+            const range = findMarkRange(state.doc, pos, 'link');
+            if (range === null) {
+              if (state.storedMarks && linkType.isInSet(state.storedMarks)) {
+                view.dispatch(
+                  state.tr.setStoredMarks(
+                    state.storedMarks.filter((m) => m.type !== linkType),
+                  ),
+                );
+              }
+              return;
+            }
+            // At the end of the link range: drop link from active/stored marks.
+            if (pos === range.to) {
+              const stored = state.storedMarks ?? state.selection.$from.marks();
+              if (linkType.isInSet(stored)) {
+                view.dispatch(
+                  state.tr.setStoredMarks(stored.filter((m) => m.type !== linkType)),
+                );
+              }
+            }
+          };
+          return {
+            update() {
+              if (scheduled) return;
+              scheduled = true;
+              queueMicrotask(clearIfAtLinkEnd);
+            },
+          };
         },
       }),
   );

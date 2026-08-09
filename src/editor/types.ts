@@ -85,10 +85,15 @@ export interface MountOptions {
    */
   readonly assetsDir?: string;
   /**
-   * R14：点击文档内链接 mark 时回调（由 main.ts 分类后跳转：外链→浏览器、
+   * R14：Ctrl/Cmd+点击文档内链接 mark 时回调（由 main.ts 分类后跳转：外链→浏览器、
    * 本地 .md→新标签、其他本地文件→系统默认程序）。
    */
   readonly onLinkNavigate?: (href: string) => void;
+  /**
+   * Optional confirm gate before onLinkNavigate. Return false to cancel.
+   * Production wires a themed modal (Ctrl+click only).
+   */
+  readonly confirmLinkOpen?: (href: string) => boolean | Promise<boolean>;
 }
 
 /** 当前选区的位置摘要（R7/R3 选区访问器）。 */
@@ -133,10 +138,12 @@ export interface EditorInstance {
    */
   toggleMark(markName: string): void;
   /**
-   * 用链接 mark 包裹当前选区（href 来自调用方，通常由 prompt 取得）。
-   * 无选区或未就绪时为空操作。供 R3 上下文菜单链接操作使用。
+   * Apply / replace a link over the current selection.
+   * - When selection is non-empty: wrap it (optionally replace text with `text`).
+   * - When selection is empty: insert `text` (or href) as a linked run.
+   * After applying, storedMarks drop the link so further typing is plain.
    */
-  setLink(href: string): void;
+  setLink(href: string, text?: string): void;
   /**
    * 在当前选区插入图片节点（url 为文档相对引用 `assets/<name>.<ext>`）。
    * schema 无 image 节点或未就绪时为空操作。供「插入图片」本地文件选择流程使用。
@@ -147,6 +154,13 @@ export interface EditorInstance {
    * (immersive shell R4 empty/new-tab path). No-op if the editor is not ready.
    */
   focus(): void;
+  /**
+   * Undo the last document change via ProseMirror history.
+   * Prefer this over synthetic Ctrl+Z key events (menus steal focus).
+   */
+  undo(): void;
+  /** Redo the last undone change via ProseMirror history. */
+  redo(): void;
   /** Tear the editor down (removes DOM, nulls listeners). */
   destroy(): Promise<void>;
 }

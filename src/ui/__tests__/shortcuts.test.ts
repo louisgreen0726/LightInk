@@ -52,6 +52,8 @@ describe('默认键位映射', () => {
       'toggle-source-mode': 'Ctrl+/',
       'toggle-menu-chrome': 'Alt+M',
       'toggle-tabs-chrome': 'Alt+T',
+      'toggle-chrome-pin': 'Alt+P',
+      'toggle-fullscreen': 'F11',
       'next-tab': 'Ctrl+Tab',
       'prev-tab': 'Ctrl+Shift+Tab',
     });
@@ -153,6 +155,22 @@ describe('ShortcutRegistry 派发', () => {
     expect(handlers['prev-tab']).toHaveBeenCalledTimes(1);
   });
 
+  it('固定导航栏（Alt+P）与全屏（F11）派发', () => {
+    const handlers = {
+      'toggle-chrome-pin': vi.fn(),
+      'toggle-fullscreen': vi.fn(),
+    };
+    const registry = new ShortcutRegistry(handlers);
+    expect(
+      registry.handleKeyDown(keyEvent({ key: 'p', ctrlKey: false, altKey: true })),
+    ).toBe(true);
+    expect(handlers['toggle-chrome-pin']).toHaveBeenCalledTimes(1);
+    expect(
+      registry.handleKeyDown(keyEvent({ key: 'F11', ctrlKey: false })),
+    ).toBe(true);
+    expect(handlers['toggle-fullscreen']).toHaveBeenCalledTimes(1);
+  });
+
   it('编辑器（contentEditable）焦点下保存等 Ctrl 快捷键仍生效', () => {
     const { handlers, registry } = makeRegistry();
     const editable = { isContentEditable: true };
@@ -162,19 +180,23 @@ describe('ShortcutRegistry 派发', () => {
     expect(handlers.new).toHaveBeenCalledTimes(1);
   });
 
-  it('无修饰键组合在可编辑目标内被忽略（不抢输入）', () => {
+  it('无修饰键的打印键在可编辑目标内被忽略；功能键（F11）仍生效', () => {
     const plain = vi.fn();
+    const fullscreen = vi.fn();
     const registry = new ShortcutRegistry(
-      { 'toggle-theme': plain },
-      { ...DEFAULT_SHORTCUTS, 'toggle-theme': 'F2' },
+      { 'toggle-theme': plain, 'toggle-fullscreen': fullscreen },
+      { ...DEFAULT_SHORTCUTS, 'toggle-theme': 'x' },
     );
-    const inEditor = keyEvent({ key: 'F2', ctrlKey: false, target: { isContentEditable: true } });
+    const inEditor = keyEvent({ key: 'x', ctrlKey: false, target: { isContentEditable: true } });
     expect(registry.handleKeyDown(inEditor)).toBe(false);
     expect(plain).not.toHaveBeenCalled();
-    // 非可编辑目标（如工具栏按钮焦点）仍可触发。
-    const onChrome = keyEvent({ key: 'F2', ctrlKey: false, target: { tagName: 'BUTTON' } });
-    expect(registry.handleKeyDown(onChrome)).toBe(true);
-    expect(plain).toHaveBeenCalledTimes(1);
+    // F11 must work even when focus is in the editor (immersive fullscreen).
+    expect(
+      registry.handleKeyDown(
+        keyEvent({ key: 'F11', ctrlKey: false, target: { isContentEditable: true } }),
+      ),
+    ).toBe(true);
+    expect(fullscreen).toHaveBeenCalledTimes(1);
   });
 
   it('attach/detach 以捕获阶段注册 keydown 监听', () => {

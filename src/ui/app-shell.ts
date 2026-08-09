@@ -11,6 +11,12 @@ import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
 import { BUILTIN_THEMES, type BuiltinThemeId } from '../theme/theme-service.js';
 import { createChromeController, type ChromeController } from './chrome-controller.js';
+import {
+  loadChromePinPrefs,
+  saveChromePinPrefs,
+  type ChromePinPrefs,
+  type StorageLike,
+} from './chrome-prefs.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 
@@ -63,11 +69,24 @@ export interface AppShellActions {
   canReloadCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
+  /** Toggle native window fullscreen (wired in main). */
+  onToggleFullscreen(): void;
+  /** Whether chrome navigation (menu + tabs) is currently pinned open. */
+  isChromePinned(): boolean;
+  /** Toggle pin for both menu and tabs chrome (fixed navigation). */
+  onToggleChromePinned(): void;
 }
 
 export interface AppShellOptions {
   /** 快捷键速查表数据源（由快捷键注册表派生）。 */
   shortcutBindings(): readonly CheatBinding[];
+  /**
+   * Optional storage for chrome pin prefs (default: localStorage when available).
+   * Pass null to disable persistence.
+   */
+  storage?: StorageLike | null;
+  /** Initial pin prefs override (tests); otherwise loaded from storage. */
+  initialPinPrefs?: ChromePinPrefs;
 }
 
 export interface AppShell {
@@ -86,6 +105,12 @@ export interface AppShell {
   toggleTabsChrome(): void;
   /** Hold tabs chrome open while a nested UI (e.g. context menu) is active. */
   setTabsHold(hold: boolean): void;
+  /** Whether both menu and tabs chrome are pinned open. */
+  isChromePinned(): boolean;
+  /** Pin/unpin menu + tabs together (fixed navigation bar). */
+  setChromePinned(pinned: boolean): void;
+  /** Toggle pin; returns the new pinned value. */
+  toggleChromePinned(): boolean;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -96,7 +121,7 @@ export interface AppShell {
 
 function menuItem(
   id: string,
-  label: string,
+  label: string | (() => string),
   action: () => void,
   shortcut = '',
   enabled?: () => boolean,
@@ -202,12 +227,12 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       id: 'edit',
       label: '编辑',
       items: [
-        menuItem('edit-undo', '撤销', actions.onUndo),
-        menuItem('edit-redo', '重做', actions.onRedo),
+        menuItem('edit-undo', '撤销', actions.onUndo, 'Ctrl+Z'),
+        menuItem('edit-redo', '重做', actions.onRedo, 'Ctrl+Shift+Z'),
         separator('edit-sep1'),
-        menuItem('edit-cut', '剪切', actions.onCut),
-        menuItem('edit-copy', '复制', actions.onCopy),
-        menuItem('edit-paste', '粘贴', actions.onPaste),
+        menuItem('edit-cut', '剪切', actions.onCut, 'Ctrl+X'),
+        menuItem('edit-copy', '复制', actions.onCopy, 'Ctrl+C'),
+        menuItem('edit-paste', '粘贴', actions.onPaste, 'Ctrl+V'),
       ],
     },
     { id: 'insert', label: '插入', items: insertItems },
@@ -237,7 +262,15 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           () => actions.canReloadCustomTheme(),
         ),
         separator('view-theme-sep3'),
-        menuItem('view-outline', '大纲显隐', actions.onToggleOutline, 'Ctrl+Shift+L'),
+        menuItem(
+          'view-pin-chrome',
+          () => (actions.isChromePinned() ? '取消固定导航栏' : '固定导航栏'),
+          actions.onToggleChromePinned,
+          'Alt+P',
+        ),
+        menuItem('view-fullscreen', '全屏', actions.onToggleFullscreen, 'F11'),
+        separator('view-chrome-sep'),
+        menuItem('view-outline', '大纲切换（展开/窄条/隐藏）', actions.onToggleOutline, 'Ctrl+Shift+L'),
         // T7/R10 已接通：整窗源码模式。
         menuItem('view-source-mode', '源码模式', actions.onToggleSourceMode, 'Ctrl+/', () => true),
       ],
@@ -246,12 +279,35 @@ export function buildMenus(actions: AppShellActions): Menu[] {
   ];
 }
 
+function resolveStorage(options: AppShellOptions): StorageLike | null {
+  if (options.storage !== undefined) {
+    return options.storage;
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage;
+    }
+  } catch {
+    /* privacy mode */
+  }
+  return null;
+}
+
 export function createAppShell(
   root: HTMLElement,
   actions: AppShellActions,
   options: AppShellOptions,
 ): AppShell {
   const chrome = createChromeController();
+  const storage = resolveStorage(options);
+  const pinPrefs = options.initialPinPrefs ?? loadChromePinPrefs(storage);
+  if (pinPrefs.menu) {
+    chrome.setPinned('menu', true);
+  }
+  if (pinPrefs.tabs) {
+    chrome.setPinned('tabs', true);
+  }
+
   const chromeHost = document.createElement('div');
   chromeHost.id = 'lightink-chrome-host';
   chromeHost.className = 'lightink-chrome-host';
@@ -320,14 +376,49 @@ export function createAppShell(
 
   function syncMenuChrome(): void {
     const revealed = chrome.isRevealed('menu');
+    const pinned = chrome.isPinned('menu');
     chromeHost.classList.toggle('is-menu-revealed', revealed);
+    chromeHost.classList.toggle('is-chrome-pinned', pinned);
     menuTrigger.setAttribute('aria-expanded', revealed ? 'true' : 'false');
+    menuTrigger.hidden = pinned;
   }
 
   function syncTabsChrome(): void {
     const revealed = chrome.isRevealed('tabs');
+    const pinned = chrome.isPinned('tabs');
     tabsHost.classList.toggle('is-tabs-revealed', revealed);
+    tabsHost.classList.toggle('is-chrome-pinned', pinned);
     tabsTrigger.setAttribute('aria-expanded', revealed ? 'true' : 'false');
+    tabsTrigger.hidden = pinned;
+  }
+
+  function persistPinPrefs(): void {
+    saveChromePinPrefs(storage, {
+      menu: chrome.isPinned('menu'),
+      tabs: chrome.isPinned('tabs'),
+    });
+  }
+
+  function isChromePinned(): boolean {
+    return chrome.isPinned('menu') && chrome.isPinned('tabs');
+  }
+
+  function setChromePinned(pinned: boolean): void {
+    chrome.setPinned('menu', pinned);
+    chrome.setPinned('tabs', pinned);
+    syncMenuChrome();
+    syncTabsChrome();
+    persistPinPrefs();
+    if (!pinned) {
+      afterLeaveSync(syncMenuChrome);
+      afterLeaveSync(syncTabsChrome);
+    }
+  }
+
+  function toggleChromePinned(): boolean {
+    const next = !isChromePinned();
+    setChromePinned(next);
+    return next;
   }
 
   function revealMenu(): void {
@@ -459,9 +550,11 @@ export function createAppShell(
     activeId: string | null,
     callbacks: TabBarCallbacks,
   ): void {
+    // Always render the full open-tab list; visibility is chrome pin/reveal CSS only.
     tabBar.replaceChildren(
       ...tabs.map((tab) => {
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'lightink-tab';
         btn.dataset.tabId = tab.id;
         if (tab.id === activeId) {
@@ -470,11 +563,15 @@ export function createAppShell(
         if (tab.dirty) {
           btn.classList.add('dirty');
         }
-        btn.textContent = tab.dirty ? `● ${tab.title}` : tab.title;
+        const label = document.createElement('span');
+        label.className = 'lightink-tab-label';
+        label.textContent = tab.dirty ? `● ${tab.title}` : tab.title;
+        btn.appendChild(label);
         btn.addEventListener('click', () => callbacks.onSwitch(tab.id));
         const close = document.createElement('span');
         close.className = 'lightink-tab-close';
-        close.textContent = ' ×';
+        close.textContent = '×';
+        close.setAttribute('aria-label', `关闭 ${tab.title}`);
         close.addEventListener('click', (e) => {
           e.stopPropagation();
           callbacks.onClose(tab.id);
@@ -495,6 +592,9 @@ export function createAppShell(
     toggleMenuChrome,
     toggleTabsChrome,
     setTabsHold,
+    isChromePinned,
+    setChromePinned,
+    toggleChromePinned,
     renderTabBar,
   };
 }

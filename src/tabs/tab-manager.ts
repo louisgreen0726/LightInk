@@ -89,9 +89,13 @@ export interface TabManagerDeps {
    */
   onFileSaved?: (filePath: string, content: string) => void;
   /**
-   * R14：点击文档内链接时回调（main.ts 分类后跳转）。经 mountEditor 选项注入。
+   * R14：Ctrl/Cmd+点击文档内链接时回调（main.ts 分类后跳转）。经 mountEditor 选项注入。
    */
   onLinkNavigate?: (href: string) => void;
+  /**
+   * Optional confirm gate before opening a link (themed modal in main).
+   */
+  confirmLinkOpen?: (href: string) => boolean | Promise<boolean>;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   reportError?: (message: string, error: unknown) => void;
@@ -120,7 +124,7 @@ export function snapshotKeyOf(tab: Pick<TabState, 'filePath' | 'syntheticId'>): 
 const DEFAULT_DEBOUNCE_MS = 1000;
 
 export class TabManager {
-  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate'>;
+  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate' | 'confirmLinkOpen'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate' | 'confirmLinkOpen'>;
   private tabs: TabState[] = [];
   private activeId: string | null = null;
   private counter = 0;
@@ -150,6 +154,7 @@ export class TabManager {
       onFileOpened: deps.onFileOpened,
       onFileSaved: deps.onFileSaved,
       onLinkNavigate: deps.onLinkNavigate,
+      confirmLinkOpen: deps.confirmLinkOpen,
     };
   }
 
@@ -451,6 +456,7 @@ export class TabManager {
       }),
       onAssetError: (message, error) => this.deps.reportError(message, error),
       onLinkNavigate: this.deps.onLinkNavigate,
+      confirmLinkOpen: this.deps.confirmLinkOpen,
     });
     const tab: TabState = {
       id,

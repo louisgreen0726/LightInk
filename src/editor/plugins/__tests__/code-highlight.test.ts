@@ -1,18 +1,12 @@
 /**
- * Code highlight plugin tests (T5 / R4).
+ * Code highlight plugin tests (T5 / R4 + full language registry + language select).
  *
  * Headless coverage:
- *   - `highlightCode` per language → HTML with `hljs-*` classes (14 languages).
+ *   - `highlightCode` per core language → HTML with `hljs-*` classes.
+ *   - Full highlight.js registry exposed via `listSupportedLanguages`.
  *   - Unlabeled / unknown language → escaped plain text, no hljs markup.
- *   - HTML escaping (`<script>` must not survive unescaped).
- *   - Milkdown wiring: the `$prose` factory yields a ProseMirror Plugin whose
- *     decoration pass maps fence info-string → language correctly (via
- *     `buildCodeDecorations` on a real PM doc built from the commonmark
- *     code_block schema).
- *
- * NOT covered headlessly (needs interactive verification): the live editor
- * DOM actually showing colors — that requires a mounted ProseMirror view and
- * the hljs theme CSS, which is T6's theme-system job.
+ *   - Language select value normalization + option population.
+ *   - Decoration map fence info-string → language correctly.
  */
 import { describe, expect, it } from 'vitest';
 import { Schema } from '@milkdown/prose/model';
@@ -22,51 +16,82 @@ import {
   codeHighlightPlugin,
   copyButtonClassName,
   copyButtonLabel,
+  createLanguagePicker,
   escapeHtml,
+  filterLanguages,
   highlightCode,
+  languageDisplayLabel,
+  languageSelectValue,
+  listSupportedLanguages,
+  plainLanguageMatches,
   readCodeSource,
   resolveLanguage,
   scopeToClasses,
+  setCodeBlockLanguage,
   tokenizeCode,
 } from '../code-highlight.js';
 
 // ---------------------------------------------------------------------------
-// resolveLanguage：fence info-string → hljs 语言名
+// resolveLanguage
 // ---------------------------------------------------------------------------
 
 describe('resolveLanguage', () => {
-  it('accepts all 14 R4 languages and their common aliases', () => {
+  it('accepts core languages and common aliases', () => {
     const fences = [
-      'js', 'javascript',
-      'ts', 'typescript',
-      'py', 'python',
+      'js',
+      'javascript',
+      'ts',
+      'typescript',
+      'py',
+      'python',
       'java',
-      'go', 'golang',
-      'rust', 'rs',
+      'go',
+      'golang',
+      'rust',
+      'rs',
       'c',
-      'cpp', 'c++',
-      'html', 'xml',
+      'cpp',
+      'c++',
+      'csharp',
+      'c#',
+      'html',
+      'xml',
       'css',
       'sql',
-      'sh', 'shell', 'bash',
+      'sh',
+      'bash',
       'json',
-      'yaml', 'yml',
+      'yaml',
+      'yml',
+      'kotlin',
+      'swift',
+      'php',
+      'ruby',
+      'scala',
+      'dockerfile',
+      'powershell',
+      'markdown',
     ];
     for (const fence of fences) {
-      // 返回的是非 null 的 hljs 可识别名（别名原样返回，hljs.highlight 接受）。
       expect(resolveLanguage(fence), `fence ${fence}`).not.toBeNull();
     }
   });
 
-  it('normalizes aliases hljs itself does not know (shell / c++)', () => {
-    expect(resolveLanguage('shell')).toBe('bash');
+  it('canonicalizes aliases to registered language names', () => {
+    expect(resolveLanguage('js')).toBe('javascript');
+    expect(resolveLanguage('ts')).toBe('typescript');
+    expect(resolveLanguage('py')).toBe('python');
     expect(resolveLanguage('c++')).toBe('cpp');
+    expect(resolveLanguage('c#')).toBe('csharp');
+    expect(resolveLanguage('cs')).toBe('csharp');
+    expect(resolveLanguage('golang')).toBe('go');
+    expect(resolveLanguage('html')).toBe('xml');
   });
 
   it('is case-insensitive and ignores trailing info-string attributes', () => {
-    expect(resolveLanguage('JS')).toBe('js');
+    expect(resolveLanguage('JS')).toBe('javascript');
     expect(resolveLanguage('TypeScript')).toBe('typescript');
-    expect(resolveLanguage('js {1-3}')).toBe('js');
+    expect(resolveLanguage('js {1-3}')).toBe('javascript');
   });
 
   it('returns null for empty / plain-text / unknown languages', () => {
@@ -80,7 +105,26 @@ describe('resolveLanguage', () => {
 });
 
 // ---------------------------------------------------------------------------
-// highlightCode：语言 → 带 hljs class 的 HTML
+// Full language registry
+// ---------------------------------------------------------------------------
+
+describe('listSupportedLanguages', () => {
+  it('exposes the full highlight.js component language set', () => {
+    const langs = listSupportedLanguages();
+    // Full package ships ~190 grammars; plain-text markers are filtered out.
+    expect(langs.length).toBeGreaterThan(100);
+    expect(langs).toContain('javascript');
+    expect(langs).toContain('typescript');
+    expect(langs).toContain('kotlin');
+    expect(langs).toContain('dockerfile');
+    expect(langs).not.toContain('plaintext');
+    // Sorted for stable picker UI.
+    expect(langs).toEqual([...langs].sort((a, b) => a.localeCompare(b)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// highlightCode
 // ---------------------------------------------------------------------------
 
 describe('highlightCode', () => {
@@ -103,6 +147,7 @@ describe('highlightCode', () => {
     { language: 'bash', code: 'echo "hi" # comment', marker: 'hljs-comment' },
     { language: 'json', code: '{"a": 1}', marker: 'hljs-attr' },
     { language: 'yaml', code: 'key: value', marker: 'hljs-attr' },
+    { language: 'kotlin', code: 'fun main() { val x = 1 }', marker: 'hljs-keyword' },
   ];
 
   it.each(languageSamples)(
@@ -111,7 +156,6 @@ describe('highlightCode', () => {
       const html = highlightCode(language, code);
       expect(html).toContain(marker);
       expect(html).toContain('<span class="hljs-');
-      // 输出必须不同于纯转义文本（即确实发生了高亮）。
       expect(html).not.toBe(escapeHtml(code));
     },
   );
@@ -141,7 +185,7 @@ describe('highlightCode', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tokenizeCode / scopeToClasses：token 树 → 扁平序列
+// tokenizeCode / scopeToClasses
 // ---------------------------------------------------------------------------
 
 describe('tokenizeCode', () => {
@@ -166,14 +210,240 @@ describe('tokenizeCode', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R8 代码块复制按钮：纯逻辑（源码读取 / 按钮文案与 class）
+// Language select helpers
+// ---------------------------------------------------------------------------
+
+/** Minimal DOM fake for language picker construction (no jsdom). */
+class FakeEl {
+  tagName: string;
+  className = '';
+  textContent = '';
+  value = '';
+  hidden = false;
+  placeholder = '';
+  type = '';
+  autocomplete = '';
+  spellcheck = false;
+  style: Record<string, string> = {};
+  children: FakeEl[] = [];
+  dataset: Record<string, string> = {};
+  parentNode: FakeEl | null = null;
+  private readonly attrs = new Map<string, string>();
+  private readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+
+  constructor(tag: string) {
+    this.tagName = tag.toUpperCase();
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+
+  appendChild(child: FakeEl): FakeEl {
+    this.children.push(child);
+    child.parentNode = this;
+    return child;
+  }
+
+  removeChild(child: FakeEl): FakeEl {
+    this.children = this.children.filter((c) => c !== child);
+    if (child.parentNode === this) child.parentNode = null;
+    return child;
+  }
+
+  replaceChildren(...kids: FakeEl[]): void {
+    for (const c of this.children) c.parentNode = null;
+    this.children = [...kids];
+    for (const c of kids) c.parentNode = this;
+  }
+
+  getBoundingClientRect(): {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    width: number;
+    height: number;
+  } {
+    return { top: 10, bottom: 36, left: 20, right: 120, width: 100, height: 26 };
+  }
+
+  addEventListener(type: string, fn: (...args: unknown[]) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(fn);
+    this.listeners.set(type, list);
+  }
+
+  removeEventListener(type: string, fn: (...args: unknown[]) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    this.listeners.set(
+      type,
+      list.filter((x) => x !== fn),
+    );
+  }
+
+  focus(): void {
+    /* no-op */
+  }
+
+  select(): void {
+    /* no-op */
+  }
+
+  contains(node: FakeEl): boolean {
+    if (node === this) return true;
+    return this.children.some((c) => c.contains(node));
+  }
+
+  classList = {
+    add: (c: string): void => {
+      const parts = new Set(this.className.split(/\s+/).filter(Boolean));
+      parts.add(c);
+      this.className = [...parts].join(' ');
+    },
+    remove: (c: string): void => {
+      const parts = new Set(this.className.split(/\s+/).filter(Boolean));
+      parts.delete(c);
+      this.className = [...parts].join(' ');
+    },
+    toggle: (c: string, force?: boolean): boolean => {
+      const has = this.className.split(/\s+/).includes(c);
+      const next = force === undefined ? !has : force;
+      if (next) this.classList.add(c);
+      else this.classList.remove(c);
+      return next;
+    },
+    contains: (c: string): boolean => this.className.split(/\s+/).includes(c),
+  };
+}
+
+function fakeDoc(): Document {
+  const docListeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const body = new FakeEl('body');
+  return {
+    body,
+    createElement: (tag: string) => new FakeEl(tag),
+    addEventListener: (type: string, fn: (...args: unknown[]) => void) => {
+      const list = docListeners.get(type) ?? [];
+      list.push(fn);
+      docListeners.set(type, list);
+    },
+    removeEventListener: (type: string, fn: (...args: unknown[]) => void) => {
+      const list = docListeners.get(type) ?? [];
+      docListeners.set(
+        type,
+        list.filter((x) => x !== fn),
+      );
+    },
+  } as unknown as Document;
+}
+
+describe('language picker helpers', () => {
+  it('languageSelectValue normalizes known tags and blanks unknown/plain', () => {
+    expect(languageSelectValue('js')).toBe('javascript');
+    expect(languageSelectValue('TypeScript')).toBe('typescript');
+    expect(languageSelectValue('c#')).toBe('csharp');
+    expect(languageSelectValue('')).toBe('');
+    expect(languageSelectValue('plaintext')).toBe('');
+    expect(languageSelectValue('not-a-lang')).toBe('');
+  });
+
+  it('languageDisplayLabel maps empty to 纯文本 and mermaid to 流程图', () => {
+    expect(languageDisplayLabel('')).toBe('纯文本');
+    expect(languageDisplayLabel('python')).toBe('python');
+    expect(languageDisplayLabel('mermaid')).toBe('流程图');
+  });
+
+  it('resolveLanguage recognizes mermaid as a special language', async () => {
+    const { resolveLanguage, listSupportedLanguages } = await import('../code-highlight.js');
+    expect(resolveLanguage('mermaid')).toBe('mermaid');
+    expect(resolveLanguage('Mermaid')).toBe('mermaid');
+    expect(listSupportedLanguages()).toContain('mermaid');
+  });
+
+  it('filterLanguages does case-insensitive substring match', () => {
+    const langs = ['javascript', 'typescript', 'python', 'java'];
+    expect(filterLanguages('', langs)).toEqual(langs);
+    expect(filterLanguages('script', langs)).toEqual(['javascript', 'typescript']);
+    expect(filterLanguages('PY', langs)).toEqual(['python']);
+    expect(filterLanguages('zzz', langs)).toEqual([]);
+  });
+
+  it('plainLanguageMatches keeps 纯文本 visible for empty/partial queries', () => {
+    expect(plainLanguageMatches('')).toBe(true);
+    expect(plainLanguageMatches('纯')).toBe(true);
+    expect(plainLanguageMatches('text')).toBe(true);
+    expect(plainLanguageMatches('kotlin')).toBe(false);
+  });
+
+  it('createLanguagePicker exposes current value and updates via setValue', () => {
+    const picker = createLanguagePicker({
+      current: 'ts',
+      languages: ['javascript', 'typescript', 'python'],
+      doc: fakeDoc(),
+    });
+    expect(picker.getValue()).toBe('typescript');
+    picker.setValue('py');
+    expect(picker.getValue()).toBe('python');
+    picker.setValue('');
+    expect(picker.getValue()).toBe('');
+    picker.destroy();
+  });
+
+  it('setCodeBlockLanguage dispatches setNodeMarkup when language changes', () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'block+' },
+        code_block: {
+          group: 'block',
+          content: 'text*',
+          marks: '',
+          code: true,
+          defining: true,
+          attrs: { language: { default: '' } },
+        },
+        text: {},
+      },
+    });
+    const doc = schema.nodes['doc']!.create(
+      null,
+      schema.nodes['code_block']!.create({ language: 'js' }, schema.text('const x = 1;')),
+    );
+    const dispatched: unknown[] = [];
+    const view = {
+      state: {
+        doc,
+        get tr() {
+          return {
+            setNodeMarkup: (_pos: number, _type: unknown, attrs: { language: string }) => ({
+              attrs,
+            }),
+          };
+        },
+      },
+      dispatch: (tr: unknown) => {
+        dispatched.push(tr);
+      },
+    };
+
+    expect(setCodeBlockLanguage(view as never, 0, 'python')).toBe(true);
+    expect(dispatched).toHaveLength(1);
+    expect(setCodeBlockLanguage(view as never, 0, 'js')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R8 copy button logic
 // ---------------------------------------------------------------------------
 
 describe('R8 copy button logic', () => {
   it('readCodeSource preserves multi-line text and indentation exactly', () => {
     const code = 'def f():\n    return 1\n';
     expect(readCodeSource({ textContent: code })).toBe(code);
-    // 含制表符 / CRLF 等亦原样保留。
     expect(readCodeSource({ textContent: 'a\tb\r\nc' })).toBe('a\tb\r\nc');
   });
 
@@ -195,10 +465,9 @@ describe('R8 copy button logic', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Milkdown / ProseMirror 接线：info-string → language → decorations
+// Milkdown / ProseMirror wiring
 // ---------------------------------------------------------------------------
 
-// 与 preset-commonmark 的 code_block schema 同形的最小 schema（attrs.language）。
 const testSchema = new Schema({
   nodes: {
     doc: { content: 'block+' },
@@ -227,16 +496,12 @@ function codeDoc(...blocks: Array<{ language: string; code: string }>) {
   );
 }
 
-/** Decoration.attrs 不在公开 typings 中，运行时经内部 `type.attrs` 读取。 */
 function decoAttrs(d: unknown): Record<string, string | undefined> {
   return (d as { type: { attrs: Record<string, string | undefined> } }).type.attrs;
 }
 
 describe('codeHighlightPlugin (Milkdown wiring)', () => {
   it('exposes the Milkdown $prose plugin factory shape', () => {
-    // Milkdown $prose 产物是带元信息的函数；.plugin()/.key() 在编辑器
-    // 完成 SchemaReady 后才返回内部 PM Plugin，headless 下只能断言工厂形态。
-    // decoration 行为本身由 buildCodeDecorations 的用例覆盖。
     expect(codeHighlightPlugin).toBeDefined();
     expect(typeof codeHighlightPlugin).toBe('function');
     const shaped = codeHighlightPlugin as unknown as {
@@ -245,18 +510,15 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
     };
     expect(typeof shaped.plugin).toBe('function');
     expect(typeof shaped.key).toBe('function');
-    // 未经 Milkdown ctx 运行前，内部 plugin 尚未实例化。
     expect(shaped.plugin()).toBeUndefined();
   });
 
   it('adds a node decoration with language class for known languages', () => {
     const doc = codeDoc({ language: 'js', code: 'const x = 1;' });
     const found = buildCodeDecorations(doc).find();
-    // 存在带 data-language 的 node decoration（pre 上的 hljs language-javascript）。
-    const nodeDeco = found.find((d) => decoAttrs(d)['data-language'] === 'js');
+    const nodeDeco = found.find((d) => decoAttrs(d)['data-language'] === 'javascript');
     expect(nodeDeco).toBeDefined();
-    expect(decoAttrs(nodeDeco)['class']).toBe('hljs language-js');
-    // inline token decorations 也应存在（hljs-keyword）。
+    expect(decoAttrs(nodeDeco)['class']).toBe('hljs language-javascript');
     expect(
       found.some((d) => (decoAttrs(d)['class'] ?? '').includes('hljs-keyword')),
     ).toBe(true);
@@ -270,10 +532,13 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
     expect(buildCodeDecorations(doc).find()).toHaveLength(0);
   });
 
-  it('maps fence info-string aliases to languages (shell → bash)', () => {
+  it('highlights shell fence via registered shell language', () => {
     const doc = codeDoc({ language: 'shell', code: 'echo hi # c' });
     const found = buildCodeDecorations(doc).find();
-    expect(found.some((d) => decoAttrs(d)['data-language'] === 'bash')).toBe(true);
+    const lang = found
+      .map((d) => decoAttrs(d)['data-language'])
+      .find((v): v is string => v !== undefined);
+    expect(lang).toBe('shell');
   });
 
   it('inline decorations land on correct offsets across multiple blocks', () => {
@@ -283,10 +548,9 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
       { language: 'py', code: 'def f(): pass' },
     );
     const found = buildCodeDecorations(doc).find();
-    // js 块：node deco(1) + 若干 inline；py 块同理；plain 块无。
     const languages = found
       .map((d) => decoAttrs(d)['data-language'])
       .filter((v): v is string => v !== undefined);
-    expect(languages).toEqual(['js', 'py']);
+    expect(languages).toEqual(['javascript', 'python']);
   });
 });

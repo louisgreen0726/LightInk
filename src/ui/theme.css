@@ -111,12 +111,15 @@ body {
 
 .lightink-tabs-host.is-tabs-revealed #lightink-tabbar {
   position: relative;
-  max-height: 48px;
+  /* One tab row; horizontal scroll for many open files (do not clip tabs). */
+  max-height: none;
+  min-height: 36px;
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
+  overflow-x: auto;
+  overflow-y: hidden;
   transition:
-    max-height 120ms ease,
     opacity 120ms ease,
     transform 120ms ease;
 }
@@ -124,6 +127,14 @@ body {
 .lightink-tabs-host.is-tabs-revealed .lightink-chrome-trigger--tabs {
   height: 0;
   overflow: hidden;
+}
+
+/* Pinned navigation: triggers stay collapsed; surfaces stay open (no hover-only). */
+.lightink-chrome-host.is-chrome-pinned .lightink-chrome-trigger--menu,
+.lightink-tabs-host.is-chrome-pinned .lightink-chrome-trigger--tabs {
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 /* 命令行：单排紧凑按钮，无堆叠。 */
@@ -154,20 +165,35 @@ body {
 /* 标签栏 */
 #lightink-tabbar {
   display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
   overflow-x: auto;
+  overflow-y: hidden;
   border-bottom: 1px solid var(--lightink-border);
   background: var(--lightink-bg);
 }
 
 .lightink-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
   border: none;
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--lightink-muted);
-  padding: 6px 14px;
+  padding: 6px 12px;
   font-size: 13px;
   white-space: nowrap;
   cursor: pointer;
+  max-width: 14rem;
+}
+
+.lightink-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .lightink-tab:hover {
@@ -205,12 +231,29 @@ body {
   min-height: 0;
 }
 
-/* 大纲侧栏：折叠时收缩为仅留展开按钮的窄条。 */
+/* 大纲侧栏三态：expanded 全宽 / rail 窄条 / hidden 完全隐藏。 */
 #lightink-outline-sidebar {
   display: flex;
   min-height: 0;
   border-right: 1px solid var(--lightink-border);
   background: var(--lightink-bg-elevated);
+}
+
+/* Fully hidden: no strip, no border — reopen via menu or Ctrl+Shift+L. */
+#lightink-outline-sidebar.is-outline-hidden,
+#lightink-outline-sidebar:has(.lightink-outline.is-hidden) {
+  display: none;
+  border-right: none;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Rail: only the reopen control remains. */
+#lightink-outline-sidebar.is-outline-rail,
+#lightink-outline-sidebar:has(.lightink-outline.is-rail) {
+  width: auto;
+  min-width: 0;
 }
 
 .lightink-outline {
@@ -220,7 +263,21 @@ body {
   min-height: 0;
 }
 
-.lightink-outline.collapsed {
+.lightink-outline.is-rail {
+  width: auto;
+}
+
+.lightink-outline.is-rail .lightink-outline-title,
+.lightink-outline.is-rail .lightink-outline-body {
+  display: none;
+}
+
+.lightink-outline.is-hidden {
+  display: none;
+}
+
+/* Legacy collapsed without explicit mode classes: treat as rail width. */
+.lightink-outline.collapsed:not(.is-rail):not(.is-hidden) {
   width: auto;
 }
 
@@ -233,14 +290,15 @@ body {
   border-bottom: 1px solid var(--lightink-border);
 }
 
+.lightink-outline.is-rail .lightink-outline-header {
+  border-bottom: none;
+  padding: 4px;
+  justify-content: center;
+}
+
 .lightink-outline-title {
   font-size: 12px;
   color: var(--lightink-muted);
-}
-
-.lightink-outline.collapsed .lightink-outline-title,
-.lightink-outline.collapsed .lightink-outline-body {
-  display: none;
 }
 
 .lightink-outline-toggle {
@@ -366,41 +424,321 @@ body {
   display: none;
 }
 
-/* R8 代码块复制按钮：固定在外层包裹（非滚动容器）右上角，常态弱化、
-   悬停代码块或按钮时全显——始终可发现，不被横向滚动带走。 */
-.lightink-code-copy-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 2;
+/*
+ * Code block — clean card with a slim header toolbar above the code.
+ * Language (left) + copy (right). Panel is portaled to body (fixed).
+ */
+.lightink-code-block {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin: 1em 0;
   border: 1px solid var(--lightink-border);
-  border-radius: 5px;
-  background: var(--lightink-bg-elevated);
+  border-radius: 10px;
+  background: var(--lightink-code-bg);
+  overflow: hidden;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--lightink-fg) 4%, transparent);
+}
+
+.lightink-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 10px 0 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--lightink-border) 85%, transparent);
+  background: color-mix(in srgb, var(--lightink-bg-elevated) 70%, var(--lightink-code-bg));
+}
+
+/* Code surface under the header — no second border/background. */
+.lightink-code-block > .lightink-code-pre,
+.lightink-tab-host .lightink-code-block > pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 14px 16px 16px;
+  overflow-x: auto;
+}
+
+.lightink-code-block > .lightink-code-pre > code,
+.lightink-tab-host .lightink-code-block > pre > code {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--lightink-code-fg);
+  background: transparent;
+  padding: 0;
+  border: none;
+}
+
+/* Language trigger in header flow. */
+.lightink-code-lang {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.lightink-code-lang-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
   color: var(--lightink-muted);
-  padding: 1px 10px;
+  padding: 0 8px;
   font-size: 12px;
-  line-height: 1.6;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1;
+  letter-spacing: 0.01em;
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.lightink-code-lang-trigger::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  margin-left: 2px;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4.5px solid currentColor;
   opacity: 0.55;
-  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
 }
 
-.lightink-code-block:hover .lightink-code-copy-btn,
-.lightink-code-copy-btn:focus-visible {
-  opacity: 1;
-}
-
-.lightink-code-copy-btn:hover {
-  opacity: 1;
+/* Portaled panel (appended to body, position:fixed set in JS). */
+.lightink-code-lang-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(320px, 50vh);
+  padding: 10px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 12px;
+  background: var(--lightink-bg-elevated);
+  box-shadow: var(--lightink-shadow-strong);
   color: var(--lightink-fg);
-  background: var(--lightink-accent-soft);
+}
+
+.lightink-code-lang-panel[hidden] {
+  display: none !important;
+}
+
+.lightink-code-lang-filter {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightink-border);
+  border-radius: 8px;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+  outline: none;
+}
+
+.lightink-code-lang-filter::placeholder {
+  color: var(--lightink-muted);
+}
+
+.lightink-code-lang-filter:focus {
   border-color: var(--lightink-accent);
+  box-shadow: 0 0 0 3px var(--lightink-accent-soft);
+}
+
+.lightink-code-lang-list {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lightink-border) transparent;
+}
+
+.lightink-code-lang-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--lightink-fg);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  cursor: pointer;
+}
+
+.lightink-code-lang-option:hover,
+.lightink-code-lang-option--active {
+  background: var(--lightink-accent-soft);
+  color: var(--lightink-fg);
+}
+
+.lightink-code-lang-option[aria-selected='true'] {
+  color: var(--lightink-accent);
+  font-weight: 600;
+}
+
+.lightink-code-lang-option--empty {
+  color: var(--lightink-muted);
+  cursor: default;
+  font-style: italic;
+  font-family: inherit;
+}
+
+.lightink-code-lang-option--empty:hover {
+  background: transparent;
+}
+
+.lightink-code-copy-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lightink-muted);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.lightink-code-lang-trigger:hover,
+.lightink-code-lang--open .lightink-code-lang-trigger,
+.lightink-code-copy-btn:hover,
+.lightink-code-copy-btn:focus-visible {
+  color: var(--lightink-fg);
+  background: color-mix(in srgb, var(--lightink-fg) 6%, transparent);
+  border-color: color-mix(in srgb, var(--lightink-border) 80%, transparent);
+}
+
+.lightink-code-lang-trigger:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
+}
+
+.lightink-code-lang--open .lightink-code-lang-trigger {
+  color: var(--lightink-accent);
+  background: var(--lightink-accent-soft);
+  border-color: color-mix(in srgb, var(--lightink-accent) 30%, transparent);
 }
 
 .lightink-code-copy-btn--copied {
-  opacity: 1;
   color: var(--lightink-accent);
-  border-color: var(--lightink-accent);
+  background: var(--lightink-accent-soft);
+  border-color: color-mix(in srgb, var(--lightink-accent) 35%, transparent);
+}
+
+/*
+ * Mermaid diagrams:
+ *  - rendered: ONLY the SVG preview (source chrome hidden)
+ *  - editing (double-click preview): source + language header visible
+ *  - pending / error: source visible so the user can fix the definition
+ */
+.lightink-code-block.lightink-mermaid-source,
+.lightink-code-block[data-mermaid='rendered'] {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  margin: 0;
+  overflow: visible;
+  min-height: 0;
+}
+
+.lightink-code-block.lightink-mermaid-source > .lightink-code-header,
+.lightink-code-block.lightink-mermaid-source > .lightink-code-pre,
+.lightink-code-block[data-mermaid='rendered'] > .lightink-code-header,
+.lightink-code-block[data-mermaid='rendered'] > .lightink-code-pre,
+.lightink-tab-host .lightink-code-block.lightink-mermaid-source > pre,
+.lightink-tab-host .lightink-code-block[data-mermaid='rendered'] > pre {
+  display: none !important;
+}
+
+/* Double-click edit mode: full code-block chrome with mermaid language. */
+.lightink-code-block.lightink-mermaid-editing,
+.lightink-code-block[data-mermaid='editing'] {
+  border: 1px solid var(--lightink-accent);
+  box-shadow: 0 0 0 2px var(--lightink-accent-soft);
+}
+
+.lightink-code-block.lightink-mermaid-editing > .lightink-code-header,
+.lightink-code-block.lightink-mermaid-editing > .lightink-code-pre,
+.lightink-code-block[data-mermaid='editing'] > .lightink-code-header,
+.lightink-code-block[data-mermaid='editing'] > .lightink-code-pre {
+  display: flex !important;
+}
+
+.lightink-code-block.lightink-mermaid-editing > .lightink-code-pre,
+.lightink-code-block[data-mermaid='editing'] > .lightink-code-pre,
+.lightink-tab-host .lightink-code-block.lightink-mermaid-editing > pre {
+  display: block !important;
+}
+
+/* Pending / error: keep source visible so the user can fix the definition. */
+.lightink-code-block.lightink-mermaid-pending,
+.lightink-code-block.lightink-mermaid-error {
+  border-style: dashed;
+}
+
+.lightink-code-block.lightink-mermaid-error {
+  border-color: var(--lightink-danger);
+}
+
+.lightink-code-block.lightink-mermaid-error::after {
+  content: attr(data-mermaid-error);
+  display: block;
+  padding: 6px 12px 10px;
+  font-size: 12px;
+  color: var(--lightink-danger);
+  white-space: pre-wrap;
+}
+
+/* Diagram preview widget (inserted after the code_block node). */
+.lightink-mermaid {
+  margin: 0.35em 0 1em;
+  padding: 12px 14px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 10px;
+  background: var(--lightink-bg-elevated);
+  overflow-x: auto;
+  text-align: center;
+  cursor: pointer;
+}
+
+.lightink-mermaid:hover {
+  border-color: color-mix(in srgb, var(--lightink-accent) 45%, var(--lightink-border));
+  box-shadow: 0 0 0 2px var(--lightink-accent-soft);
+}
+
+.lightink-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  pointer-events: none; /* dblclick lands on the container */
+}
+
+/* Diagram language chip accent while editing source. */
+.lightink-code-block.lightink-mermaid-editing .lightink-code-lang-trigger,
+.lightink-code-block[data-mermaid='editing'] .lightink-code-lang-trigger {
+  color: var(--lightink-accent);
 }
 
 /* 源码模式选区（R10）：textarea 文字透明（高亮层在背后渲染），全局 18%
@@ -927,6 +1265,67 @@ body {
   background: var(--lightink-danger);
   border-color: var(--lightink-danger);
   color: var(--lightink-bg);
+}
+
+/* Link editor / open-confirm dialog */
+.lightink-link-dialog {
+  min-width: min(420px, 92vw);
+}
+
+.lightink-link-dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 18px;
+}
+
+.lightink-link-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lightink-link-dialog-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--lightink-muted);
+}
+
+.lightink-link-dialog-input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--lightink-border);
+  border-radius: 7px;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.lightink-link-dialog-input:focus {
+  border-color: var(--lightink-accent);
+  box-shadow: 0 0 0 3px var(--lightink-accent-soft);
+}
+
+.lightink-link-dialog-field.is-invalid .lightink-link-dialog-input {
+  border-color: var(--lightink-danger);
+}
+
+.lightink-link-dialog-target {
+  margin: -6px 0 16px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--lightink-bg);
+  border: 1px solid var(--lightink-border);
+  color: var(--lightink-accent);
+  font-size: 12.5px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  word-break: break-all;
+  max-height: 6em;
+  overflow: auto;
+}
 }
 
 /* 版本历史弹层（R13）：双栏——左版本时间线 / 右内容预览。 */

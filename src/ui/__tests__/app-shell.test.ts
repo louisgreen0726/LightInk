@@ -45,6 +45,9 @@ function stubActions(currentThemeId = 'warm-light'): AppShellActions {
     canReloadCustomTheme: () => false,
     onToggleOutline: noop,
     onToggleSourceMode: noop,
+    onToggleFullscreen: noop,
+    isChromePinned: () => false,
+    onToggleChromePinned: noop,
   };
 }
 
@@ -207,28 +210,37 @@ describe('createAppShell immersive chrome', () => {
     restoreDocument();
   });
 
-  it('defaults menu and tabs chrome collapsed with triggers', () => {
+  it('defaults menu and tabs chrome pinned open (fixed navigation)', () => {
     installFakeDocument();
     const root = document.createElement('div') as unknown as HTMLElement;
-    const shell = createAppShell(root, stubActions(), { shortcutBindings: () => [] });
+    // Disable storage so first-run defaults apply (not a prior unpinned session).
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage: null,
+    });
     const fakeRoot = root as unknown as FakeEl;
 
-    expect(shell.chrome.isRevealed('menu')).toBe(false);
-    expect(shell.chrome.isRevealed('tabs')).toBe(false);
+    expect(shell.isChromePinned()).toBe(true);
+    expect(shell.chrome.isRevealed('menu')).toBe(true);
+    expect(shell.chrome.isRevealed('tabs')).toBe(true);
     expect(fakeRoot.querySelector('#lightink-chrome-host')?.classList.contains('is-menu-revealed')).toBe(
-      false,
+      true,
     );
     expect(fakeRoot.querySelector('#lightink-tabs-host')?.classList.contains('is-tabs-revealed')).toBe(
-      false,
+      true,
     );
     expect(fakeRoot.querySelector('#lightink-menu-trigger')).not.toBeNull();
     expect(fakeRoot.querySelector('#lightink-tabs-trigger')).not.toBeNull();
   });
 
-  it('toggleTabsChrome and setTabsHold sync is-tabs-revealed', () => {
+  it('toggleTabsChrome and setTabsHold sync is-tabs-revealed when unpinned', () => {
     installFakeDocument();
     const root = document.createElement('div') as unknown as HTMLElement;
-    const shell = createAppShell(root, stubActions(), { shortcutBindings: () => [] });
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage: null,
+      initialPinPrefs: { menu: false, tabs: false },
+    });
     const tabsHost = (root as unknown as FakeEl).querySelector('#lightink-tabs-host');
 
     shell.toggleTabsChrome();
@@ -247,10 +259,14 @@ describe('createAppShell immersive chrome', () => {
     expect(tabsHost?.classList.contains('is-tabs-revealed')).toBe(false);
   });
 
-  it('toggleMenuChrome syncs is-menu-revealed', () => {
+  it('toggleMenuChrome syncs is-menu-revealed when unpinned', () => {
     installFakeDocument();
     const root = document.createElement('div') as unknown as HTMLElement;
-    const shell = createAppShell(root, stubActions(), { shortcutBindings: () => [] });
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage: null,
+      initialPinPrefs: { menu: false, tabs: false },
+    });
     const chromeHost = (root as unknown as FakeEl).querySelector('#lightink-chrome-host');
 
     shell.toggleMenuChrome();
@@ -259,6 +275,75 @@ describe('createAppShell immersive chrome', () => {
     shell.toggleMenuChrome();
     expect(shell.chrome.isRevealed('menu')).toBe(false);
     expect(chromeHost?.classList.contains('is-menu-revealed')).toBe(false);
+  });
+
+  it('setChromePinned pins menu and tabs and marks hosts', () => {
+    installFakeDocument();
+    const storage = {
+      store: {} as Record<string, string>,
+      getItem(key: string) {
+        return this.store[key] ?? null;
+      },
+      setItem(key: string, value: string) {
+        this.store[key] = value;
+      },
+    };
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage,
+      initialPinPrefs: { menu: false, tabs: false },
+    });
+    const chromeHost = (root as unknown as FakeEl).querySelector('#lightink-chrome-host');
+    const tabsHost = (root as unknown as FakeEl).querySelector('#lightink-tabs-host');
+
+    expect(shell.isChromePinned()).toBe(false);
+    shell.setChromePinned(true);
+    expect(shell.isChromePinned()).toBe(true);
+    expect(shell.chrome.isRevealed('menu')).toBe(true);
+    expect(shell.chrome.isRevealed('tabs')).toBe(true);
+    expect(chromeHost?.classList.contains('is-chrome-pinned')).toBe(true);
+    expect(tabsHost?.classList.contains('is-chrome-pinned')).toBe(true);
+    expect(storage.store['lightink.chrome.pinned']).toContain('true');
+
+    shell.setChromePinned(false);
+    expect(shell.isChromePinned()).toBe(false);
+    expect(chromeHost?.classList.contains('is-chrome-pinned')).toBe(false);
+  });
+
+  it('renderTabBar renders every open tab (not only the active one)', () => {
+    installFakeDocument();
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage: null,
+      initialPinPrefs: { menu: true, tabs: true },
+    });
+    shell.renderTabBar(
+      [
+        { id: 'tab-1', title: 'a.md', dirty: false },
+        { id: 'tab-2', title: 'b.md', dirty: true },
+        { id: 'tab-3', title: 'c.md', dirty: false },
+      ],
+      'tab-2',
+      { onSwitch: () => undefined, onClose: () => undefined },
+    );
+    const tabBar = (root as unknown as FakeEl).querySelector('#lightink-tabbar');
+    expect(tabBar?.children).toHaveLength(3);
+    expect(tabBar?.children.map((c) => c.dataset.tabId)).toEqual(['tab-1', 'tab-2', 'tab-3']);
+  });
+
+  it('restores pinned chrome from initialPinPrefs', () => {
+    installFakeDocument();
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage: null,
+      initialPinPrefs: { menu: true, tabs: true },
+    });
+    expect(shell.isChromePinned()).toBe(true);
+    expect(shell.chrome.isRevealed('menu')).toBe(true);
+    expect(shell.chrome.isRevealed('tabs')).toBe(true);
   });
 });
 

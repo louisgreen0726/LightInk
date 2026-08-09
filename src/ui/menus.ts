@@ -14,7 +14,8 @@
 
 export interface MenuItem {
   id: string;
-  label: string;
+  /** Static label, or factory refreshed when the parent menu opens. */
+  label: string | (() => string);
   /** 显示在标签右侧的快捷键提示（弱化右对齐）。 */
   shortcut?: string;
   /** 右侧弱化提示（如最近文件的目录路径，省略号截断头部）。与 shortcut 二选一。 */
@@ -27,6 +28,10 @@ export interface MenuItem {
   separator?: boolean;
   /** 子菜单加载器：存在时该项为 ▸ 触发器（action 不触发），打开时现取子项。 */
   submenu?: () => MenuItem[] | Promise<MenuItem[]>;
+}
+
+function resolveMenuLabel(label: string | (() => string)): string {
+  return typeof label === 'function' ? label() : label;
 }
 
 export interface Menu {
@@ -96,8 +101,18 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
 
   function refreshItemEnabled(item: MenuItem): void {
     const btn = itemButtons.get(item.id);
-    if (btn !== undefined && item.enabled !== undefined) {
+    if (btn === undefined) {
+      return;
+    }
+    if (item.enabled !== undefined) {
       btn.disabled = !item.enabled();
+    }
+    // Prefer class walk over querySelector so node fakes without full CSSOM still work.
+    const children = Array.from(btn.children) as HTMLElement[];
+    const labelEl =
+      children.find((child) => child.classList?.contains('lightink-menu-item-label')) ?? null;
+    if (labelEl !== null) {
+      labelEl.textContent = resolveMenuLabel(item.label);
     }
   }
 
@@ -122,7 +137,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     btn.dataset.itemId = item.id;
     const label = doc.createElement('span');
     label.className = 'lightink-menu-item-label';
-    label.textContent = item.label;
+    label.textContent = resolveMenuLabel(item.label);
     btn.appendChild(label);
     const hintText = item.hint ?? item.shortcut;
     if (hintText !== undefined && hintText !== '') {

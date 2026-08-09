@@ -54,9 +54,9 @@
  *     shows as `lightink-mermaid-pending` source.
  */
 import { $prose } from '@milkdown/utils';
-import { Plugin, PluginKey } from '@milkdown/prose/state';
+import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
-import { Decoration, DecorationSet } from '@milkdown/prose/view';
+import { Decoration, DecorationSet, type EditorView } from '@milkdown/prose/view';
 
 // ---------------------------------------------------------------------------
 // 纯逻辑层：mermaid 代码块识别
@@ -161,6 +161,11 @@ export interface MermaidPluginState {
   readonly mermaid: MermaidModule | null;
   /** definition（trim 后源码）→ 渲染结果；内容寻址，块移动/增删不影响命中。 */
   readonly results: ReadonlyMap<string, MermaidRenderOutcome>;
+  /**
+   * Position of the mermaid code_block currently open for source editing
+   * (double-click diagram). null = all successful diagrams show preview only.
+   */
+  readonly editingPos: number | null;
   readonly decorations: DecorationSet;
 }
 
@@ -170,6 +175,8 @@ export const mermaidPluginKey = new PluginKey<MermaidPluginState>('lightink-merm
 interface MermaidPluginMeta {
   mermaid?: MermaidModule;
   result?: { definition: string; outcome: MermaidRenderOutcome };
+  /** Set / clear source-edit mode for a mermaid code_block at `pos`. */
+  editingPos?: number | null;
 }
 
 /** code_block 节点的 mermaid 定义（trim 后的文本内容）；非 mermaid 块或
@@ -220,23 +227,24 @@ export function docHasMermaid(doc: PMNode): boolean {
 
 /**
  * 为整篇文档构建 mermaid decorations（同步、纯函数）：
- *   - 渲染成功 → 源码块加 `lightink-mermaid-source` node decoration（CSS
- *     可据此折叠源码），并在块后插入承载 SVG 的 widget；
- *   - 渲染失败 → 仅加 `lightink-mermaid-error`（源码原样可见，错误消息
- *     在 data 属性上），不插入 widget —— 错误被隔离在该块内；
- *   - 尚未渲染（结果未就绪）→ `lightink-mermaid-pending`；
- *   - 非 mermaid 的 code_block / 其他内容完全不产生 decoration。
- * 文档本身不被修改，源码始终可编辑。
+ *   - 渲染成功且未在编辑 → 隐藏源码 + 插入 SVG widget（双击进入编辑）；
+ *   - 渲染成功且 editingPos 命中 → 显示源码（`lightink-mermaid-editing`），不插 widget；
+ *   - 渲染失败 → 源码可见 + error 样式；
+ *   - 尚未渲染 → pending 源码可见；
+ *   - 非 mermaid 块不产生 decoration。
  */
 export function buildMermaidDecorations(
   doc: PMNode,
   results: ReadonlyMap<string, MermaidRenderOutcome>,
+  editingPos: number | null = null,
+  onEditRequest?: (blockPos: number) => void,
 ): DecorationSet {
   const decorations: Decoration[] = [];
   doc.descendants((node, pos) => {
     const def = mermaidDefinitionOf(node);
     if (def === null) return true;
     const outcome = results.get(def);
+    const isEditing = editingPos === pos;
     if (outcome === undefined) {
       decorations.push(
         Decoration.node(pos, pos + node.nodeSize, {
@@ -257,6 +265,16 @@ export function buildMermaidDecorations(
       );
       return false;
     }
+    if (isEditing) {
+      // Double-clicked into source edit: show fence + header, hide preview.
+      decorations.push(
+        Decoration.node(pos, pos + node.nodeSize, {
+          class: 'lightink-mermaid-editing',
+          'data-mermaid': 'editing',
+        }),
+      );
+      return false;
+    }
     decorations.push(
       Decoration.node(pos, pos + node.nodeSize, {
         class: 'lightink-mermaid-source',
@@ -264,14 +282,22 @@ export function buildMermaidDecorations(
       }),
     );
     const svg = outcome.svg;
+    const blockPos = pos;
     decorations.push(
       Decoration.widget(
         pos + node.nodeSize,
         () => {
           const el = document.createElement('div');
           el.className = 'lightink-mermaid';
+          el.setAttribute('title', '双击编辑流程图源码');
+          el.setAttribute('data-mermaid-preview', '');
           // mermaid 在 securityLevel:'strict' 下已对 SVG 消毒。
           el.innerHTML = svg;
+          el.addEventListener('dblclick', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onEditRequest?.(blockPos);
+          });
           return el;
         },
         { side: 1, key: `lightink-mermaid-${definitionHash(def)}` },
@@ -301,15 +327,45 @@ export const mermaidPlugin = $prose(() => {
   let loadRequested = false;
   /** 正在异步渲染中的定义（避免 update 风暴重复发起）。 */
   const inflight = new Set<string>();
+  /** Latest editor view — used by decoration widgets to request edit mode. */
+  let editorView: EditorView | null = null;
+
+  const requestEdit = (blockPos: number): void => {
+    if (editorView === null) return;
+    const node = editorView.state.doc.nodeAt(blockPos);
+    let tr = editorView.state.tr.setMeta(mermaidPluginKey, {
+      editingPos: blockPos,
+    } satisfies MermaidPluginMeta);
+    // Place caret inside the source so the user can type immediately.
+    if (node !== null) {
+      const inner = Math.min(blockPos + 1, editorView.state.doc.content.size);
+      try {
+        tr = tr.setSelection(TextSelection.create(tr.doc, inner));
+      } catch {
+        /* ignore invalid selection positions */
+      }
+    }
+    editorView.dispatch(tr.scrollIntoView());
+    editorView.focus();
+  };
+
+  const rebuild = (
+    doc: PMNode,
+    mermaid: MermaidModule | null,
+    results: ReadonlyMap<string, MermaidRenderOutcome>,
+    editingPos: number | null,
+  ): MermaidPluginState => ({
+    mermaid,
+    results,
+    editingPos,
+    decorations: buildMermaidDecorations(doc, results, editingPos, requestEdit),
+  });
 
   return new Plugin<MermaidPluginState>({
     key: mermaidPluginKey,
     state: {
-      init: (_config, state) => ({
-        mermaid: null,
-        results: new Map<string, MermaidRenderOutcome>(),
-        decorations: buildMermaidDecorations(state.doc, new Map()),
-      }),
+      init: (_config, state) =>
+        rebuild(state.doc, null, new Map<string, MermaidRenderOutcome>(), null),
       apply: (tr, old, _oldState, newState) => {
         const meta = tr.getMeta(mermaidPluginKey) as MermaidPluginMeta | undefined;
         const mermaid = meta?.mermaid ?? old.mermaid;
@@ -319,13 +375,61 @@ export const mermaidPlugin = $prose(() => {
           next.set(meta.result.definition, meta.result.outcome);
           results = next;
         }
-        if (meta !== undefined || tr.docChanged) {
-          return { mermaid, results, decorations: buildMermaidDecorations(newState.doc, results) };
+
+        // Remap / clear editing position across document changes.
+        let editingPos = old.editingPos;
+        if (meta !== undefined && 'editingPos' in meta) {
+          editingPos = meta.editingPos ?? null;
+        } else if (editingPos !== null && tr.docChanged) {
+          const mapped = tr.mapping.mapResult(editingPos, 1);
+          if (mapped.deleted) {
+            editingPos = null;
+          } else {
+            editingPos = mapped.pos;
+            // Drop edit mode if the node at the mapped pos is no longer mermaid.
+            const node = newState.doc.nodeAt(editingPos);
+            if (node === null || mermaidDefinitionOf(node) === null) {
+              // Still allow empty mermaid fence while typing a new diagram.
+              const lang =
+                node !== null && typeof node.attrs['language'] === 'string'
+                  ? (node.attrs['language'] as string)
+                  : '';
+              if (node === null || node.type.name !== 'code_block' || !isMermaidBlock(lang)) {
+                editingPos = null;
+              }
+            }
+          }
         }
-        return { mermaid, results, decorations: old.decorations.map(tr.mapping, tr.doc) };
+
+        // Leave edit mode when the selection moves outside the editing block.
+        if (editingPos !== null && tr.selectionSet && !tr.docChanged) {
+          const node = newState.doc.nodeAt(editingPos);
+          if (node !== null) {
+            const from = editingPos;
+            const to = editingPos + node.nodeSize;
+            const { from: selFrom, to: selTo } = newState.selection;
+            const inside = selFrom >= from && selTo <= to;
+            if (!inside) {
+              editingPos = null;
+            }
+          } else {
+            editingPos = null;
+          }
+        }
+
+        if (meta !== undefined || tr.docChanged || editingPos !== old.editingPos) {
+          return rebuild(newState.doc, mermaid, results, editingPos);
+        }
+        return {
+          mermaid,
+          results,
+          editingPos,
+          decorations: old.decorations.map(tr.mapping, tr.doc),
+        };
       },
     },
     view: (view) => {
+      editorView = view as typeof editorView;
       const ensureRendered = (): void => {
         const pluginState = mermaidPluginKey.getState(view.state);
         if (pluginState === undefined) return;
@@ -367,7 +471,12 @@ export const mermaidPlugin = $prose(() => {
         }
       };
       ensureRendered();
-      return { update: () => ensureRendered() };
+      return {
+        update: () => ensureRendered(),
+        destroy: () => {
+          editorView = null;
+        },
+      };
     },
     props: {
       decorations(state) {

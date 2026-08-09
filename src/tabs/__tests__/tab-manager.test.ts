@@ -40,6 +40,8 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     setLink: () => undefined,
     insertImage: () => undefined,
     focus: vi.fn(),
+    undo: vi.fn(),
+    redo: vi.fn(),
     destroy: vi.fn(async () => undefined),
   };
 }

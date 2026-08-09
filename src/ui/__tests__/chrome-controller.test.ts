@@ -125,4 +125,47 @@ describe('createChromeController', () => {
     chrome.dismiss('tabs');
     expect(chrome.isRevealed('tabs')).toBe(false);
   });
+
+  it('pin keeps surface revealed and blocks dismiss/leave', () => {
+    const timers: Array<{ id: number; fn: () => void }> = [];
+    let nextId = 1;
+    const chrome = createChromeController({
+      leaveDelayMs: 50,
+      schedule: (fn) => {
+        const id = nextId++;
+        timers.push({ id, fn });
+        return id;
+      },
+      cancel: (id) => {
+        const idx = timers.findIndex((t) => t.id === id);
+        if (idx >= 0) timers.splice(idx, 1);
+      },
+    });
+
+    expect(chrome.isPinned('menu')).toBe(false);
+    chrome.setPinned('menu', true);
+    expect(chrome.isPinned('menu')).toBe(true);
+    expect(chrome.isRevealed('menu')).toBe(true);
+    chrome.pointerLeave('menu');
+    for (const t of [...timers]) t.fn();
+    expect(chrome.isRevealed('menu')).toBe(true);
+    chrome.dismiss('menu');
+    expect(chrome.isRevealed('menu')).toBe(true);
+    chrome.toggle('menu');
+    expect(chrome.isRevealed('menu')).toBe(true);
+
+    chrome.setPinned('menu', false);
+    chrome.pointerLeave('menu');
+    for (const t of [...timers]) t.fn();
+    expect(chrome.isRevealed('menu')).toBe(false);
+  });
+
+  it('togglePinned returns new state and pins both independently', () => {
+    const chrome = createChromeController();
+    expect(chrome.togglePinned('tabs')).toBe(true);
+    expect(chrome.isPinned('tabs')).toBe(true);
+    expect(chrome.isPinned('menu')).toBe(false);
+    expect(chrome.togglePinned('tabs')).toBe(false);
+    expect(chrome.isPinned('tabs')).toBe(false);
+  });
 });

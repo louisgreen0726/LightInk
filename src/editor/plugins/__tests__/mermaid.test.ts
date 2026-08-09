@@ -335,6 +335,18 @@ describe('buildMermaidDecorations', () => {
     expect(doc.textBetween(source.from, source.to)).toBe('graph TD; A-->B');
   });
 
+  it('editingPos shows source editing class without svg widget', () => {
+    const def = 'graph TD; A-->B';
+    const doc = docOf(codeBlock('mermaid', def));
+    // mermaid code_block starts at pos 0 in this minimal doc.
+    const blockPos = 0;
+    const results = new Map([[def, okOutcome('<svg/>')]]);
+    const found = buildMermaidDecorations(doc, results, blockPos).find();
+    expect(found.some((d) => decoClass(d) === 'lightink-mermaid-editing')).toBe(true);
+    expect(found.some((d) => decoClass(d) === 'lightink-mermaid-source')).toBe(false);
+    expect(found.filter((d) => decoClass(d) === '')).toHaveLength(0);
+  });
+
   it('error outcome: error class only, no widget, source preserved (R9 isolation)', () => {
     const def = 'not a diagram {{{';
     const doc = docOf(para('前文'), codeBlock('mermaid', def), para('后文'));

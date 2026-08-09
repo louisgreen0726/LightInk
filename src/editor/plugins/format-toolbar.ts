@@ -13,7 +13,7 @@
  */
 
 import { $prose } from '@milkdown/utils';
-import { Plugin, PluginKey } from '@milkdown/prose/state';
+import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import { toggleMark } from '@milkdown/prose/commands';
 import type { EditorView } from '@milkdown/prose/view';
 
@@ -97,18 +97,85 @@ function createToolbarElement(): HTMLElement {
   return el;
 }
 
+/**
+ * Optional host-provided link editor. Production wires a themed modal
+ * (text + href). Falls back to window.prompt for href only when unset.
+ */
+export type LinkEditorFn = (initial: {
+  text: string;
+  href: string;
+}) => Promise<{ text: string; href: string } | null> | { text: string; href: string } | null;
+
+let linkEditor: LinkEditorFn | null = null;
+
+/** Inject the app-level link dialog (called once from main). */
+export function setFormatToolbarLinkEditor(editor: LinkEditorFn | null): void {
+  linkEditor = editor;
+}
+
 /** 应用某个格式工具到当前选区（mark 切换 / link 包裹）。 */
 function applyFormatTool(view: EditorView, id: FormatToolId): void {
   const tool = FORMAT_TOOLS.find((t) => t.id === id);
   if (tool === undefined) return;
   const markType = view.state.schema.marks[tool.markName];
   if (markType === undefined) return;
-  const { from, to } = view.state.selection;
+  const { from, to, empty } = view.state.selection;
   if (tool.markName === 'link') {
+    const selectedText = empty ? '' : view.state.doc.textBetween(from, to);
+    // Prefer existing link href under selection when editing.
+    let existingHref = '';
+    if (!empty) {
+      const marks = view.state.doc.resolve(from).marks();
+      const link = marks.find((m) => m.type.name === 'link');
+      if (link !== undefined && typeof link.attrs['href'] === 'string') {
+        existingHref = link.attrs['href'] as string;
+      }
+    }
+    const applyResult = (result: { text: string; href: string } | null): void => {
+      if (result === null) return;
+      const href = result.href.trim();
+      if (href === '') return;
+      const text = result.text.trim() || href;
+      const linkMark = markType.create({ href, title: null });
+      const withoutLink = <T extends { type: { name: string } }>(marks: readonly T[]): T[] =>
+        marks.filter((m) => m.type !== markType);
+
+      // Re-read selection in case the dialog stole focus / selection shifted.
+      const sel = view.state.selection;
+      let tr = view.state.tr;
+      let end: number;
+      if (sel.empty) {
+        const insertAt = sel.from;
+        tr = tr.insertText(text, insertAt);
+        end = insertAt + text.length;
+        tr = tr.addMark(insertAt, end, linkMark);
+      } else {
+        const current = view.state.doc.textBetween(sel.from, sel.to);
+        if (text !== current) {
+          tr = tr.insertText(text, sel.from, sel.to);
+          end = sel.from + text.length;
+          tr = tr.addMark(sel.from, end, linkMark);
+        } else {
+          end = sel.to;
+          tr = tr.addMark(sel.from, sel.to, linkMark);
+        }
+      }
+      tr = tr.setSelection(TextSelection.create(tr.doc, end));
+      tr = tr.setStoredMarks(withoutLink(tr.selection.$from.marks()));
+      view.dispatch(tr.scrollIntoView());
+    };
+
+    if (linkEditor !== null) {
+      void Promise.resolve(
+        linkEditor({ text: selectedText, href: existingHref }),
+      ).then(applyResult);
+      return;
+    }
+    // Headless / fallback: prompt for href only.
     const href =
       typeof prompt === 'function' ? (prompt('链接地址（https://…）') ?? '') : '';
     if (href === '') return;
-    view.dispatch(view.state.tr.addMark(from, to, markType.create({ href })));
+    applyResult({ text: selectedText || href, href });
     return;
   }
   toggleMark(markType)(view.state, (tr) => view.dispatch(tr));
@@ -141,24 +208,32 @@ export const formatToolbarPlugin = $prose(() => {
     view(view: EditorView) {
       const toolbar = createToolbarElement();
       const onClick = (event: Event): void => {
+        // Link icon is an <svg>; SVGElement is not HTMLElement, so use Element.
         const target = event.target;
-        const btn =
-          target instanceof HTMLElement ? target.closest<HTMLButtonElement>('button[data-tool]') : null;
-        if (btn === null) return;
+        if (!(target instanceof Element)) return;
+        const btn = target.closest('button[data-tool]');
+        if (!(btn instanceof HTMLButtonElement)) return;
         const id = btn.dataset['tool'] as FormatToolId | undefined;
         if (id === undefined) return;
+        event.preventDefault();
+        event.stopPropagation();
         applyFormatTool(view, id);
+        // Keep toolbar visible for non-link tools; re-sync after mark toggle.
+        // Link uses window.prompt which may clear selection — hide if empty.
+        syncToolbar(view, toolbar);
       };
       // 关键：阻止工具条按钮在 mousedown 时抢走编辑器焦点——否则 view.dom 失焦 →
       // onHide 同步隐藏工具条 → 随后 click 落空、applyFormatTool 不执行（浮动菜单
       // 焦点抢占问题）。preventDefault 不阻止 click 本身。
+      // Capture phase so SVG children inside the link button never steal the gesture.
       const onPointerDown = (event: Event): void => {
         event.preventDefault();
+        event.stopPropagation();
       };
       const onHide = (): void => {
         toolbar.style.display = 'none';
       };
-      toolbar.addEventListener('mousedown', onPointerDown);
+      toolbar.addEventListener('mousedown', onPointerDown, true);
       toolbar.addEventListener('click', onClick);
       view.dom.addEventListener('blur', onHide, true);
       document.body.appendChild(toolbar);
@@ -169,7 +244,7 @@ export const formatToolbarPlugin = $prose(() => {
           syncToolbar(view, toolbar);
         },
         destroy() {
-          toolbar.removeEventListener('mousedown', onPointerDown);
+          toolbar.removeEventListener('mousedown', onPointerDown, true);
           toolbar.removeEventListener('click', onClick);
           view.dom.removeEventListener('blur', onHide, true);
           toolbar.remove();

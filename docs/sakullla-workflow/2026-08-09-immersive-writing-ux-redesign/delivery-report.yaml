@@ -1,0 +1,59 @@
+format: delivery_report
+status: completed
+workflow_id: 2026-08-09-immersive-writing-ux-redesign
+candidate_ref: 70aa74232c9ff7be409406d9e3fcf7858d333b8c
+environment:
+  python: 3.14.6
+  platform: Windows-11-10.0.26200-SP0
+  processor: Intel64 Family 6 Model 158 Stepping 13, GenuineIntel
+  network: not_required
+  logical_cpu_count: 8
+verification:
+  status: passed
+  command_set_digest: sha256:863a2a52fa1d630e8233e9e17e95021f5e0712ad6814fa5ae4b680169c0ba4c4
+  commands:
+    - id: unit
+      command: cmd /c "set CI=1&& set NO_COLOR=1&& set FORCE_COLOR=0&& npm ci && npm test -- --no-color"
+      owner: delivery
+      protocol: pass
+      sla_seconds: 0
+      status: passed
+      attempt_count: 1
+      runs:
+        - phase: check
+          ordinal: 1
+          wall_clock_seconds: 27.717080300004454
+          exit_code: 0
+          timed_out: false
+          metrics:
+            jobs: null
+            modules: null
+            skipped: null
+            tests: null
+          stdout: "\nadded 257 packages, and audited 258 packages in 16s\n\n86 packages are looking for funding\n  run `npm fund` for details\n\nfound 0 vulnerabilities\n\n> lightink@0.1.2 test\n> vitest run --no-color\n\n\n RUN  v4.1.10 C:/Users/12976/AppData/Local/Temp/sakullla-final-integration-r8d8mkev/checkout\n\n\n Test Files  39 passed (39)\n      Tests  437 passed (437)\n   Start at  13:58:27\n   Duration  7.61s (transform 5.35s, setup 0ms, import 27.18s, tests 1.50s, environment 6ms)\n\n"
+          stderr: "npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:\nnpm warn allow-scripts   esbuild@0.25.12 (postinstall: node install.js)\nnpm warn allow-scripts\nnpm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.\n"
+    - id: typecheck_build
+      command: cmd /c "set CI=1&& set NO_COLOR=1&& set FORCE_COLOR=0&& npm ci && npm run build"
+      owner: delivery
+      protocol: pass
+      sla_seconds: 0
+      status: passed
+      attempt_count: 1
+      runs:
+        - phase: check
+          ordinal: 1
+          wall_clock_seconds: 84.20716399999219
+          exit_code: 0
+          timed_out: false
+          metrics:
+            jobs: null
+            modules: null
+            skipped: null
+            tests: null
+          stdout: "\nadded 257 packages, and audited 258 packages in 28s\n\n86 packages are looking for funding\n  run `npm fund` for details\n\nfound 0 vulnerabilities\n\n> lightink@0.1.2 build\n> tsc && vite build\n\nvite v6.4.3 building for production...\ntransforming...\n✓ 2365 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/index.html                                           0.40 kB │ gzip:     0.29 kB\ndist/assets/index-CS1CUY9R.css                        1,480.82 kB │ gzip:   949.09 kB\ndist/assets/channel-DO5uvfkw.js                           0.12 kB │ gzip:     0.13 kB\ndist/assets/init-Gi6I4Gst.js                              0.15 kB │ gzip:     0.13 kB\ndist/assets/chunk-2Q5K7J3B-CPuUpok2.js                    0.19 kB │ gzip:     0.16 kB\ndist/assets/chunk-XXDRQBXY-KWVmBPL7.js                    0.24 kB │ gzip:     0.21 kB\ndist/assets/chunk-JWPE2WC7-BVrlcv97.js                    0.30 kB │ gzip:     0.20 kB\ndist/assets/chunk-5VM5RSS4-Xz6qHEld.js                    0.37 kB │ gzip:     0.27 kB\ndist/assets/stateDiagram-v2-UEYNNEHI-Bmxnf27I.js          0.43 kB │ gzip:     0.30 kB\ndist/assets/classDiagram-JCYQIIEL-D7jmkSFK.js             0.47 kB │ gzip:     0.32 kB\ndist/assets/classDiagram-v2-OCEON4UE-D7jmkSFK.js          0.47 kB │ gzip:     0.32 kB\ndist/assets/chunk-KBJHAD2P-CTBeWmZE.js                    0.53 kB │ gzip:     0.38 kB\ndist/assets/swimlanesDiagram-ULZ7WXOC-DDbD3xYh.js         0.55 kB │ gzip:     0.37 kB\ndist/assets/infoDiagram-6WML65LV-CPDsdGiA.js              0.59 kB │ gzip:     0.41 kB\ndist/assets/sizeCapture-X5ZJPWSS-xxv5Tk_w.js              1.00 kB │ gzip:     0.56 kB\ndist/assets/ordinal-Cboi1Yqb.js                           1.19 kB │ gzip:     0.57 kB\ndist/assets/event-7f1XaZNN.js                             1.41 kB │ gzip:     0.67 kB\ndist/assets/railroadDiagram-AXF67PYL-BgMFKCPl.js          1.61 kB │ gzip:     0.75 kB\ndist/assets/abnfDiagram-N423BO3Z-Cpv9SfgK.js              1.81 kB │ gzip:     0.89 kB\ndist/assets/chunk-2GRJ4B5K-B6JHdr2n.js                    1.88 kB │ gzip:     0.83 kB\ndist/assets/pegDiagram-VL7TDLO6-DOkG_xlL.js               1.96 kB │ gzip:     0.92 kB\ndist/assets/ebnfDiagram-BXEA7PRR-CW67RlD8.js              2.01 kB │ gzip:     0.88 kB\ndist/assets/arc-Daib4A5y.js                               3.44 kB │ gzip:     1.49 kB\ndist/assets/diagram-LBJQPF4R-CmNYfcOU.js                  4.24 kB │ gzip:     1.86 kB\ndist/assets/defaultLocale-DX6XiGOO.js                     4.69 kB │ gzip:     2.18 kB\ndist/assets/map-Czzmt4hB.js                               5.07 kB │ gzip:     2.07 kB\ndist/assets/linear-B4DVudbt.js                            5.66 kB │ gzip:     2.31 kB\ndist/assets/diagram-UB23O5K3-BH9UzJ0B.js                  6.23 kB │ gzip:     2.68 kB\ndist/assets/pieDiagram-7S7Q4E2Y-B7hG-BMQ.js               6.35 kB │ gzip:     2.65 kB\ndist/assets/chunk-RYQCIY6F-DHIvDDil.js                    7.18 kB │ gzip:     2.77 kB\ndist/assets/diagram-7IWD3JNH-CGDepoIt.js                  8.47 kB │ gzip:     3.77 kB\ndist/assets/dagre-VZM6K2ZE-BtSmCYUx.js                    8.90 kB │ gzip:     3.40 kB\ndist/assets/cynefinDiagram-MW4NZA55-Bot9jU48.js          10.10 kB │ gzip:     3.63 kB\ndist/assets/stateDiagram-OKZ733FA-BX3THoAB.js            10.42 kB │ gzip:     3.65 kB\ndist/assets/diagram-B4RE2ZJO-_k57Ccfn.js                 10.82 kB │ gzip:     4.17 kB\ndist/assets/chunk-6Q2QTUOP-D-WUsvxX.js                   15.76 kB │ gzip:     4.43 kB\ndist/assets/diagram-Q27KOJAE-BRbGRDyR.js                 16.07 kB │ gzip:     5.73 kB\ndist/assets/ishikawaDiagram-WSZJBQD7-DgePPUuk.js         17.57 kB │ gzip:     6.68 kB\ndist/assets/kanban-definition-27J2QSJJ-DMI1GwB4.js       20.70 kB │ gzip:     7.29 kB\ndist/assets/mindmap-definition-FAOFIHXS-PAYBxLNS.js      23.36 kB │ gzip:     7.89 kB\ndist/assets/sankeyDiagram-W5VNT64P-BXDgbaqq.js           23.39 kB │ gzip:     8.58 kB\ndist/assets/journeyDiagram-NVQOT4AX-CaipIyDG.js          23.57 kB │ gzip:     8.35 kB\ndist/assets/graph-C9eacEi8.js                            23.95 kB │ gzip:     8.32 kB\ndist/assets/wardleyDiagram-T6FBY63Y-B7stoJzu.js          26.10 kB │ g...<truncated>"
+          stderr: "npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:\nnpm warn allow-scripts   esbuild@0.25.12 (postinstall: node install.js)\nnpm warn allow-scripts\nnpm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.\n\n(!) Some chunks are larger than 500 kB after minification. Consider:\n- Using dynamic import() to code-split the application\n- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks\n- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.\n"
+  pending_ids: []
+review_result:
+  decision: passed
+  summary: Candidate delivers immersive dual-surface chrome, tab cycle/title identity, new-tab focus, outline jump hardening, and tokenized elevation; unit 437 and typecheck_build passed with no blocking findings.
+  findings: []

@@ -1,117 +1,115 @@
 /**
- * Code block syntax highlighting plugin (T5 / R4).
+ * Code block syntax highlighting plugin (T5 / R4 + language switcher).
  *
- * Design (per docs/sakullla-workflow/.../02-technical-solution.md「代码高亮：
- * highlight.js，按需注册语言」):
- *
- *   - Uses `highlight.js/lib/core` + 14 explicitly imported language grammars
- *     (JS/TS/Python/Java/Go/Rust/C/C++/HTML/CSS/SQL/Shell/JSON/YAML) instead of
- *     the full `highlight.js` bundle, keeping the bundle impact bounded (R12).
- *     Registration is static-but-minimal rather than lazy-dynamic: dynamic
- *     `import()` per language would split grammars into async chunks and force
- *     the ProseMirror decoration pass to be async (highlight → re-decorate),
- *     adding flicker and complexity. 14 core grammars weigh ~90KB minified
- *     (far less gzipped) — acceptable for a desktop Tauri app where the
- *     bundle ships inside the installer.
- *
- *   - The pure logic is headless-testable:
- *       resolveLanguage(infoString)  — fence info-string → hljs language name
- *       tokenizeCode(language, code) — hljs token-tree walk → flat token list
- *       highlightCode(language, code)— token list → HTML string with
- *                                      `hljs-` classes (or escaped plain text)
- *
- *   - The ProseMirror wiring is a *decoration* plugin (`$prose`), not a
- *     nodeView. A nodeView that writes highlighted HTML into `code.innerHTML`
- *     fights ProseMirror's contentDOM text management (selection drift,
- *     mutation observers). Inline decorations keep PM in sole charge of the
- *     DOM text and only attach `hljs-*` classes to ranges — the standard
- *     approach used by milkdown's prism/shiki integrations.
- *
- *   - Unlabeled fences (```) and unknown languages fall back to escaped plain
- *     text: `highlightCode` returns HTML-escaped code with no hljs markup and
- *     the decoration pass returns no decorations. No crash, no classes (R4).
- *
- *   - Theme CSS (actual colors for `hljs-*` classes) is deferred to the T6
- *     theme system; this plugin only emits the semantic classes.
+ * Design:
+ *   - Full `highlight.js` registration (all component-supported languages via
+ *     `hljs.listLanguages()`). Desktop Tauri ships the installer bundle; full
+ *     grammars avoid missing-language fallbacks when users pick any fence tag.
+ *   - Pure logic remains headless-testable:
+ *       resolveLanguage / tokenizeCode / highlightCode / listSupportedLanguages
+ *   - ProseMirror decorations attach `hljs-*` classes; nodeView overlays a
+ *     language <select> + copy button without fighting contentDOM text.
+ *   - Unlabeled fences / plain-text markers stay unhighlighted.
  */
 
-import hljs from 'highlight.js/lib/core';
-import hljsBash from 'highlight.js/lib/languages/bash';
-import hljsC from 'highlight.js/lib/languages/c';
-import hljsCpp from 'highlight.js/lib/languages/cpp';
-import hljsCss from 'highlight.js/lib/languages/css';
-import hljsGo from 'highlight.js/lib/languages/go';
-import hljsJava from 'highlight.js/lib/languages/java';
-import hljsJavascript from 'highlight.js/lib/languages/javascript';
-import hljsJson from 'highlight.js/lib/languages/json';
-import hljsPython from 'highlight.js/lib/languages/python';
-import hljsRust from 'highlight.js/lib/languages/rust';
-import hljsSql from 'highlight.js/lib/languages/sql';
-import hljsTypescript from 'highlight.js/lib/languages/typescript';
-import hljsXml from 'highlight.js/lib/languages/xml';
-import hljsYaml from 'highlight.js/lib/languages/yaml';
+import hljs from 'highlight.js';
 
 import { $prose } from '@milkdown/utils';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
+import type { EditorView } from '@milkdown/prose/view';
 import { Decoration, DecorationSet, type NodeView } from '@milkdown/prose/view';
 
-// ---------------------------------------------------------------------------
-// Language registration — R4 要求的 14 种语言（按需注册，非全量 bundle）。
-// ---------------------------------------------------------------------------
+// Full highlight.js already registers every shipped grammar on import.
+// listSupportedLanguages() exposes them for the code-block language picker.
 
-hljs.registerLanguage('javascript', hljsJavascript);
-hljs.registerLanguage('typescript', hljsTypescript);
-hljs.registerLanguage('python', hljsPython);
-hljs.registerLanguage('java', hljsJava);
-hljs.registerLanguage('go', hljsGo);
-hljs.registerLanguage('rust', hljsRust);
-hljs.registerLanguage('c', hljsC);
-hljs.registerLanguage('cpp', hljsCpp);
-hljs.registerLanguage('xml', hljsXml); // 覆盖 HTML（xml 语法含 html 别名）
-hljs.registerLanguage('css', hljsCss);
-hljs.registerLanguage('sql', hljsSql);
-hljs.registerLanguage('bash', hljsBash); // 覆盖 Shell
-hljs.registerLanguage('json', hljsJson);
-hljs.registerLanguage('yaml', hljsYaml);
-
-/** hljs 未内置别名的 fence 标记 → 已注册语法名。 */
-const LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
-  shell: 'bash',
-  'c++': 'cpp',
-  'c#': 'cpp', // 近似高亮（未注册 csharp，降级而非报错）
-};
-
-/** 显式要求纯文本的 fence 标记（不高亮，也不算 unknown）。 */
+/** Explicit plain-text fence markers (no highlight). */
 const PLAIN_TEXT_MARKERS: ReadonlySet<string> = new Set([
   'text',
   'plain',
   'plaintext',
   'txt',
+  'none',
 ]);
 
+/**
+ * Non-hljs languages that still need a picker label / stable fence tag
+ * (e.g. mermaid diagrams rendered by a dedicated plugin).
+ */
+export const SPECIAL_LANGUAGES: readonly string[] = ['mermaid'];
+
+/**
+ * Extra fence tags that hljs does not alias itself → registered language names.
+ * Built-in aliases (js→javascript, ts→typescript, …) are indexed from hljs below.
+ */
+const EXTRA_LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
+  'c++': 'cpp',
+  'c#': 'csharp',
+  cs: 'csharp',
+  golang: 'go',
+  html: 'xml',
+  htm: 'xml',
+  md: 'markdown',
+};
+
+/**
+ * Map any accepted fence tag / alias → registered `listLanguages()` name.
+ * Built once so resolveLanguage stays O(1) on every decoration pass.
+ */
+const CANONICAL_LANGUAGE = (() => {
+  const map = new Map<string, string>();
+  for (const registered of hljs.listLanguages()) {
+    map.set(registered.toLowerCase(), registered);
+    const def = hljs.getLanguage(registered);
+    const aliases = def?.aliases ?? [];
+    for (const alias of aliases) {
+      map.set(String(alias).toLowerCase(), registered);
+    }
+  }
+  for (const [alias, target] of Object.entries(EXTRA_LANGUAGE_ALIASES)) {
+    if (hljs.getLanguage(target) !== undefined) {
+      map.set(alias.toLowerCase(), target);
+    }
+  }
+  return map;
+})();
+
 // ---------------------------------------------------------------------------
-// 纯逻辑层（headless 可测）
+// Pure helpers (headless-testable)
 // ---------------------------------------------------------------------------
 
 /**
- * 把 fence info-string（如 `js`、`TS`、`shell`、` ``` ` 空串）解析为 hljs 可
- * 识别的语言名；空串 / 未知语言返回 null（调用方按纯文本处理）。
- *
- * 返回的可能是别名本身（`js`、`py`）——`hljs.getLanguage` / `hljs.highlight`
- * 都接受别名，因此不做规范化；仅对 hljs 自身未注册别名的标记
- * （`shell`、`c++`）显式映射到已注册语法名。
+ * Fence info-string → registered hljs language name; empty / plain / unknown → null.
+ * Always returns a name from `listLanguages()` (aliases like `ts` → `typescript`).
  */
 export function resolveLanguage(infoString: string | null | undefined): string | null {
   if (infoString === null || infoString === undefined) return null;
-  // info-string 可能带额外属性（如 ```js {1-3}），只取首段并小写化。
   const tag = infoString.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   if (tag === '' || PLAIN_TEXT_MARKERS.has(tag)) return null;
-  const name = LANGUAGE_ALIASES[tag] ?? tag;
-  return hljs.getLanguage(name) !== undefined ? name : null;
+  if (SPECIAL_LANGUAGES.includes(tag)) return tag;
+  return CANONICAL_LANGUAGE.get(tag) ?? null;
 }
 
-/** 一段高亮 token：hljs scope（如 `keyword`）+ 原文文本。 */
+/**
+ * Languages offered in the code-block picker: full highlight.js set plus
+ * special non-hljs tags (mermaid). Sorted, plain-text excluded.
+ */
+export function listSupportedLanguages(): readonly string[] {
+  const set = new Set<string>(
+    hljs.listLanguages().filter((name) => !PLAIN_TEXT_MARKERS.has(name)),
+  );
+  for (const name of SPECIAL_LANGUAGES) {
+    set.add(name);
+  }
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+/** True when fence is a mermaid diagram block (rendered by mermaid plugin). */
+export function isDiagramLanguage(infoString: string | null | undefined): boolean {
+  return resolveLanguage(infoString) === 'mermaid';
+}
+
+/** Flattened highlight token: hljs scope + source text. */
 export interface HighlightToken {
   readonly scope: string | null;
   readonly text: string;
@@ -128,13 +126,8 @@ interface HljsHighlightResultWithEmitter {
 }
 
 /**
- * 用 hljs 把 `code` 解析为扁平 token 序列（scope 链路以 `.` 连接，
- * 如 `comment.doc`）。`language` 为 null/未知时返回 null，表示「走纯文本」。
- *
- * 走的是 hljs 的 token-tree 内部 API（`_emitter.root`），这是把 hljs 结果
- * 映射到 ProseMirror 位置偏移的唯一无损途径（`value` HTML 重新解析会引入
- * 实体解码歧义）。该 API 在 hljs v11 中稳定，但属内部契约——升级 hljs 时
- * 需重跑本文件测试。
+ * Tokenize `code` with hljs. `language` null/unknown → null (plain path).
+ * Uses hljs token-tree (`_emitter.root`) for lossless PM offsets.
  */
 export function tokenizeCode(
   language: string | null,
@@ -147,12 +140,10 @@ export function tokenizeCode(
   try {
     result = hljs.highlight(code, { language }) as HljsHighlightResultWithEmitter;
   } catch {
-    // 语法内部异常（已知 hljs 对某些边缘输入抛错）→ 降级纯文本。
     return null;
   }
   const root = result._emitter?.root ?? result._emitter?.rootNode;
   if (root === undefined) {
-    // 内部 API 形态变化 → 退化为「整段无 scope」，至少保证文本完整。
     return [{ scope: null, text: code }];
   }
   const tokens: HighlightToken[] = [];
@@ -172,7 +163,6 @@ export function tokenizeCode(
   return tokens;
 }
 
-/** HTML 转义（纯文本路径与高亮路径共用，保证 `<script>` 不被注入）。 */
 export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -181,7 +171,6 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** token scope → hljs class 名（`keyword` → `hljs-keyword`，多段各加类）。 */
 export function scopeToClasses(scope: string): string {
   return scope
     .split('.')
@@ -190,11 +179,6 @@ export function scopeToClasses(scope: string): string {
     .join(' ');
 }
 
-/**
- * 高亮 `code` 并返回 HTML 字符串：
- *   - 已知语言 → 带 `hljs-*` class 的 `<span>` 标记；
- *   - `language` 为 null / 未知 → 仅做 HTML 转义的纯文本，无任何 hljs 标记。
- */
 export function highlightCode(language: string | null, code: string): string {
   const tokens = tokenizeCode(language, code);
   if (tokens === null) {
@@ -210,25 +194,20 @@ export function highlightCode(language: string | null, code: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// ProseMirror decoration 层
+// ProseMirror decorations
 // ---------------------------------------------------------------------------
 
 export const codeHighlightPluginKey = new PluginKey<DecorationSet>(
   'lightink-code-highlight',
 );
 
-/**
- * 为整篇文档构建高亮 decorations：每个已知语言的 code_block 得到一个
- * node decoration（`hljs language-<name>`，供主题/导出识别）加上按 token
- * 偏移的 inline decorations。未知/未标注语言不产生任何 decoration。
- */
 export function buildCodeDecorations(doc: PMNode): DecorationSet {
   const decorations: Decoration[] = [];
   doc.descendants((node, pos) => {
     if (node.type.name !== 'code_block') return true;
     const info = typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
     const language = resolveLanguage(info);
-    if (language === null) return false; // 纯文本代码块：无 decoration，不进子树
+    if (language === null) return false;
     const code = node.textContent;
     const tokens = tokenizeCode(language, code);
     if (tokens === null) return false;
@@ -238,7 +217,6 @@ export function buildCodeDecorations(doc: PMNode): DecorationSet {
         'data-language': language,
       }),
     );
-    // code_block 内文本从 pos + 1 开始（节点起始 token 占一位）。
     let offset = pos + 1;
     for (const token of tokens) {
       const end = offset + token.text.length;
@@ -249,52 +227,46 @@ export function buildCodeDecorations(doc: PMNode): DecorationSet {
       }
       offset = end;
     }
-    return false; // code_block 只含文本，无需继续下降
+    return false;
   });
   return DecorationSet.create(doc, decorations);
 }
 
 // ---------------------------------------------------------------------------
-// R8：代码块悬浮复制按钮
+// R8 copy button + filterable language picker chrome
 // ---------------------------------------------------------------------------
-//
-// 设计取舍（见 02-technical-solution.md R8）：高亮继续走 decoration（不变）；
-// 复制按钮用 nodeView 叠加——因为「覆盖在代码块右上角」的按钮必须作为
-// code_block 的非内容子节点存在（contentDOM 仍是 <code>，PM 独占文本
-// 管理）。Decoration.widget 只能插入文档流中的兄弟节点，无法相对代码块定位，故
-// 按钮叠加采用 nodeView（业内代码块复制按钮的标准做法）；hljs 高亮仍由上方
-// decoration 提供，PM 会把 Decoration.node 的 class（含 data-language）作用到本
-// nodeView 的外层包裹 div 上（颜色经继承进入 <code>）。
-//
-// 按钮位于外层包裹 div 而非滚动容器 <pre> 内：绝对定位在滚动容器内的元素会
-// 随横向滚动被带走，且悬停显隐在触达边缘时不可发现——故按钮固定在包裹层
-// 右上角、始终可见（视觉弱化，悬停全显，CSS 见 theme.css）。
-//
-// 纯逻辑（copyButtonLabel / copyButtonClassName / readCodeSource）headless 可测；
-// nodeView 装配与剪贴板写入属编辑器集成面（同既有插件，仅断言工厂形态）。
 
+export const CODE_HEADER_CLASS = 'lightink-code-header';
 export const COPY_BUTTON_CLASS = 'lightink-code-copy-btn';
 export const COPIED_FLAG_CLASS = 'lightink-code-copy-btn--copied';
+export const LANG_PICKER_CLASS = 'lightink-code-lang';
+export const LANG_PICKER_OPEN_CLASS = 'lightink-code-lang--open';
+export const LANG_TRIGGER_CLASS = 'lightink-code-lang-trigger';
+export const LANG_PANEL_CLASS = 'lightink-code-lang-panel';
+export const LANG_FILTER_CLASS = 'lightink-code-lang-filter';
+export const LANG_LIST_CLASS = 'lightink-code-lang-list';
+export const LANG_OPTION_CLASS = 'lightink-code-lang-option';
+export const LANG_OPTION_ACTIVE_CLASS = 'lightink-code-lang-option--active';
+export const LANG_OPTION_EMPTY_CLASS = 'lightink-code-lang-option--empty';
 export const COPY_LABEL = '复制';
 export const COPIED_LABEL = '已复制';
+export const PLAIN_LANGUAGE_LABEL = '纯文本';
+export const LANG_FILTER_PLACEHOLDER = '筛选语言…';
+export const LANG_EMPTY_FILTER_LABEL = '无匹配语言';
 const COPY_FEEDBACK_MS = 1500;
 
-/** 按钮文案：默认「复制」，复制成功后「已复制」。 */
 export function copyButtonLabel(copied: boolean): string {
   return copied ? COPIED_LABEL : COPY_LABEL;
 }
 
-/** 按钮 class：复制成功附加 `--copied` 修饰类，供主题反馈态着色。 */
 export function copyButtonClassName(copied: boolean): string {
   return copied ? `${COPY_BUTTON_CLASS} ${COPIED_FLAG_CLASS}` : COPY_BUTTON_CLASS;
 }
 
-/** 代码块源码读取：直接取 contentDOM(<code>) 文本，保留多行与缩进（R8「完全一致」）。 */
 export function readCodeSource(contentDOM: { textContent: string | null }): string {
   return contentDOM.textContent ?? '';
 }
 
-/** 创建复制按钮（仅编辑器挂载态调用，依赖全局 document）。 */
 export function createCopyButton(): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -305,7 +277,6 @@ export function createCopyButton(): HTMLButtonElement {
   return btn;
 }
 
-/** 切换按钮「已复制」反馈态（文案/class/aria-label 同步）。 */
 export function setCopiedState(btn: HTMLButtonElement, copied: boolean): void {
   btn.textContent = copyButtonLabel(copied);
   btn.className = copyButtonClassName(copied);
@@ -313,9 +284,376 @@ export function setCopiedState(btn: HTMLButtonElement, copied: boolean): void {
 }
 
 /**
- * 写剪贴板：优先 `navigator.clipboard`（Tauri webview 为安全上下文），
- * 失败或不可用时降级到隐藏 textarea + `execCommand('copy')`。成功返回 true。
+ * Normalize a fence language attr for the picker value:
+ * known → resolved name (hljs or special); empty/plain/unknown → '' (纯文本).
  */
+export function languageSelectValue(infoString: string | null | undefined): string {
+  return resolveLanguage(infoString) ?? '';
+}
+
+/** Display label for a picker value (empty → 纯文本). */
+export function languageDisplayLabel(value: string): string {
+  if (value === '') return PLAIN_LANGUAGE_LABEL;
+  if (value === 'mermaid') return '流程图';
+  return value;
+}
+
+/**
+ * Filter registered languages by query (case-insensitive substring).
+ * Empty query returns the full list. 纯文本 is always prepended by callers.
+ */
+export function filterLanguages(
+  query: string,
+  languages: readonly string[] = listSupportedLanguages(),
+): readonly string[] {
+  const q = query.trim().toLowerCase();
+  if (q === '') {
+    return languages;
+  }
+  return languages.filter((name) => name.toLowerCase().includes(q));
+}
+
+/** Whether the plain-text option matches the current filter query. */
+export function plainLanguageMatches(query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === '') {
+    return true;
+  }
+  return (
+    PLAIN_LANGUAGE_LABEL.toLowerCase().includes(q) ||
+    'text'.includes(q) ||
+    'plain'.includes(q) ||
+    'plaintext'.includes(q)
+  );
+}
+
+export interface LanguagePicker {
+  readonly element: HTMLElement;
+  /** Current selected language value ('' = plain text). */
+  getValue(): string;
+  /** Sync display when the code_block language attr changes externally. */
+  setValue(value: string): void;
+  destroy(): void;
+}
+
+export interface LanguagePickerOptions {
+  current?: string;
+  languages?: readonly string[];
+  doc?: Document;
+  onChange?: (language: string) => void;
+}
+
+/**
+ * Filterable language combobox for code blocks.
+ *
+ * Panel is portaled to document.body with position:fixed so ProseMirror /
+ * ancestor overflow cannot clip or intercept it. Trigger stays in the header.
+ */
+export function createLanguagePicker(options: LanguagePickerOptions = {}): LanguagePicker {
+  const doc = options.doc ?? document;
+  const languages = options.languages ?? listSupportedLanguages();
+  let value = languageSelectValue(options.current);
+  let open = false;
+  let activeIndex = 0;
+  let filtered: Array<{ value: string; label: string }> = [];
+  let ignoreOutsideCloseUntil = 0;
+  let focusTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const root = doc.createElement('div');
+  root.className = LANG_PICKER_CLASS;
+
+  const trigger = doc.createElement('button');
+  trigger.type = 'button';
+  trigger.className = LANG_TRIGGER_CLASS;
+  trigger.setAttribute('aria-label', '代码语言');
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('title', '代码语言');
+
+  // Portaled panel: lives on document.body so nothing inside the editor clips it.
+  const panel = doc.createElement('div');
+  panel.className = LANG_PANEL_CLASS;
+  panel.hidden = true;
+  // Portaled panel: fixed positioning so editor overflow cannot clip it.
+  // Guard style access for headless fakes used in unit tests.
+  const panelStyle = (panel as HTMLElement).style;
+  if (panelStyle !== undefined) {
+    panelStyle.position = 'fixed';
+    panelStyle.zIndex = '5000';
+  }
+
+  const filter = doc.createElement('input');
+  filter.type = 'search';
+  filter.className = LANG_FILTER_CLASS;
+  filter.placeholder = LANG_FILTER_PLACEHOLDER;
+  filter.setAttribute('aria-label', LANG_FILTER_PLACEHOLDER);
+  filter.autocomplete = 'off';
+  filter.spellcheck = false;
+
+  const list = doc.createElement('div');
+  list.className = LANG_LIST_CLASS;
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', '代码语言');
+
+  panel.appendChild(filter);
+  panel.appendChild(list);
+  root.appendChild(trigger);
+
+  const portalParent: HTMLElement | null =
+    typeof doc.body !== 'undefined' && doc.body !== null
+      ? (doc.body as HTMLElement)
+      : null;
+
+  const syncTrigger = (): void => {
+    trigger.textContent = languageDisplayLabel(value);
+  };
+
+  const buildItems = (query: string): Array<{ value: string; label: string }> => {
+    const items: Array<{ value: string; label: string }> = [];
+    if (plainLanguageMatches(query)) {
+      items.push({ value: '', label: PLAIN_LANGUAGE_LABEL });
+    }
+    for (const name of filterLanguages(query, languages)) {
+      items.push({ value: name, label: name });
+    }
+    return items;
+  };
+
+  const positionPanel = (): void => {
+    if (typeof trigger.getBoundingClientRect !== 'function') {
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    const style = (panel as HTMLElement).style;
+    if (style === undefined) {
+      return;
+    }
+    const viewportW =
+      typeof window !== 'undefined' ? window.innerWidth : 800;
+    const viewportH =
+      typeof window !== 'undefined' ? window.innerHeight : 600;
+    const width = Math.min(260, Math.max(200, viewportW - 16));
+    let left = rect.left;
+    if (left + width > viewportW - 8) {
+      left = Math.max(8, viewportW - width - 8);
+    }
+    // Prefer below the trigger; flip above when near the bottom.
+    const below = rect.bottom + 6;
+    const estimatedHeight = 280;
+    const top =
+      below + estimatedHeight > viewportH - 8
+        ? Math.max(8, rect.top - estimatedHeight - 6)
+        : below;
+    style.left = `${Math.round(left)}px`;
+    style.top = `${Math.round(top)}px`;
+    style.width = `${Math.round(width)}px`;
+  };
+
+  const renderList = (): void => {
+    filtered = buildItems(filter.value);
+    list.replaceChildren();
+    if (filtered.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = `${LANG_OPTION_CLASS} ${LANG_OPTION_EMPTY_CLASS}`;
+      empty.textContent = LANG_EMPTY_FILTER_LABEL;
+      list.appendChild(empty);
+      activeIndex = -1;
+      return;
+    }
+    if (activeIndex < 0 || activeIndex >= filtered.length) {
+      const selectedIdx = filtered.findIndex((item) => item.value === value);
+      activeIndex = selectedIdx >= 0 ? selectedIdx : 0;
+    }
+    filtered.forEach((item, index) => {
+      const btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = LANG_OPTION_CLASS;
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('data-value', item.value);
+      btn.textContent = item.label;
+      btn.setAttribute('aria-selected', item.value === value ? 'true' : 'false');
+      if (index === activeIndex) {
+        btn.classList.add(LANG_OPTION_ACTIVE_CLASS);
+      }
+      // mousedown + preventDefault keeps focus on the filter and avoids
+      // document outside-close racing the selection.
+      btn.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        choose(item.value);
+      });
+      list.appendChild(btn);
+    });
+    const activeEl = list.children[activeIndex] as HTMLElement | undefined;
+    activeEl?.scrollIntoView({ block: 'nearest' });
+  };
+
+  const detachPanel = (): void => {
+    if (panel.parentNode !== null) {
+      panel.parentNode.removeChild(panel);
+    }
+    panel.hidden = true;
+  };
+
+  const setOpen = (next: boolean): void => {
+    if (open === next) {
+      return;
+    }
+    open = next;
+    root.classList.toggle(LANG_PICKER_OPEN_CLASS, open);
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (focusTimer !== null) {
+      clearTimeout(focusTimer);
+      focusTimer = null;
+    }
+    if (open) {
+      // Suppress outside-close for this opening gesture (~next tick + a bit).
+      ignoreOutsideCloseUntil = Date.now() + 120;
+      filter.value = '';
+      activeIndex = 0;
+      renderList();
+      if (portalParent !== null && panel.parentNode !== portalParent) {
+        portalParent.appendChild(panel);
+      }
+      panel.hidden = false;
+      positionPanel();
+      focusTimer = setTimeout(() => {
+        focusTimer = null;
+        if (!open) return;
+        filter.focus();
+        if (typeof filter.select === 'function') {
+          filter.select();
+        }
+      }, 0);
+    } else {
+      detachPanel();
+    }
+  };
+
+  const choose = (next: string): void => {
+    const normalized = languageSelectValue(next) || (next === '' ? '' : next);
+    const accepted =
+      normalized === '' || languages.includes(normalized) ? normalized : value;
+    const changed = accepted !== value;
+    value = accepted;
+    syncTrigger();
+    setOpen(false);
+    if (changed) {
+      options.onChange?.(value);
+    }
+  };
+
+  /** True when mousedown already handled the gesture (skip click fallback). */
+  let handledByMouseDown = false;
+  const onTriggerMouseDown = (event: Event): void => {
+    // mousedown (not click): complete open before any later click handlers.
+    // preventDefault keeps ProseMirror from taking the gesture.
+    event.preventDefault();
+    event.stopPropagation();
+    handledByMouseDown = true;
+    setOpen(!open);
+  };
+  const onTriggerClick = (event: Event): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    // Fallback only when mousedown was swallowed by the host/editor.
+    if (handledByMouseDown) {
+      handledByMouseDown = false;
+      return;
+    }
+    setOpen(!open);
+  };
+  const onFilterInput = (): void => {
+    activeIndex = 0;
+    renderList();
+  };
+  const onFilterKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (filtered.length === 0) return;
+      activeIndex = (activeIndex + 1) % filtered.length;
+      renderList();
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (filtered.length === 0) return;
+      activeIndex = (activeIndex - 1 + filtered.length) % filtered.length;
+      renderList();
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const item = filtered[activeIndex];
+      if (item !== undefined) {
+        choose(item.value);
+      }
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      trigger.focus();
+    }
+  };
+  const onDocMouseDown = (event: Event): void => {
+    if (!open) return;
+    if (Date.now() < ignoreOutsideCloseUntil) return;
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (root.contains(target) || panel.contains(target)) return;
+    setOpen(false);
+  };
+  const onWindowReposition = (): void => {
+    if (open) positionPanel();
+  };
+
+  trigger.addEventListener('mousedown', onTriggerMouseDown);
+  trigger.addEventListener('click', onTriggerClick);
+  filter.addEventListener('input', onFilterInput);
+  filter.addEventListener('keydown', onFilterKeyDown);
+  // Bubble (not capture): open handler on the trigger runs first on its target.
+  doc.addEventListener('mousedown', onDocMouseDown);
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', onWindowReposition);
+    window.addEventListener('scroll', onWindowReposition, true);
+  }
+
+  syncTrigger();
+
+  return {
+    element: root,
+    getValue(): string {
+      return value;
+    },
+    setValue(next: string): void {
+      value = languageSelectValue(next);
+      syncTrigger();
+      if (open) {
+        renderList();
+      }
+    },
+    destroy(): void {
+      setOpen(false);
+      if (focusTimer !== null) {
+        clearTimeout(focusTimer);
+        focusTimer = null;
+      }
+      trigger.removeEventListener('mousedown', onTriggerMouseDown);
+      trigger.removeEventListener('click', onTriggerClick);
+      filter.removeEventListener('input', onFilterInput);
+      filter.removeEventListener('keydown', onFilterKeyDown);
+      doc.removeEventListener('mousedown', onDocMouseDown);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('resize', onWindowReposition);
+        window.removeEventListener('scroll', onWindowReposition, true);
+      }
+      detachPanel();
+    },
+  };
+}
+
 export async function writeClipboardText(text: string): Promise<boolean> {
   try {
     if (
@@ -327,7 +665,7 @@ export async function writeClipboardText(text: string): Promise<boolean> {
       return true;
     }
   } catch {
-    // 降级到 legacy 路径。
+    // fall through
   }
   return legacyClipboardCopy(text);
 }
@@ -352,28 +690,97 @@ function legacyClipboardCopy(text: string): boolean {
 }
 
 /**
- * code_block nodeView：外层定位包裹 div（`lightink-code-block`，复制按钮的
- * 定位上下文，非滚动容器）内嵌 `<pre><code>`（contentDOM=<code>，PM 独占文本，
- * <pre> 是唯一横向滚动容器）。复制按钮固定在包裹层右上角、始终可见（CSS 控制
- * 低透明度 → 悬停全显），不随代码横向滚动被带走；滚轮在代码块上纵向滚动时
- * 转为横向滚动（Chromium 不会自动把垂直滚轮映射到横向滚动容器）。
- * 高亮 decoration 由 PM 作用到返回的外层 div 上（hljs 颜色经继承进入 <code>）。
+ * Apply language attr on a code_block at `pos` (menu / select path).
+ * Returns false when the node is missing or already has the same language.
  */
-function createCodeBlockNodeView(node: PMNode): NodeView {
+export function setCodeBlockLanguage(
+  view: EditorView,
+  pos: number,
+  language: string,
+): boolean {
+  const node = view.state.doc.nodeAt(pos);
+  if (node === null || node.type.name !== 'code_block') {
+    return false;
+  }
+  const next = language.trim();
+  const prev = typeof node.attrs['language'] === 'string' ? node.attrs['language'] : '';
+  if (prev === next) {
+    return false;
+  }
+  const tr = view.state.tr.setNodeMarkup(pos, undefined, {
+    ...node.attrs,
+    language: next,
+  });
+  view.dispatch(tr);
+  return true;
+}
+
+/**
+ * code_block nodeView — dedicated header toolbar above the code surface
+ * (industry pattern: language left, actions right; never overlay first lines).
+ *
+ * Interactive chrome MUST use contenteditable=false + stopEvent, otherwise
+ * ProseMirror swallows mousedown/click inside the nodeView and the language
+ * picker / copy button appear dead.
+ */
+function createCodeBlockNodeView(
+  initialNode: PMNode,
+  view: EditorView,
+  getPos: () => number | undefined,
+): NodeView {
+  let node = initialNode;
+
   const dom = document.createElement('div');
   dom.className = 'lightink-code-block';
   dom.setAttribute('data-lightink-code', '');
-  // 作为按钮绝对定位的上下文（按钮在滚动容器之外）。
-  dom.style.position = 'relative';
+
+  // Header toolbar: reserved row above <pre>, so chrome never covers code.
+  const header = document.createElement('div');
+  header.className = CODE_HEADER_CLASS;
+  // Keep PM out of the chrome row (selection / editing / event capture).
+  header.contentEditable = 'false';
+  header.setAttribute('contenteditable', 'false');
+
+  const currentLang =
+    typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+  const langPicker = createLanguagePicker({
+    current: currentLang,
+    onChange: (language) => {
+      const pos = getPos();
+      if (typeof pos !== 'number') {
+        return;
+      }
+      setCodeBlockLanguage(view, pos, language);
+    },
+  });
+  header.appendChild(langPicker.element);
+
+  const btn = createCopyButton();
+  header.appendChild(btn);
 
   const pre = document.createElement('pre');
   pre.className = 'lightink-code-pre';
   const contentDOM = document.createElement('code');
   pre.appendChild(contentDOM);
+
+  dom.appendChild(header);
   dom.appendChild(pre);
 
-  const btn = createCopyButton();
-  dom.appendChild(btn);
+  const syncDiagramClass = (): void => {
+    const info =
+      typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+    // Mermaid blocks: diagram-only chrome; source hidden once rendered (CSS).
+    dom.classList.toggle('is-diagram', isDiagramLanguage(info));
+    dom.dataset.language = languageSelectValue(info) || 'plain';
+  };
+  syncDiagramClass();
+
+  const syncLanguagePicker = (): void => {
+    const info =
+      typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+    langPicker.setValue(info);
+    syncDiagramClass();
+  };
 
   const onCopy = async (): Promise<void> => {
     const ok = await writeClipboardText(readCodeSource(contentDOM));
@@ -382,18 +789,15 @@ function createCodeBlockNodeView(node: PMNode): NodeView {
       window.setTimeout(() => setCopiedState(btn, false), COPY_FEEDBACK_MS);
     }
   };
-  // 阻止按钮 mousedown 抢走编辑器焦点/选区（preventDefault 不影响 click 本身）。
   const onBtnMouseDown = (event: MouseEvent): void => {
     event.preventDefault();
+    event.stopPropagation();
   };
-  // 垂直滚轮 → 横向滚动：代码块只能横向溢出时，滚轮直接驱动 scrollLeft
-  // （否则 Chromium 会把滚轮事件链到页面滚动，用户感知为「代码块无法滚动」）。
   const onWheel = (event: WheelEvent): void => {
     if (event.deltaY === 0) return;
     if (pre.scrollWidth <= pre.clientWidth) return;
     const before = pre.scrollLeft;
     pre.scrollLeft += event.deltaY;
-    // 已到端点时放行，让页面继续滚动（滚轮链语义）。
     if (pre.scrollLeft !== before) {
       event.preventDefault();
     }
@@ -406,9 +810,39 @@ function createCodeBlockNodeView(node: PMNode): NodeView {
   return {
     dom,
     contentDOM,
-    // 同类型节点（含 language attr 变化、文本编辑）复用本视图；PM 据此同步 <code>。
-    update: (incoming: PMNode) => incoming.type === node.type,
+    /**
+     * Tell ProseMirror to ignore events targeting the header chrome so our
+     * language picker / copy handlers actually run.
+     */
+    stopEvent(event: Event): boolean {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return false;
+      }
+      if (header.contains(target) || langPicker.element.contains(target)) {
+        return true;
+      }
+      // Portaled panel is on document.body; also stop if somehow retargeted here.
+      return false;
+    },
+    ignoreMutation(mutation: MutationRecord | { type: string; target: Node }): boolean {
+      // Ignore attribute/childList noise from the non-editable chrome row.
+      const target = 'target' in mutation ? mutation.target : null;
+      if (target instanceof Node && header.contains(target)) {
+        return true;
+      }
+      return false;
+    },
+    update: (incoming: PMNode) => {
+      if (incoming.type !== node.type) {
+        return false;
+      }
+      node = incoming;
+      syncLanguagePicker();
+      return true;
+    },
     destroy(): void {
+      langPicker.destroy();
       btn.removeEventListener('mousedown', onBtnMouseDown);
       btn.removeEventListener('click', onCopy);
       pre.removeEventListener('wheel', onWheel);
@@ -417,12 +851,12 @@ function createCodeBlockNodeView(node: PMNode): NodeView {
 }
 
 // ---------------------------------------------------------------------------
-// Milkdown 插件
+// Milkdown plugin
 // ---------------------------------------------------------------------------
 
 /**
- * Milkdown 插件（`$prose`）：为 code_block 注入语法高亮 decorations，并叠加
- * 悬浮复制按钮（R8，nodeView）。在 mountEditor 中于 commonmark/gfm/history 之后注册。
+ * Milkdown `$prose` plugin: code_block highlight decorations + language select
+ * + copy button. Register after commonmark/gfm/history in mountEditor.
  */
 export const codeHighlightPlugin = $prose(
   () =>
@@ -431,7 +865,6 @@ export const codeHighlightPlugin = $prose(
       state: {
         init: (_config, state) => buildCodeDecorations(state.doc),
         apply: (tr, old, _oldState, newState) => {
-          // 仅文档变化时重算；纯选区/事务元数据变化复用旧集合（大文档 R10）。
           return tr.docChanged ? buildCodeDecorations(newState.doc) : old;
         },
       },
@@ -439,9 +872,9 @@ export const codeHighlightPlugin = $prose(
         decorations(state) {
           return codeHighlightPluginKey.getState(state);
         },
-        // R8：每个 code_block 经 nodeView 叠加复制按钮（高亮仍由 decorations 提供）。
         nodeViews: {
-          code_block: (node: PMNode) => createCodeBlockNodeView(node),
+          code_block: (node: PMNode, view: EditorView, getPos: () => number | undefined) =>
+            createCodeBlockNodeView(node, view, getPos),
         },
       },
     }),

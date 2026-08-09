@@ -1,15 +1,15 @@
 /**
- * 大纲侧栏视图（T7, R7）：实时大纲列表 + 点击跳转 + 可折叠。
+ * 大纲侧栏视图（T7, R7）：实时大纲列表 + 点击跳转 + 三态显示。
  *
  * 职责：
  *   - 按活动标签的 markdown 内容重建大纲（`buildOutline`，见 outline-model）；
  *   - `scheduleRefresh()` 防抖重算（默认 250ms），由 TabManager 的
  *     `onActiveContentChanged` 回调驱动（切换标签/活动标签内容变化）；
  *   - 点击条目 → 在活动标签宿主 DOM 中按序号锚点定位第 n 个 h1-h6
- *     并 `scrollIntoView({ block: 'start' })`（锚点策略见 outline-model
- *     头部注释：MDAST 文档顺序与渲染 DOM 顺序一致）；
- *   - 折叠开关：折叠后隐藏标题与列表，侧栏收缩为窄条（仅留展开按钮）；
- *     折叠状态仅会话内有效，不持久化（极简外壳不做状态膨胀）。
+ *     并 `scrollIntoView({ block: 'start' })`；
+ *   - 显示三态循环（菜单 / Ctrl+Shift+L / 侧栏按钮）：
+ *       expanded → rail（窄条 »）→ hidden（完全隐藏）→ expanded
+ *     状态仅会话内有效，不持久化。
  *
  * 可测试性：DOM 创建经 `doc` 注入、宿主/内容经 `getActiveHost` /
  * `getActiveMarkdown` 注入，node 环境下以 fake 元素驱动全部行为。
@@ -22,6 +22,11 @@ import { buildOutline, type OutlineItem } from './outline-model.js';
 const HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
 
 const DEFAULT_DEBOUNCE_MS = 250;
+
+/** expanded: full panel; rail: narrow reopen strip; hidden: no sidebar chrome. */
+export type OutlineVisibility = 'expanded' | 'rail' | 'hidden';
+
+const VISIBILITY_CYCLE: readonly OutlineVisibility[] = ['expanded', 'rail', 'hidden'];
 
 export interface OutlineViewDeps {
   /** 当前活动标签的宿主元素（无活动标签时返回 null）。 */
@@ -37,10 +42,24 @@ export interface OutlineViewDeps {
 export interface OutlineView {
   /** 侧栏根元素（由调用方挂入外壳的侧栏槽位）。 */
   readonly root: HTMLElement;
-  /** 当前是否处于折叠态。 */
+  /** Current visibility mode. */
+  readonly visibility: OutlineVisibility;
+  /**
+   * Backward-compatible: true when not fully expanded (rail or hidden).
+   * Prefer `visibility` for new code.
+   */
   readonly collapsed: boolean;
-  /** 切换折叠/展开。 */
+  /** Cycle expanded → rail → hidden → expanded. */
   toggleCollapse(): void;
+  /** Set exact visibility (immersive / fullscreen / tests). */
+  setVisibility(next: OutlineVisibility): void;
+  /**
+   * Backward-compatible boolean API:
+   *   true  → rail (narrow strip, one click to expand)
+   *   false → expanded
+   * For full hide use setVisibility('hidden').
+   */
+  setCollapsed(next: boolean): void;
   /** 防抖调度一次大纲重算（内容变化/切换标签时调用）。 */
   scheduleRefresh(): void;
   /** 立即重算并渲染（绕过防抖）。 */
@@ -49,12 +68,18 @@ export interface OutlineView {
   destroy(): void;
 }
 
+function nextVisibility(current: OutlineVisibility): OutlineVisibility {
+  const idx = VISIBILITY_CYCLE.indexOf(current);
+  return VISIBILITY_CYCLE[(idx + 1) % VISIBILITY_CYCLE.length] ?? 'expanded';
+}
+
 export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   const doc = deps.doc ?? document;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
 
   const root = doc.createElement('div');
   root.classList.add('lightink-outline');
+  root.dataset.visibility = 'expanded';
 
   const header = doc.createElement('div');
   header.classList.add('lightink-outline-header');
@@ -62,9 +87,10 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   title.classList.add('lightink-outline-title');
   title.textContent = '大纲';
   const toggle = doc.createElement('button');
+  toggle.type = 'button';
   toggle.classList.add('lightink-outline-toggle');
-  toggle.setAttribute('title', '折叠/展开大纲');
-  toggle.setAttribute('aria-label', '折叠/展开大纲');
+  toggle.setAttribute('title', '折叠大纲');
+  toggle.setAttribute('aria-label', '折叠大纲');
   toggle.setAttribute('aria-expanded', 'true');
   toggle.textContent = '«';
   header.appendChild(title);
@@ -76,7 +102,7 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   root.appendChild(header);
   root.appendChild(body);
 
-  let collapsed = false;
+  let visibility: OutlineVisibility = 'expanded';
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   /** 点击跳转：按序号锚点取活动宿主中第 n 个 h1-h6 并滚动到视口顶部。 */
@@ -135,25 +161,80 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
     }
   }
 
+  function syncHostClass(): void {
+    try {
+      const host = (root as { parentElement?: HTMLElement | null }).parentElement ?? null;
+      if (host?.classList === undefined) {
+        return;
+      }
+      host.classList.toggle('is-outline-rail', visibility === 'rail');
+      host.classList.toggle('is-outline-hidden', visibility === 'hidden');
+      host.classList.toggle('is-outline-collapsed', visibility !== 'expanded');
+    } catch {
+      /* ignore missing parent / fake DOM */
+    }
+  }
+
+  function applyVisibility(next: OutlineVisibility): void {
+    visibility = next;
+    root.dataset.visibility = next;
+    root.classList.toggle('is-rail', next === 'rail');
+    root.classList.toggle('is-hidden', next === 'hidden');
+    // Legacy class kept for older CSS/tests: any non-expanded mode.
+    root.classList.toggle('collapsed', next !== 'expanded');
+
+    if (next === 'hidden') {
+      root.setAttribute('hidden', '');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('title', '显示大纲');
+      toggle.setAttribute('aria-label', '显示大纲');
+      toggle.textContent = '»';
+    } else if (next === 'rail') {
+      root.removeAttribute('hidden');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('title', '展开大纲');
+      toggle.setAttribute('aria-label', '展开大纲');
+      toggle.textContent = '»';
+    } else {
+      root.removeAttribute('hidden');
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.setAttribute('title', '折叠大纲');
+      toggle.setAttribute('aria-label', '折叠大纲');
+      toggle.textContent = '«';
+    }
+    syncHostClass();
+  }
+
   toggle.addEventListener('click', () => {
+    // Rail strip is a reopen control: click expands. Menu / Ctrl+Shift+L still
+    // cycle expanded → rail → hidden → expanded for full three-state control.
+    if (visibility === 'rail') {
+      applyVisibility('expanded');
+      return;
+    }
     view.toggleCollapse();
   });
 
   const view: OutlineView = {
     root,
+    get visibility() {
+      return visibility;
+    },
     get collapsed() {
-      return collapsed;
+      return visibility !== 'expanded';
     },
     toggleCollapse(): void {
-      collapsed = !collapsed;
-      toggle.setAttribute('aria-expanded', String(!collapsed));
-      if (collapsed) {
-        root.classList.add('collapsed');
-        toggle.textContent = '»';
-      } else {
-        root.classList.remove('collapsed');
-        toggle.textContent = '«';
+      applyVisibility(nextVisibility(visibility));
+    },
+    setVisibility(next: OutlineVisibility): void {
+      if (visibility === next) {
+        return;
       }
+      applyVisibility(next);
+    },
+    setCollapsed(next: boolean): void {
+      // true → rail (recoverable strip); false → expanded. Full hide is setVisibility.
+      applyVisibility(next ? 'rail' : 'expanded');
     },
     scheduleRefresh(): void {
       cancelTimer();

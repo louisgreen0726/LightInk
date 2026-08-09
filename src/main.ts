@@ -12,12 +12,14 @@ import { message as dialogMessage, open as openDialog, save } from '@tauri-apps/
 import { mountEditor } from './editor/index.js';
 import { classifyLink } from './editor/link-navigation.js';
 import { imageMarkdownSnippet } from './editor/plugins/image.js';
+import { setFormatToolbarLinkEditor } from './editor/plugins/format-toolbar.js';
 import { SourceView } from './editor/source-view.js';
 import {
   buildEditorContextMenuItems,
   buildTabContextMenuItems,
   createContextMenu,
 } from './ui/context-menu.js';
+import { showLinkDialog, showOpenLinkConfirm } from './ui/link-dialog.js';
 import {
   getInsertElement,
   insertElementMarkdown,
@@ -43,6 +45,7 @@ import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
 import { ShortcutRegistry, type ShortcutAction } from './ui/shortcuts.js';
+import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { showVersionsModal, type VersionMeta } from './ui/versions.js';
 import './theme/tokens.css';
@@ -63,6 +66,8 @@ const themeService = new ThemeService({
 
 // 外壳按钮/快捷键回调仅在用户交互时触发，此时 manager 必然已赋值。
 let manager: TabManager;
+// Shell is assigned after createAppShell returns; menu labels/actions use optional access.
+let shell: ReturnType<typeof createAppShell>;
 // T7：大纲视图在 TabManager 之后创建（见下），回调触发时必然已赋值。
 let outline: OutlineView;
 
@@ -186,22 +191,110 @@ async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
   }
 }
 
-/** 在活动编辑器宿主派发一次 Ctrl+Z / Ctrl+Shift+Z（撤销/重做 MVP）。 */
-function dispatchEditorCombo(combo: 'Ctrl+Z' | 'Ctrl+Shift+Z'): void {
-  const host = manager.activeTab?.hostElement ?? null;
-  if (host === null) {
+/** Focus the active writing surface (source textarea or ProseMirror view). */
+function focusActiveEditor(): void {
+  const tab = manager?.activeTab ?? null;
+  if (tab === null) {
     return;
   }
-  host.focus();
-  host.dispatchEvent(
-    new KeyboardEvent('keydown', {
-      key: 'z',
-      ctrlKey: true,
-      shiftKey: combo === 'Ctrl+Shift+Z',
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
+  const sourceView = sourceViews.get(tab.id);
+  if (sourceView !== undefined && sourceView.isSourceMode) {
+    sourceView.focusEditor();
+    return;
+  }
+  tab.editor.focus();
+}
+
+/**
+ * Run after the menu click stack unwinds so the editor can take focus away from
+ * the just-clicked menu button (menus steal focus on open/click).
+ */
+function afterMenuFocus(run: () => void): void {
+  // Double rAF: first frame closes/hides the menu panel; second frame focuses editor.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(run);
+  });
+}
+
+/** Menu undo: ProseMirror history in WYSIWYG; native undo in source mode. */
+function undoActiveEditor(): void {
+  afterMenuFocus(() => {
+    const tab = manager?.activeTab ?? null;
+    if (tab === null) {
+      return;
+    }
+    const sourceView = sourceViews.get(tab.id);
+    if (sourceView !== undefined && sourceView.isSourceMode) {
+      sourceView.focusEditor();
+      document.execCommand('undo');
+      manager.handleContentChanged(tab.id);
+      return;
+    }
+    tab.editor.undo();
+    tab.editor.focus();
+    manager.handleContentChanged(tab.id);
+  });
+}
+
+/** Menu redo: ProseMirror history in WYSIWYG; native redo in source mode. */
+function redoActiveEditor(): void {
+  afterMenuFocus(() => {
+    const tab = manager?.activeTab ?? null;
+    if (tab === null) {
+      return;
+    }
+    const sourceView = sourceViews.get(tab.id);
+    if (sourceView !== undefined && sourceView.isSourceMode) {
+      sourceView.focusEditor();
+      document.execCommand('redo');
+      manager.handleContentChanged(tab.id);
+      return;
+    }
+    tab.editor.redo();
+    tab.editor.focus();
+    manager.handleContentChanged(tab.id);
+  });
+}
+
+/**
+ * Clipboard menu actions must run against a focused editable target.
+ * Menu clicks steal focus, so re-focus before cut/copy/paste.
+ */
+function runClipboardCommand(command: 'cut' | 'copy' | 'paste'): void {
+  afterMenuFocus(() => {
+    focusActiveEditor();
+    if (command === 'paste') {
+      void navigator.clipboard
+        ?.readText()
+        .then((text) => {
+          if (typeof text !== 'string' || text === '') {
+            return;
+          }
+          focusActiveEditor();
+          const ok = document.execCommand('insertText', false, text);
+          if (!ok) {
+            // Fallback for environments that still allow the paste command.
+            document.execCommand('paste');
+          }
+          const tab = manager?.activeTab ?? null;
+          if (tab !== null) {
+            manager.handleContentChanged(tab.id);
+          }
+        })
+        .catch(() => {
+          focusActiveEditor();
+          document.execCommand('paste');
+        });
+      return;
+    }
+    document.execCommand(command);
+    if (command === 'cut') {
+      const tab = manager?.activeTab ?? null;
+      if (tab !== null) {
+        manager.handleContentChanged(tab.id);
+      }
+    }
+  });
 }
 
 // T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
@@ -251,7 +344,7 @@ const exportDeps: ExportServiceDeps = {
   },
 };
 
-const shell = createAppShell(
+shell = createAppShell(
   app,
   {
     onNew: () => void manager.newTab(),
@@ -293,11 +386,11 @@ const shell = createAppShell(
       commitActiveSourceMode();
       void exportActiveTabPdf(exportDeps);
     },
-    onUndo: () => dispatchEditorCombo('Ctrl+Z'),
-    onRedo: () => dispatchEditorCombo('Ctrl+Shift+Z'),
-    onCut: () => document.execCommand('cut'),
-    onCopy: () => document.execCommand('copy'),
-    onPaste: () => document.execCommand('paste'),
+    onUndo: () => undoActiveEditor(),
+    onRedo: () => redoActiveEditor(),
+    onCut: () => runClipboardCommand('cut'),
+    onCopy: () => runClipboardCommand('copy'),
+    onPaste: () => runClipboardCommand('paste'),
     onInsertElement: insertElement,
     onToggleTheme: () => {
       themeService.toggle();
@@ -313,9 +406,63 @@ const shell = createAppShell(
     onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),
+    onToggleFullscreen: () => {
+      void enterOrExitFullscreen();
+    },
+    // Shell is assigned after createAppShell returns; menu opens re-evaluate.
+    isChromePinned: () => shell?.isChromePinned() === true,
+    onToggleChromePinned: () => {
+      toggleChromePinnedWithOutline();
+    },
   },
   { shortcutBindings: getShortcutBindings },
 );
+
+/**
+ * Immersive chrome: unpinning hides menu + tabs; also fully hides the outline
+ * so the writing surface is unobstructed. Pinning restores outline if we hid it.
+ */
+let outlineVisibilityBeforeImmersive: import('./outline/outline-view.js').OutlineVisibility | null =
+  null;
+
+function toggleChromePinnedWithOutline(): void {
+  if (shell === undefined) {
+    return;
+  }
+  const wasPinned = shell.isChromePinned();
+  const nowPinned = shell.toggleChromePinned();
+  if (!nowPinned && wasPinned) {
+    // Enter immersive (unpinned): fully hide outline (not just rail).
+    if (outline !== undefined && outline.visibility !== 'hidden') {
+      outlineVisibilityBeforeImmersive = outline.visibility;
+      outline.setVisibility('hidden');
+    }
+    return;
+  }
+  if (nowPinned && outlineVisibilityBeforeImmersive !== null && outline !== undefined) {
+    outline.setVisibility(outlineVisibilityBeforeImmersive);
+    outlineVisibilityBeforeImmersive = null;
+  }
+}
+
+/** Fullscreen also forces unpinned chrome + fully hidden outline for a clean canvas. */
+async function enterOrExitFullscreen(): Promise<void> {
+  const next = await toggleFullscreen();
+  if (next) {
+    if (shell !== undefined && shell.isChromePinned()) {
+      shell.setChromePinned(false);
+    }
+    if (outline !== undefined && outline.visibility !== 'hidden') {
+      outlineVisibilityBeforeImmersive = outline.visibility;
+      outline.setVisibility('hidden');
+    }
+  } else if (outlineVisibilityBeforeImmersive !== null && outline !== undefined) {
+    // Leaving fullscreen: restore prior outline mode if we hid it.
+    // Keep chrome unpinned so user stays in writing mode unless they re-pin.
+    outline.setVisibility(outlineVisibilityBeforeImmersive);
+    outlineVisibilityBeforeImmersive = null;
+  }
+}
 
 /** 关闭未保存标签的三选一确认（应用内主题化弹层，一次给出全部选择）。 */
 async function confirmClose(tab: { title: string }): Promise<CloseChoice> {
@@ -423,6 +570,18 @@ manager = new TabManager({
     void invoke('create_version', { filePath, content }).catch(() => undefined);
   },
   onLinkNavigate: (href) => handleLinkNavigation(href),
+  confirmLinkOpen: (href) => showOpenLinkConfirm(document, href),
+});
+
+// Format toolbar / context menu: themed link editor (text + href).
+setFormatToolbarLinkEditor(async (initial) => {
+  const result = await showLinkDialog(document, {
+    title: initial.href ? '编辑链接' : '添加链接',
+    initialText: initial.text,
+    initialHref: initial.href,
+    confirmLabel: '应用',
+  });
+  return result;
 });
 
 // T7：大纲侧栏。闭包读取活动标签的宿主/markdown；刷新由 TabManager 的
@@ -557,6 +716,12 @@ const shortcuts = new ShortcutRegistry({
   'toggle-source-mode': () => toggleActiveSourceMode(),
   'toggle-menu-chrome': () => shell.toggleMenuChrome(),
   'toggle-tabs-chrome': () => shell.toggleTabsChrome(),
+  'toggle-chrome-pin': () => {
+    toggleChromePinnedWithOutline();
+  },
+  'toggle-fullscreen': () => {
+    void enterOrExitFullscreen();
+  },
   'next-tab': () => cycleActiveTab(1),
   'prev-tab': () => cycleActiveTab(-1),
 });
@@ -578,40 +743,32 @@ function showEditorContextMenu(x: number, y: number): void {
   const items = buildEditorContextMenuItems(
     { hasSelection, hasLink, inSourceMode: inSource },
     {
-      cut: () => {
-        if (inSource) sourceView?.focusEditor();
-        document.execCommand('cut');
-      },
-      copy: () => {
-        if (inSource) sourceView?.focusEditor();
-        document.execCommand('copy');
-      },
-      paste: () => {
-        if (inSource) sourceView?.focusEditor();
-        void navigator.clipboard?.readText().then((text) => {
-          if (typeof text === 'string' && text !== '') {
-            document.execCommand('insertText', false, text);
-          }
-        });
-      },
-      pastePlain: () => {
-        if (inSource) sourceView?.focusEditor();
-        void navigator.clipboard?.readText().then((text) => {
-          if (typeof text === 'string' && text !== '') {
-            document.execCommand('insertText', false, text);
-          }
-        });
-      },
+      cut: () => runClipboardCommand('cut'),
+      copy: () => runClipboardCommand('copy'),
+      paste: () => runClipboardCommand('paste'),
+      pastePlain: () => runClipboardCommand('paste'),
       bold: () => tab.editor.toggleMark('strong'),
       italic: () => tab.editor.toggleMark('emphasis'),
       link: () => {
-        const href = typeof prompt === 'function' ? (prompt('链接地址（https://…）') ?? '') : '';
-        if (href !== '') tab.editor.setLink(href);
+        void (async () => {
+          const cursorLink = tab.editor.getLinkAtCursor() ?? link;
+          const result = await showLinkDialog(document, {
+            title: cursorLink !== null ? '编辑链接' : '添加链接',
+            initialText: cursorLink?.text ?? '',
+            initialHref: cursorLink?.href ?? '',
+            confirmLabel: '应用',
+          });
+          if (result !== null) {
+            tab.editor.setLink(result.href, result.text);
+          }
+        })();
       },
       openLink: () => {
-        // 与左键 linkNavigationPlugin 同路径：classifyLink 分类后分派到
-        // open_in_browser / openFile / open_path_default，覆盖 external/本地.md/本地文件。
-        if (link !== null) handleLinkNavigation(link.href);
+        // Right-click open: still confirm, then same classify path as Ctrl+click.
+        if (link === null) return;
+        void showOpenLinkConfirm(document, link.href).then((ok) => {
+          if (ok) handleLinkNavigation(link.href);
+        });
       },
       copyLinkAddress: () => {
         if (link !== null) void navigator.clipboard?.writeText(link.href);
@@ -671,10 +828,12 @@ const SHORTCUT_LABELS: Readonly<Record<ShortcutAction, string>> = {
   'toggle-theme': '切换主题',
   'insert-link': '插入链接',
   'insert-image': '插入图片',
-  'toggle-outline': '大纲显隐',
+  'toggle-outline': '大纲切换',
   'toggle-source-mode': '源码模式',
   'toggle-menu-chrome': '菜单栏显隐',
   'toggle-tabs-chrome': '标签栏显隐',
+  'toggle-chrome-pin': '固定/取消固定导航栏',
+  'toggle-fullscreen': '全屏',
   'next-tab': '下一个标签',
   'prev-tab': '上一个标签',
 };

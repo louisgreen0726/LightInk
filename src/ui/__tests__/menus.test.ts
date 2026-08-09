@@ -28,7 +28,7 @@ class FakeEl {
   parent: FakeEl | null = null;
   private readonly listeners = new Map<string, Array<(e: FakeEvent) => void>>();
   readonly classList = {
-    contains: (c: string): boolean => this.className.split(/\s+/).includes(c),
+    contains: (c: string): boolean => this.className.split(/\s+/).filter(Boolean).includes(c),
     add: (c: string): void => {
       if (!this.classList.contains(c)) {
         this.className = this.className === '' ? c : `${this.className} ${c}`;

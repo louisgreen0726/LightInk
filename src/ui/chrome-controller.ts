@@ -1,10 +1,11 @@
 /**
  * Shell chrome visibility controller (immersive writing redesign R2/R3).
  *
- * Owns pure reveal/dismiss/hold/hysteresis state for chrome surfaces so the
+ * Owns pure reveal/dismiss/hold/hysteresis/pin state for chrome surfaces so the
  * app shell can default to editor-first paint and only show menu/tab chrome on
- * demand. DOM class application stays in app-shell; this module is headless-
- * testable with injectable timers.
+ * demand — unless the user pins the navigation chrome permanently.
+ * DOM class application stays in app-shell; this module is headless-testable
+ * with injectable timers.
  */
 
 export type ChromeSurface = 'menu' | 'tabs';
@@ -18,12 +19,21 @@ export interface ChromeControllerOptions {
 
 export interface ChromeController {
   isRevealed(surface: ChromeSurface): boolean;
+  /** True when the surface is permanently pinned open (no auto-hide). */
+  isPinned(surface: ChromeSurface): boolean;
   /** Force-show a surface (hotkey / programmatic). */
   reveal(surface: ChromeSurface): void;
-  /** Hide unless held open by a nested menu. */
+  /** Hide unless held open by a nested menu or pinned. */
   dismiss(surface: ChromeSurface): void;
-  /** Toggle reveal state (hotkey). */
+  /** Toggle reveal state (hotkey). When pinned, stays revealed. */
   toggle(surface: ChromeSurface): void;
+  /**
+   * Pin/unpin a surface. Pinning force-reveals and blocks leave/dismiss;
+   * unpinning re-evaluates leave (hides if pointer is outside and not held).
+   */
+  setPinned(surface: ChromeSurface, pinned: boolean): void;
+  /** Toggle pin for a surface; returns the new pinned value. */
+  togglePinned(surface: ChromeSurface): boolean;
   /** While true, dismiss/leave will not hide the surface (open dropdown). */
   setHold(surface: ChromeSurface, hold: boolean): void;
   pointerEnter(surface: ChromeSurface): void;
@@ -35,6 +45,7 @@ export interface ChromeController {
 interface SurfaceState {
   revealed: boolean;
   hold: boolean;
+  pinned: boolean;
   pointerInside: boolean;
   leaveTimer: number | null;
 }
@@ -70,6 +81,7 @@ export function createChromeController(
       state = {
         revealed: false,
         hold: false,
+        pinned: false,
         pointerInside: false,
         leaveTimer: null,
       };
@@ -88,13 +100,13 @@ export function createChromeController(
 
   function scheduleLeave(surface: ChromeSurface): void {
     const state = stateOf(surface);
-    if (state.hold || state.pointerInside) {
+    if (state.hold || state.pinned || state.pointerInside) {
       return;
     }
     clearLeave(surface);
     state.leaveTimer = schedule(() => {
       state.leaveTimer = null;
-      if (!state.hold && !state.pointerInside) {
+      if (!state.hold && !state.pinned && !state.pointerInside) {
         state.revealed = false;
       }
     }, leaveDelayMs);
@@ -107,7 +119,7 @@ export function createChromeController(
 
   function dismiss(surface: ChromeSurface): void {
     const state = stateOf(surface);
-    if (state.hold) {
+    if (state.hold || state.pinned) {
       return;
     }
     clearLeave(surface);
@@ -116,11 +128,35 @@ export function createChromeController(
 
   function toggle(surface: ChromeSurface): void {
     const state = stateOf(surface);
+    if (state.pinned) {
+      // Pinned chrome stays visible; toggle is a no-op reveal refresh.
+      state.revealed = true;
+      clearLeave(surface);
+      return;
+    }
     if (state.revealed) {
       dismiss(surface);
     } else {
       reveal(surface);
     }
+  }
+
+  function setPinned(surface: ChromeSurface, pinned: boolean): void {
+    const state = stateOf(surface);
+    state.pinned = pinned;
+    if (pinned) {
+      clearLeave(surface);
+      state.revealed = true;
+      return;
+    }
+    // Unpinned: if pointer already left and not held, start leave hysteresis.
+    scheduleLeave(surface);
+  }
+
+  function togglePinned(surface: ChromeSurface): boolean {
+    const next = !stateOf(surface).pinned;
+    setPinned(surface, next);
+    return next;
   }
 
   function setHold(surface: ChromeSurface, hold: boolean): void {
@@ -156,9 +192,12 @@ export function createChromeController(
 
   return {
     isRevealed: (surface) => stateOf(surface).revealed,
+    isPinned: (surface) => stateOf(surface).pinned,
     reveal,
     dismiss,
     toggle,
+    setPinned,
+    togglePinned,
     setHold,
     pointerEnter,
     pointerLeave,

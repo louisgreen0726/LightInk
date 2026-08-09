@@ -8,6 +8,8 @@
  * 键位说明：
  *   - Ctrl+T 在多数浏览器/WebView 中是保留键（新建标签页），避开；
  *   - Alt+T 切换标签栏 chrome（与 Alt+M 菜单对称）；
+ *   - Alt+P 固定/取消固定导航栏（菜单+标签常驻）；
+ *   - F11 切换原生全屏；
  *   - Ctrl+Tab / Ctrl+Shift+Tab 在标签栏折叠时仍可切换活动文档；
  *   - Ctrl+J 在无浏览器外壳的 Tauri WebView2 中无默认行为，用作主题切换；
  *   - 监听挂在 document 的捕获阶段，优先于编辑器/页面默认行为（如 WebView
@@ -33,6 +35,8 @@ export type ShortcutAction =
   | 'toggle-source-mode'
   | 'toggle-menu-chrome'
   | 'toggle-tabs-chrome'
+  | 'toggle-chrome-pin'
+  | 'toggle-fullscreen'
   | 'next-tab'
   | 'prev-tab';
 
@@ -51,6 +55,8 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   'toggle-menu-chrome': 'Alt+M',
   // Immersive tabs chrome + cycling without a permanently visible tab bar (R3).
   'toggle-tabs-chrome': 'Alt+T',
+  'toggle-chrome-pin': 'Alt+P',
+  'toggle-fullscreen': 'F11',
   'next-tab': 'Ctrl+Tab',
   'prev-tab': 'Ctrl+Shift+Tab',
 };
@@ -116,6 +122,11 @@ export function isEditableTarget(target: unknown): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+/** Function keys and other non-text global chords that must work inside the editor. */
+export function isGlobalFunctionKey(key: string): boolean {
+  return /^f([1-9]|1[0-2])$/.test(key.toLowerCase());
+}
+
 export type ShortcutHandlers = Partial<Record<ShortcutAction, () => void>>;
 
 interface ListenerTarget {
@@ -154,7 +165,8 @@ export class ShortcutRegistry {
 
   /**
    * 处理一次 keydown：命中已注册组合则 preventDefault 并派发处理器。
-   * 返回 true 表示已处理。无修饰键组合在可编辑目标内被忽略。
+   * 返回 true 表示已处理。无修饰键的“可打印键”在可编辑目标内被忽略；
+   * 功能键（F1–F12 等）即使焦点在编辑器内仍生效（如 F11 全屏）。
    */
   handleKeyDown(event: KeyboardEventLike): boolean {
     for (const action of Object.keys(this.handlers) as ShortcutAction[]) {
@@ -167,7 +179,12 @@ export class ShortcutRegistry {
         continue;
       }
       const parsed = parseCombo(combo);
-      if (!parsed.ctrl && !parsed.alt && isEditableTarget(event.target)) {
+      if (
+        !parsed.ctrl &&
+        !parsed.alt &&
+        isEditableTarget(event.target) &&
+        !isGlobalFunctionKey(parsed.key)
+      ) {
         continue;
       }
       event.preventDefault();

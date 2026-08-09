@@ -33,16 +33,19 @@ import {
   replaceAll,
 } from '@milkdown/utils';
 import { toggleMark } from '@milkdown/prose/commands';
+import { redo, undo } from '@milkdown/prose/history';
+import { TextSelection } from '@milkdown/prose/state';
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
-import { linkNavigationPlugin } from './link-navigation.js';
+import { linkExclusiveEndsPlugin, linkNavigationPlugin } from './link-navigation.js';
 import { inputAssistPlugin } from './plugins/input-assist.js';
 import { imageAssetPlugin, imageDisplayPlugin, insertImageAt, type ImageAssetMountOptions } from './plugins/image.js';
 import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
+import { progressiveSelectPlugin } from './plugins/progressive-select.js';
 import { slashMenuPlugin } from './plugins/slash-menu.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
@@ -172,10 +175,19 @@ export async function mountEditor(
         .use(mathPlugin)
         // T9：mermaid 代码块即时渲染（按需加载 + 语法错误隔离，见 R9）。
         .use(mermaidPlugin);
-      // T14：文档链接点击跳转（R14）。注入回调时拦截单击 link mark。
+      // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {
-        editor.use(linkNavigationPlugin({ onLinkNavigate: options.onLinkNavigate }));
+        editor.use(
+          linkNavigationPlugin({
+            onLinkNavigate: options.onLinkNavigate,
+            confirmOpen: options.confirmLinkOpen,
+          }),
+        );
       }
+      // Prevent typing after a link from extending the link title.
+      editor.use(linkExclusiveEndsPlugin());
+      // Progressive Ctrl/Cmd+A: current block first, then whole document.
+      editor.use(progressiveSelectPlugin);
       // T4：注入图片落盘回调时拦截粘贴/拖拽图片 → 落盘 → 插入相对引用。
       if (options.assetSaver !== undefined) {
         editor.use(
@@ -266,13 +278,41 @@ export async function mountEditor(
       if (markType === undefined) return;
       toggleMark(markType)(view.state, (tr) => view.dispatch(tr));
     },
-    setLink(href: string): void {
+    setLink(href: string, text?: string): void {
       const view = getView(state);
       if (view === null) return;
       const linkType = view.state.schema.marks['link'];
       if (linkType === undefined) return;
-      const { from, to } = view.state.selection;
-      view.dispatch(view.state.tr.addMark(from, to, linkType.create({ href })));
+      const cleanHref = typeof href === 'string' ? href.trim() : '';
+      if (cleanHref === '') return;
+      const { from, to, empty } = view.state.selection;
+      const mark = linkType.create({ href: cleanHref, title: null });
+      const withoutLink = (marks: readonly Mark[]): Mark[] =>
+        marks.filter((m) => m.type !== linkType);
+
+      let tr = view.state.tr;
+      let end = to;
+      if (empty) {
+        const insert = (text ?? cleanHref).trim() || cleanHref;
+        tr = tr.insertText(insert, from);
+        end = from + insert.length;
+        tr = tr.addMark(from, end, mark);
+      } else if (
+        typeof text === 'string' &&
+        text !== '' &&
+        text !== view.state.doc.textBetween(from, to)
+      ) {
+        tr = tr.insertText(text, from, to);
+        end = from + text.length;
+        tr = tr.addMark(from, end, mark);
+      } else {
+        tr = tr.addMark(from, to, mark);
+        end = to;
+      }
+      // Caret after the linked run; strip link so further typing stays plain.
+      tr = tr.setSelection(TextSelection.create(tr.doc, end));
+      tr = tr.setStoredMarks(withoutLink(tr.selection.$from.marks()));
+      view.dispatch(tr.scrollIntoView());
     },
     insertImage(url: string, alt: string): void {
       const view = getView(state);
@@ -283,6 +323,16 @@ export async function mountEditor(
       const view = getView(state);
       if (view === null) return;
       view.focus();
+    },
+    undo(): void {
+      const view = getView(state);
+      if (view === null) return;
+      undo(view.state, view.dispatch);
+    },
+    redo(): void {
+      const view = getView(state);
+      if (view === null) return;
+      redo(view.state, view.dispatch);
     },
     async destroy(): Promise<void> {
       try {
