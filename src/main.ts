@@ -61,6 +61,7 @@ import { printViaHiddenIframe } from './export/pdf-export.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager } from './tabs/tab-manager.js';
+import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
@@ -134,6 +135,8 @@ let shell: ReturnType<typeof createAppShell>;
 let outline: OutlineView;
 // T5/R3：字数状态栏在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let statusBar: StatusBar;
+// R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
+let autosave: AutosaveController;
 
 function saveActiveAs(): void {
   const id = manager.activeTabId;
@@ -493,6 +496,12 @@ shell = createAppShell(
       commitActiveSourceMode();
       void saveActiveAs();
     },
+    // R14：自动保存开关（文件菜单勾选项；autosave 在 TabManager 后创建，
+    // 菜单动作经 ?. 短路，菜单打开时 isAutosaveEnabled 重算勾选态）。
+    isAutosaveEnabled: () => autosave?.isEnabled() === true,
+    onToggleAutosave: () => {
+      autosave?.toggle();
+    },
     onExportHtml: () => {
       commitActiveSourceMode();
       void exportActiveTabHtml(exportDeps);
@@ -837,6 +846,17 @@ function getActiveMarkdownForStatus(): string | null {
 
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
 statusBar.refresh(getActiveMarkdownForStatus);
+
+// R14：可选自动保存（默认关；偏好 localStorage 跨会话保持）。tick 前先提交
+// 活动标签的源码态编辑（与手动保存同口径），再扫全部有路径脏 tab 走同一保存流
+// （含 R13 保存前 mtime 闸门；冲突由既有对话框分派，不静默覆盖）。
+autosave = createAutosave({
+  storage: window.localStorage,
+  tick: () => {
+    commitActiveSourceMode();
+    void manager.autosaveDirtyTabs();
+  },
+});
 
 /** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
 function showVersionsForActive(): void {

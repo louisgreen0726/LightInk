@@ -8,7 +8,11 @@
  *     状态会自动清除脏标记；
  *   - 编辑防抖后写崩溃快照（有效快照键 = 文件路径 ?? 未命名合成 id），
  *     正常保存/关闭后清除快照；
- *   - 打开文件时检测「快照比磁盘新」并提示恢复（崩溃恢复）。
+ *   - 打开文件时检测「快照比磁盘新」并提示恢复（崩溃恢复）；
+ *   - R14 自动保存入口 `autosaveDirtyTabs`：仅扫已有路径的脏 tab，逐个走
+ *     与手动保存完全相同的 saveTab 流（含 R13 保存前 mtime 闸门），冲突
+ *     由既有对话框分派，绝不静默覆盖、不触发另存为；偏好与定时调度在
+ *     src/tabs/autosave.ts。
  *
  * 撤销栈说明：@milkdown/plugin-history 已接入编辑器（src/editor/index.ts，
  * 随本次返工补齐）。每个标签是独立的 ProseMirror EditorView，各标签撤销
@@ -710,6 +714,25 @@ export class TabManager {
       }
     } finally {
       this.externalDialogOpen = false;
+    }
+  }
+
+  /**
+   * R14 自动保存 tick（由 autosave.ts 定时调度）：顺序扫描全部标签，仅对
+   * 「已有路径且脏」的 tab 走与手动保存完全相同的 saveTab 流——保存前
+   * mtime 闸门发现外部变更即弹 R13 冲突对话框并中止写入，绝不静默覆盖；
+   * 无路径 tab 跳过（不触发另存为对话框，继续靠崩溃快照）；写失败保持
+   * 脏标记，下个 tick 自然再试。外部变更弹窗进行中跳过本次 tick，避免
+   * 弹窗堆叠；顺序 await 保证多个脏 tab 的冲突提示不并发。
+   */
+  async autosaveDirtyTabs(): Promise<void> {
+    if (this.externalDialogOpen) {
+      return;
+    }
+    for (const tab of [...this.tabs]) {
+      if (tab.filePath !== null && tab.dirty) {
+        await this.saveTab(tab.id);
+      }
     }
   }
 

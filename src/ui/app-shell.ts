@@ -47,6 +47,13 @@ export interface AppShellActions {
   hasActiveFile(): boolean;
   onSave(): void;
   onSaveAs(): void;
+  /**
+   * R14：切换自动保存开关。可选——测试 stub 可省略（菜单动作空操作）。
+   * 实现方负责持久化偏好（lightink.autosave.enabled，默认关）。
+   */
+  onToggleAutosave?(): void;
+  /** R14：自动保存当前是否开启（文件菜单勾选标记）。 */
+  isAutosaveEnabled?(): boolean;
   onExportHtml(): void;
   onExportPdf(): void;
   // 编辑
@@ -338,6 +345,16 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         separator('file-sep1'),
         menuItem('file-save', () => t('file.save'), actions.onSave, sc(actions, 'Ctrl+S')),
         menuItem('file-save-as', () => t('file.saveAs'), actions.onSaveAs, sc(actions, 'Ctrl+Shift+S')),
+        // R14：自动保存开关（勾选标记式）。i18n 目录不在本任务 scope，
+        // 标签按当前 locale 内联双语（同 T5「字数统计」先例）。
+        menuItem(
+          'file-autosave',
+          () => {
+            const base = actions.getLocale() === 'en' ? 'Auto Save' : '自动保存';
+            return actions.isAutosaveEnabled?.() === true ? `✓ ${base}` : base;
+          },
+          () => actions.onToggleAutosave?.(),
+        ),
         separator('file-sep2'),
         menuItem(
           'file-versions',
