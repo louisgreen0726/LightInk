@@ -343,6 +343,32 @@ function renderTabBar(): void {
       void manager.closeTab(id);
     },
   });
+  syncDocumentTitle();
+}
+
+/** Window identity for immersive shell: active title + dirty without a permanent tab strip. */
+function syncDocumentTitle(): void {
+  const tab = manager.activeTab;
+  if (tab === null) {
+    document.title = '轻墨 LightInk';
+    return;
+  }
+  const dirty = tab.dirty ? '● ' : '';
+  document.title = `${dirty}${tab.title} — 轻墨 LightInk`;
+}
+
+/** Cycle active tab without requiring the tab bar to be revealed. */
+function cycleActiveTab(delta: 1 | -1): void {
+  const tabs = manager.tabList;
+  if (tabs.length === 0) {
+    return;
+  }
+  const current = manager.activeTabId;
+  const index = current === null ? 0 : Math.max(0, tabs.findIndex((t) => t.id === current));
+  const next = tabs[(index + delta + tabs.length) % tabs.length];
+  if (next !== undefined) {
+    manager.switchTab(next.id);
+  }
 }
 
 /** 清理已关闭标签的 SourceView（宿主已由 detachHost 移除；仅删 Map 项，不对已销毁编辑器写回）。 */
@@ -532,6 +558,9 @@ const shortcuts = new ShortcutRegistry({
   'toggle-outline': () => outline.toggleCollapse(),
   'toggle-source-mode': () => toggleActiveSourceMode(),
   'toggle-menu-chrome': () => shell.toggleMenuChrome(),
+  'toggle-tabs-chrome': () => shell.toggleTabsChrome(),
+  'next-tab': () => cycleActiveTab(1),
+  'prev-tab': () => cycleActiveTab(-1),
 });
 shortcuts.attach(document);
 
@@ -647,6 +676,9 @@ const SHORTCUT_LABELS: Readonly<Record<ShortcutAction, string>> = {
   'toggle-outline': '大纲显隐',
   'toggle-source-mode': '源码模式',
   'toggle-menu-chrome': '菜单栏显隐',
+  'toggle-tabs-chrome': '标签栏显隐',
+  'next-tab': '下一个标签',
+  'prev-tab': '上一个标签',
 };
 
 /** 快捷键速查表数据源（R5）：从注册表派生标签→组合键。 */

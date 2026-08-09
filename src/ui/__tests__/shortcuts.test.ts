@@ -51,6 +51,9 @@ describe('默认键位映射', () => {
       'toggle-outline': 'Ctrl+Shift+L',
       'toggle-source-mode': 'Ctrl+/',
       'toggle-menu-chrome': 'Alt+M',
+      'toggle-tabs-chrome': 'Alt+T',
+      'next-tab': 'Ctrl+Tab',
+      'prev-tab': 'Ctrl+Shift+Tab',
     });
   });
 });
@@ -129,6 +132,25 @@ describe('ShortcutRegistry 派发', () => {
     const { handlers, registry } = makeRegistry();
     expect(registry.handleKeyDown(keyEvent({ key: 'j' }))).toBe(true);
     expect(handlers['toggle-theme']).toHaveBeenCalledTimes(1);
+  });
+
+  it('标签 chrome 与切换（Alt+T / Ctrl+Tab / Ctrl+Shift+Tab）派发', () => {
+    const handlers = {
+      'toggle-tabs-chrome': vi.fn(),
+      'next-tab': vi.fn(),
+      'prev-tab': vi.fn(),
+    };
+    const registry = new ShortcutRegistry(handlers);
+    expect(
+      registry.handleKeyDown(
+        keyEvent({ key: 't', ctrlKey: false, altKey: true }),
+      ),
+    ).toBe(true);
+    expect(handlers['toggle-tabs-chrome']).toHaveBeenCalledTimes(1);
+    expect(registry.handleKeyDown(keyEvent({ key: 'Tab' }))).toBe(true);
+    expect(handlers['next-tab']).toHaveBeenCalledTimes(1);
+    expect(registry.handleKeyDown(keyEvent({ key: 'Tab', shiftKey: true }))).toBe(true);
+    expect(handlers['prev-tab']).toHaveBeenCalledTimes(1);
   });
 
   it('编辑器（contentEditable）焦点下保存等 Ctrl 快捷键仍生效', () => {

@@ -7,6 +7,8 @@
  *
  * 键位说明：
  *   - Ctrl+T 在多数浏览器/WebView 中是保留键（新建标签页），避开；
+ *   - Alt+T 切换标签栏 chrome（与 Alt+M 菜单对称）；
+ *   - Ctrl+Tab / Ctrl+Shift+Tab 在标签栏折叠时仍可切换活动文档；
  *   - Ctrl+J 在无浏览器外壳的 Tauri WebView2 中无默认行为，用作主题切换；
  *   - 监听挂在 document 的捕获阶段，优先于编辑器/页面默认行为（如 WebView
  *     的 Ctrl+S 保存网页弹窗），命中后 preventDefault。
@@ -29,7 +31,10 @@ export type ShortcutAction =
   | 'insert-image'
   | 'toggle-outline'
   | 'toggle-source-mode'
-  | 'toggle-menu-chrome';
+  | 'toggle-menu-chrome'
+  | 'toggle-tabs-chrome'
+  | 'next-tab'
+  | 'prev-tab';
 
 export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   new: 'Ctrl+N',
@@ -44,6 +49,10 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   'toggle-source-mode': 'Ctrl+/',
   // Immersive shell: Alt alone is awkward; Alt+M toggles menu chrome.
   'toggle-menu-chrome': 'Alt+M',
+  // Immersive tabs chrome + cycling without a permanently visible tab bar (R3).
+  'toggle-tabs-chrome': 'Alt+T',
+  'next-tab': 'Ctrl+Tab',
+  'prev-tab': 'Ctrl+Shift+Tab',
 };
 
 /** 结构化键盘事件（兼容 DOM KeyboardEvent 的结构子集）。 */
