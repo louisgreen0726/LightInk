@@ -14,8 +14,7 @@
 
 import { $prose, nanoid } from '@milkdown/utils';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
-import type { Node as PMNode } from '@milkdown/prose/model';
-import type { EditorView, NodeView } from '@milkdown/prose/view';
+import type { EditorView } from '@milkdown/prose/view';
 
 import type { AssetSaver } from '../../asset/asset-service.js';
 import { clipboardHasImage, extractClipboardImage } from '../../asset/clipboard.js';
@@ -226,76 +225,4 @@ export function isRelativeAssetSrc(src: string): boolean {
   if (src.startsWith('/')) return false;
   if (/^[a-z]:[\\/]/i.test(src)) return false; // Windows 盘符绝对路径
   return true;
-}
-
-/**
- * image 节点 nodeView：外链/绝对 URL 原样渲染；相对引用经 resolver 解析为
- * data URL 异步填进 <img>（解析失败回退原 src，保持裂图+alt 的可诊断形态）。
- * seq 令牌防止 update 期间旧异步回填覆盖新值。
- */
-function createImageNodeView(node: PMNode, resolver: ImageSrcResolver): NodeView {
-  const img = document.createElement('img');
-  img.className = 'lightink-image';
-  let seq = 0;
-
-  const sync = (n: PMNode): void => {
-    seq += 1;
-    const mySeq = seq;
-    const src = typeof n.attrs['src'] === 'string' ? (n.attrs['src'] as string) : '';
-    const alt = typeof n.attrs['alt'] === 'string' ? (n.attrs['alt'] as string) : '';
-    const title = typeof n.attrs['title'] === 'string' ? (n.attrs['title'] as string) : '';
-    img.alt = alt;
-    if (title !== '') {
-      img.title = title;
-    } else {
-      img.removeAttribute('title');
-    }
-    if (src === '') {
-      img.removeAttribute('src');
-      return;
-    }
-    if (!isRelativeAssetSrc(src)) {
-      img.src = src;
-      return;
-    }
-    resolver(src)
-      .then((url) => {
-        if (mySeq === seq) {
-          img.src = url;
-        }
-      })
-      .catch(() => {
-        if (mySeq === seq) {
-          img.src = src;
-        }
-      });
-  };
-  sync(node);
-
-  return {
-    dom: img,
-    update: (incoming: PMNode) => {
-      if (incoming.type !== node.type) return false;
-      sync(incoming);
-      return true;
-    },
-  };
-}
-
-/**
- * 图片显示插件（`$prose`）：为 image 节点注册上述 nodeView。
- * 仅当 mountEditor 注入了 imageSrcResolver 时注册（见 index.ts）。
- */
-export function imageDisplayPlugin(resolver: ImageSrcResolver) {
-  return $prose(
-    () =>
-      new Plugin({
-        key: new PluginKey('lightink-image-display'),
-        props: {
-          nodeViews: {
-            image: (node: PMNode) => createImageNodeView(node, resolver),
-          },
-        },
-      }),
-  );
 }

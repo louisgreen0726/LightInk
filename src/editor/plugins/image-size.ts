@@ -306,7 +306,6 @@ function createResizableImageNodeView(
     const width = typeof n.attrs.width === 'number' ? n.attrs.width : null;
     const align = (n.attrs.align as ImageAlign | null) ?? null;
     const style = buildImageStyle(width, align);
-    img.style.cssText = `${img.style.cssText}`; // keep base
     // 重置尺寸/对齐相关 inline 样式后写入新值。
     img.style.width = width !== null ? `${clampWidth(width)}px` : '';
     img.style.marginLeft = align === 'center' || align === 'right' ? 'auto' : '';
@@ -381,11 +380,8 @@ function createResizableImageNodeView(
     document.addEventListener('mouseup', onUp);
   });
 
-  // 阻止点击图片时编辑器丢失选中（让 ProseMirror 建立 NodeSelection）。
-  img.addEventListener('mousedown', (event) => {
-    event.stopPropagation();
-  });
-
+  // 让 ProseMirror 在点击 image 时自行建立 NodeSelection——此处不得 stopPropagation，
+  // 否则 mousedown 不冒泡到 PM 根处理器，selectNode 永不触发，缩放柄/对齐条不可达。
   syncSrc(node);
   applyAttrs(node);
 
