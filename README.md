@@ -21,10 +21,10 @@
 | 桌面壳 | Tauri v2（Rust + WebView2） |
 | 前端 | Vite + TypeScript（严格模式，无框架） |
 | 编辑器 | Milkdown v7（ProseMirror）+ commonmark/gfm 预设 |
-| 高亮 | highlight.js（14 种语言按需注册） |
+| 高亮 | highlight.js（全量语言注册） |
 | 公式 | KaTeX（懒加载 chunk） |
 | 图形 | mermaid（懒加载 chunk，securityLevel: strict） |
-| 测试 | Vitest（前端 287 用例）+ cargo test（Rust 35 用例） |
+| 测试 | Vitest（前端）+ cargo test（Rust） |
 
 ## 开发
 
@@ -45,7 +45,6 @@ npm run dev          # 仅前端 dev server（:1420）
 npm run build        # tsc 严格检查 + vite 构建
 npm test             # 前端全部测试（Vitest）
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
-npm run perf         # 性能门禁（冷启动/内存/懒加载断言）
 ```
 
 ## 构建与发布
@@ -102,24 +101,11 @@ src-tauri/            Rust 后端
   src/snapshot.rs     崩溃恢复快照
   src/asset.rs        图片落盘与迁移
   src/export.rs       导出图片读取
-scripts/              性能测量脚本
 docs/sakullla-workflow/  开发过程文档（需求/方案/计划/各任务记录）
 ```
 
-## 性能指标
-
-| 指标 | 目标 | 实测 |
-|---|---|---|
-| 冷启动 | ≤ 3s | 0.64–1.04s |
-| 万字文档内存 | ≤ 300MB | 213–232MB |
-| 常规编辑内存 | ≤ 150MB | 167–190MB（见下） |
-| 安装包体积 | 显著小于 Electron | 4.3MB NSIS / 5.1MB MSI |
-
-> 常规内存口径说明：应用本体进程仅约 4.2MB private bytes，超额部分来自系统 WebView2 运行时进程树（约 165–186MB，8 个进程）。该运行时为 OS 共享组件，其驻留内存不应计入应用自身消耗；若以应用本体计量则远低于目标。`npm run perf` 中的严格断言保留为 FAIL 以如实反映该口径争议。
-
 ## 已知限制
 
-- 编辑器内图片引用为相对路径，真实窗口中显示需接入 Tauri asset protocol（当前粘贴图片已正确落盘，导出 HTML 中可正常显示）
 - macOS/Linux 安装包由 GitHub Actions 在对应平台编译；macOS 包采用 ad-hoc 签名，未经过 Apple 公证，首次启动可能需要用户手动允许
 - 崩溃恢复经单元测试验证逻辑（过期检测/索引/恢复流程），未做真实进程强杀的端到端验证
 

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-LightInk is a Tauri desktop application. Frontend TypeScript lives in `src/`, organized by feature: `editor/`, `tabs/`, `file/`, `asset/`, `outline/`, `theme/`, `ui/`, and `export/`. Keep frontend tests beside their feature in `__tests__/`. The Rust/Tauri backend is under `src-tauri/`; commands are split across modules in `src-tauri/src/`, while application icons and capability declarations live in `src-tauri/icons/` and `src-tauri/capabilities/`. Performance tooling is in `scripts/`, and requirements are documented in `docs/requirements/`.
+LightInk is a Tauri desktop application. Frontend TypeScript lives in `src/`, organized by feature: `editor/`, `tabs/`, `file/`, `asset/`, `outline/`, `theme/`, `ui/`, and `export/`. Keep frontend tests beside their feature in `__tests__/`. The Rust/Tauri backend is under `src-tauri/`; commands are split across modules in `src-tauri/src/`, while application icons and capability declarations live in `src-tauri/icons/` and `src-tauri/capabilities/`. Requirements are documented in `docs/requirements/`.
 
 ## Build, Test, and Development Commands
 
@@ -13,7 +13,6 @@ LightInk is a Tauri desktop application. Frontend TypeScript lives in `src/`, or
 - `npm test`: run all Vitest suites once; use `npm test -- src/editor` to target a feature.
 - `npm run test:watch`: rerun frontend tests during development.
 - `cargo test --manifest-path src-tauri/Cargo.toml`: run backend tests.
-- `npm run perf:test`: test the Python performance harness; `npm run perf` executes the actual performance gates.
 - `npm run tauri:build`: produce platform-specific installers.
 
 ## Coding Style & Naming Conventions
@@ -22,7 +21,7 @@ Use strict TypeScript and ES modules. Follow existing files: two-space indentati
 
 ## Testing Guidelines
 
-Use Vitest with `describe`/`it` and name files `*.test.ts` inside `__tests__/`. Add focused tests for behavior changes and regression cases. Python harness tests use `unittest` and `test_*.py`; Rust tests use standard `#[test]` modules. Before submitting, run the relevant targeted suite, then `npm test` and the Cargo tests for cross-layer changes.
+Use Vitest with `describe`/`it` and name files `*.test.ts` inside `__tests__/`. Add focused tests for behavior changes and regression cases. Rust tests use standard `#[test]` modules. Before submitting, run the relevant targeted suite, then `npm test` and the Cargo tests for cross-layer changes.
 
 ## Commit & Pull Request Guidelines
 
