@@ -66,6 +66,10 @@ npm run tauri:build
 
 `src-tauri/tauri.conf.json` 已包含 `bundle.macOS`（minimumSystemVersion 10.15）与 `bundle.linux`（deb/appimage 依赖声明）配置，`bundle.targets` 为 `all`。推送 tag 后 GitHub Actions 会在三平台并行构建；本地手动构建需在对应平台执行 `npm run tauri:build`（Rust 不支持交叉编译 GUI 应用）。
 
+macOS 包使用 Tauri 的显式 ad-hoc 签名（`bundle.macOS.signingIdentity: "-"`），无需 Apple 证书。CI 会用 `codesign` 校验整个 `.app` 的签名完整性，避免只依赖 Apple Silicon 链接器为单个可执行文件生成的临时签名。
+
+ad-hoc 签名不等于 Apple 公证。从浏览器下载后，Gatekeeper 仍可能要求用户在 Finder 中右键 `LightInk.app` 选择“打开”，或前往“系统设置 → 隐私与安全性”选择“仍要打开”。只有 `Developer ID Application` 证书加 Apple 公证才能消除这一步；详见 [Tauri macOS Code Signing](https://v2.tauri.app/distribute/sign/macos/)。
+
 ### 发布流程
 
 推送 `v*` tag 即触发 GitHub Actions 自动编译并发布三平台安装包（见 `.github/workflows/release.yml`），Release 说明从上个 tag 以来的提交记录自动提取（按 feat/fix/其他分组，基于 conventional commits）：
@@ -116,7 +120,7 @@ docs/sakullla-workflow/  开发过程文档（需求/方案/计划/各任务记�
 ## 已知限制
 
 - 编辑器内图片引用为相对路径，真实窗口中显示需接入 Tauri asset protocol（当前粘贴图片已正确落盘，导出 HTML 中可正常显示）
-- macOS/Linux 安装包配置就绪但未在本机编译验证
+- macOS/Linux 安装包由 GitHub Actions 在对应平台编译；macOS 包采用 ad-hoc 签名，未经过 Apple 公证，首次启动可能需要用户手动允许
 - 崩溃恢复经单元测试验证逻辑（过期检测/索引/恢复流程），未做真实进程强杀的端到端验证
 
 ## License

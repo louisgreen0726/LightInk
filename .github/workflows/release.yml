@@ -89,7 +89,9 @@ jobs:
             if [ -n "$FIXES" ]; then echo "### 修复"; echo "$FIXES"; echo ""; fi
             if [ -n "$OTHERS" ]; then echo "### 其他"; echo "$OTHERS"; echo ""; fi
             echo "---"
-            echo "Windows: NSIS/MSI 安装包；macOS: DMG（Apple Silicon）；Linux: deb/AppImage。"
+            echo "Windows: NSIS/MSI 安装包；macOS: DMG（Apple Silicon，ad-hoc 签名）；Linux: deb/AppImage。"
+            echo ""
+            echo "> macOS 包未经过 Apple 公证。首次启动如被 Gatekeeper 拦截，请在 Finder 中右键 LightInk.app 选择“打开”，或前往“系统设置 → 隐私与安全性”选择“仍要打开”。"
             echo "EOF"
           } >> "$GITHUB_ENV"
 
@@ -106,6 +108,27 @@ jobs:
           retryAttempts: 3
           # `--verbose` exposes the underlying WiX LGHT/ICE error in Actions logs.
           args: --target ${{ matrix.target }} --verbose
+
+      - name: Verify macOS ad-hoc signature
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="src-tauri/target/${{ matrix.target }}/release/bundle/macos/LightInk.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Expected macOS app bundle was not created at $APP_PATH"
+            exit 1
+          fi
+
+          SIGNATURE_INFO="$(codesign --display --verbose=4 "$APP_PATH" 2>&1)"
+          echo "$SIGNATURE_INFO"
+          if ! grep -q '^Signature=adhoc$' <<< "$SIGNATURE_INFO"; then
+            echo "::error::macOS app is not explicitly ad-hoc signed"
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
   verify-release:
     name: Verify release assets
