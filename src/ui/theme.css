@@ -1071,9 +1071,9 @@ body.lightink-outline-resizing * {
 }
 
 /* 源码叠加层的高亮 pre 位于 .lightink-tab-host 内：中和代码块外壳样式
-   （背景/边框/圆角/内边距由 source-view.ts 内联度量统一掌管），并让 <code>
-   继承高亮 pre 的字体栈——否则 `.lightink-tab-host code` 的字体与 textarea
-   不同，选区洗色与可见文字逐字错位。 */
+   （背景/边框/圆角/内边距由 source-view.ts 内联度量统一掌管）。嵌套 <code>
+   的完整字体与折行度量也由 source-view.ts 内联继承，避免通用 0.92em 行内
+   代码规则造成高亮层和 textarea 的选区错位。 */
 .lightink-tab-host pre.lightink-source-highlight {
   background: transparent;
   border: none;
@@ -1083,6 +1083,13 @@ body.lightink-outline-resizing * {
 
 .lightink-tab-host .lightink-source-highlight code {
   font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: inherit;
+  word-break: inherit;
+  overflow-wrap: inherit;
+  font-variant-ligatures: inherit;
+  tab-size: inherit;
 }
 
 .lightink-tab-host code {

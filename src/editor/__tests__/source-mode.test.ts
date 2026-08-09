@@ -6,7 +6,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { EditorMode, SourceModeController, SourceView, toggleMode } from '../source-view.js';
+import {
+  applySourceHighlightMetrics,
+  applySourceMetrics,
+  EditorMode,
+  SourceModeController,
+  SourceView,
+  toggleMode,
+} from '../source-view.js';
 
 /** 假往返：内存字符串模拟 getMarkdown/setMarkdown。 */
 function fakeRoundtrip(initial = '') {
@@ -101,5 +108,23 @@ describe('SourceModeController roundtrip (R10)', () => {
 describe('SourceView (factory shape)', () => {
   it('exposes the SourceView class', () => {
     expect(typeof SourceView).toBe('function');
+  });
+
+  it('keeps textarea, highlight pre, and nested code on identical wrapping metrics', () => {
+    const surface = { style: {} as Record<string, string> } as unknown as HTMLElement;
+    const highlightCode = { style: {} as Record<string, string> } as unknown as HTMLElement;
+
+    applySourceMetrics(surface);
+    applySourceHighlightMetrics(highlightCode);
+
+    expect(surface.style.whiteSpace).toBe('pre-wrap');
+    expect(surface.style.wordBreak).toBe('break-word');
+    expect(surface.style.overflowWrap).toBe('break-word');
+    expect(surface.style.scrollbarGutter).toBe('stable');
+    expect(surface.style.fontVariantLigatures).toBe('none');
+    expect(highlightCode.style.fontSize).toBe('inherit');
+    expect(highlightCode.style.lineHeight).toBe('inherit');
+    expect(highlightCode.style.whiteSpace).toBe('inherit');
+    expect(highlightCode.style.wordBreak).toBe('inherit');
   });
 });

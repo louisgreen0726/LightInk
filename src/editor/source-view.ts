@@ -79,7 +79,7 @@ export class SourceModeController {
 }
 
 /** textarea 与 pre 共享的字体度量（必须一致以保证高亮层与输入层逐行对齐）。 */
-function applySourceMetrics(el: HTMLElement): void {
+export function applySourceMetrics(el: HTMLElement): void {
   el.style.boxSizing = 'border-box';
   el.style.margin = '0';
   el.style.border = 'none';
@@ -93,6 +93,27 @@ function applySourceMetrics(el: HTMLElement): void {
   el.style.lineHeight = 'var(--lightink-line-height-code, 1.55)';
   el.style.whiteSpace = 'pre-wrap';
   el.style.wordBreak = 'break-word';
+  el.style.overflowWrap = 'break-word';
+  el.style.fontVariantLigatures = 'none';
+  el.style.tabSize = '2';
+  // textarea 的垂直滚动条不能独占内容宽度，否则它会比背后的 pre 提前折行。
+  el.style.scrollbarGutter = 'stable';
+}
+
+/**
+ * 中和 `.lightink-tab-host code { font-size: 0.92em }` 等通用行内代码规则。
+ * 高亮 code 必须完整继承 pre 的度量，否则长行与透明 textarea 的折行点不同，
+ * 原生选区背景便会覆盖到另一段可见源码上。
+ */
+export function applySourceHighlightMetrics(el: HTMLElement): void {
+  el.style.fontFamily = 'inherit';
+  el.style.fontSize = 'inherit';
+  el.style.lineHeight = 'inherit';
+  el.style.whiteSpace = 'inherit';
+  el.style.wordBreak = 'inherit';
+  el.style.overflowWrap = 'inherit';
+  el.style.fontVariantLigatures = 'inherit';
+  el.style.tabSize = 'inherit';
 }
 
 /** 把 Markdown 源高亮为 HTML（末尾加换行使最后一行行高与 textarea 对齐）。 */
@@ -162,6 +183,7 @@ export class SourceView {
 
     const code = doc.createElement('code');
     code.className = 'hljs language-markdown';
+    applySourceHighlightMetrics(code);
     code.innerHTML = renderHighlightedSource(text);
     pre.appendChild(code);
 
