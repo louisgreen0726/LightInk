@@ -188,7 +188,8 @@ export async function mountEditor(
         // T9：mermaid 代码块即时渲染（按需加载 + 语法错误隔离，见 R9）。
         .use(mermaidPlugin)
         // T2：[TOC] 标记段落渲染为可点击目录（R6）。纯 decoration 插件，
-        // 不改写文档，字面 [TOC] 段落随 getMarkdown 原样往返。
+        // 不改写文档；标记经序列化为转义形式 `\[TOC]`，重解析仍还原触发，
+        // 功能往返安全。
         .use(tocPlugin);
       // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {

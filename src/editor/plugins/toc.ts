@@ -3,15 +3,20 @@
  *
  * 设计（docs/sakullla-workflow/.../02-technical-solution.md §4）：
  *
- *   - 检测「仅含 `[TOC]` 的段落」（trim 后恰为字面标记；行内出现、夹杂其它
- *     文本、标题内的 `[TOC]` 均不触发），用 widget decoration 把该段落
- *     渲染为由当前标题树生成的可点击目录，原段落经 node decoration 隐藏。
+ *   - 检测「仅含 `[TOC]` 的顶层段落」（trim 后恰为字面标记；行内出现、夹杂
+ *     其它文本、标题内的 `[TOC]` 均不触发；嵌套在列表/引用/表格等容器内
+ *     的同文段落也不触发），用 widget decoration 把该段落渲染为由当前
+ *     标题树生成的可点击目录，原段落经 node decoration 隐藏。
  *
- *   - 文档源码保留字面 `[TOC]` 段落：本插件只挂 decoration，从不改写
- *     文档内容，因此 getMarkdown 序列化天然原样往返（现状即按字面段落
- *     往返），保存重开后能力不变。
+ *   - 文档内容不被改写：本插件只挂 decoration。但序列化层会把 `[TOC]`
+ *     转义为 `\[TOC]`（remark-stringify 对 link 语法的消歧，属产品约定
+ *     的可往返表示）；重解析后段落文本仍还原为字面 `[TOC]`，触发条件
+ *     不变，保存重开后功能往返安全（回归测试见 __tests__/toc.test.ts
+ *     「remark 序列化往返」）。
  *
- *   - 点击目录项跳转：向标题位置 dispatch 选区事务并 scrollIntoView，
+ *   - 点击目录项跳转：点击时按当前文档重新收集标题、按文本+序号匹配
+ *     目标位置（不沿用 widget 构建期的 pos，防抖窗口内的标题编辑不会
+ *     把跳转带偏），再向该位置 dispatch 选区事务并 scrollIntoView，
  *     同时直接滚动标题 DOM 到可视区顶部。
  *
  *   - 更新时机（防抖重建）：标题/文档变更后 decoration 先按 mapping 平移
@@ -70,12 +75,19 @@ export function isTocParagraphNode(node: PMNode): boolean {
   return node.type.name === 'paragraph' && node.textContent.trim() === TOC_MARK;
 }
 
-/** Walk the doc and collect positions of all `[TOC]` marker paragraphs. */
+/**
+ * Walk the doc's top-level children and collect positions of `[TOC]` marker
+ * paragraphs. Marker paragraphs nested inside lists, blockquotes, tables, or
+ * any other container do NOT trigger the TOC widget — only top-level
+ * paragraphs qualify.
+ */
 export function collectTocParagraphPositions(doc: PMNode): number[] {
   const out: number[] = [];
-  doc.descendants((node, pos) => {
+  // Top-level children start at offset 0 within the doc, so forEach's offset
+  // is the absolute position of each child node.
+  doc.forEach((node, offset) => {
     if (isTocParagraphNode(node)) {
-      out.push(pos);
+      out.push(offset);
     }
   });
   return out;
@@ -96,6 +108,32 @@ export function collectTocHeadings(doc: PMNode): TocHeading[] {
     out.push({ level, text: node.textContent, pos });
   });
   return out;
+}
+
+/**
+ * 点击时按当前文档重新定位目标标题：在所有标题里找第 `ordinal` 个（从 0
+ * 计）文本为 `text` 的标题，返回其当前位置；无匹配返回 null。
+ *
+ * widget 点击不沿用构建期捕获的 pos——防抖窗口内的标题编辑会让旧 pos 指向
+ * 偏移位置，按「文本 + 同文序号」重匹配能把跳转锚回用户看到的那个标题。
+ */
+export function resolveHeadingPos(
+  doc: PMNode,
+  text: string,
+  ordinal: number,
+): number | null {
+  let seen = 0;
+  let found: number | null = null;
+  doc.descendants((node, pos) => {
+    if (found !== null || node.type.name !== 'heading') return;
+    if (node.textContent !== text) return;
+    if (seen === ordinal) {
+      found = pos;
+      return;
+    }
+    seen += 1;
+  });
+  return found;
 }
 
 /** A debounced function with an attached `cancel()` for teardown. */
@@ -181,7 +219,12 @@ function createTocWidget(
   list.style.listStyle = 'none';
   list.style.margin = '0';
   list.style.padding = '0';
+  // 同文标题的出现序号：点击时与文本一起用于在当前文档中重定位目标，
+  // 避免沿用构建期 pos 在防抖窗口内被编辑带偏。
+  const ordinals = new Map<string, number>();
   for (const heading of headings) {
+    const ordinal = ordinals.get(heading.text) ?? 0;
+    ordinals.set(heading.text, ordinal + 1);
     const item = document.createElement('li');
     item.className = 'lightink-toc-item';
     item.dataset['level'] = String(heading.level);
@@ -202,8 +245,10 @@ function createTocWidget(
       event.preventDefault();
       event.stopPropagation();
       const view = getView();
-      if (view !== null) {
-        jumpToHeading(view, heading.pos);
+      if (view === null) return;
+      const target = resolveHeadingPos(view.state.doc, heading.text, ordinal);
+      if (target !== null) {
+        jumpToHeading(view, target);
       }
     });
     item.appendChild(link);
