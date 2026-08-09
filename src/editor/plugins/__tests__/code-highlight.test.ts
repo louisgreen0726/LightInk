@@ -352,10 +352,10 @@ describe('language picker helpers', () => {
     expect(languageSelectValue('not-a-lang')).toBe('');
   });
 
-  it('languageDisplayLabel maps empty to 纯文本 and mermaid to 流程图', () => {
-    expect(languageDisplayLabel('')).toBe('纯文本');
+  it('languageDisplayLabel maps empty to Plain text and mermaid to Flowchart', () => {
+    expect(languageDisplayLabel('')).toBe('Plain text');
     expect(languageDisplayLabel('python')).toBe('python');
-    expect(languageDisplayLabel('mermaid')).toBe('流程图');
+    expect(languageDisplayLabel('mermaid')).toBe('Flowchart');
   });
 
   it('resolveLanguage recognizes mermaid as a special language', async () => {
@@ -373,9 +373,9 @@ describe('language picker helpers', () => {
     expect(filterLanguages('zzz', langs)).toEqual([]);
   });
 
-  it('plainLanguageMatches keeps 纯文本 visible for empty/partial queries', () => {
+  it('plainLanguageMatches keeps Plain text visible for empty/partial queries', () => {
     expect(plainLanguageMatches('')).toBe(true);
-    expect(plainLanguageMatches('纯')).toBe(true);
+    expect(plainLanguageMatches('plain')).toBe(true);
     expect(plainLanguageMatches('text')).toBe(true);
     expect(plainLanguageMatches('kotlin')).toBe(false);
   });
@@ -452,8 +452,8 @@ describe('R8 copy button logic', () => {
   });
 
   it('copyButtonLabel toggles between default and copied labels', () => {
-    expect(copyButtonLabel(false)).toBe('复制');
-    expect(copyButtonLabel(true)).toBe('已复制');
+    expect(copyButtonLabel(false)).toBe('Copy');
+    expect(copyButtonLabel(true)).toBe('Copied');
   });
 
   it('copyButtonClassName appends copied modifier only when copied', () => {
