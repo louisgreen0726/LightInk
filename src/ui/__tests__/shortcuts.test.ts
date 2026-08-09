@@ -56,6 +56,9 @@ describe('默认键位映射', () => {
       'toggle-fullscreen': 'F11',
       'next-tab': 'Ctrl+Tab',
       'prev-tab': 'Ctrl+Shift+Tab',
+      'zoom-in': 'Ctrl+=',
+      'zoom-out': 'Ctrl+-',
+      'zoom-reset': 'Ctrl+0',
     });
   });
 });

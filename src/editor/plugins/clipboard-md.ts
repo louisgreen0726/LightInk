@@ -25,10 +25,18 @@
 import { $prose, getMarkdown, insert } from '@milkdown/utils';
 import type { Ctx } from '@milkdown/ctx';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
+import { CellSelection } from '@milkdown/prose/tables';
 import type { EditorView } from '@milkdown/prose/view';
 
 import { clipboardHasImage } from '../../asset/clipboard.js';
 import { routeClipboardPaste } from '../paste.js';
+import {
+  encodeMatrixClipboardText,
+  matrixToHtmlTable,
+  selectionToMatrix,
+  selectionToTsv,
+  setSessionTableMatrix,
+} from './table-ops.js';
 
 const PLUGIN_KEY = new PluginKey('lightink-clipboard-md');
 
@@ -46,12 +54,17 @@ export const clipboardMdPlugin = $prose((ctx: Ctx) => {
     props: {
       // 粘贴：Markdown 源 → 解析替换选区；纯文本/图片交默认 / 图片插件。
       // （view 经 ctx.editorViewCtx 由 insert 宏取得，故此参数不直接使用。）
-      handlePaste(_view: EditorView, event: ClipboardEvent): boolean {
+      handlePaste(view: EditorView, event: ClipboardEvent): boolean {
         const dt = event.clipboardData;
         // 图片粘贴优先交 imageAssetPlugin 拦截。R16：部分 WebView 把截图放
         // 在 items（含空 MIME）而非 files，故用 clipboardHasImage 兜底判定，
         // 否则文本粘贴会拦截并静默丢图。
         if (dt !== null && dt !== undefined && (dt.files.length > 0 || clipboardHasImage(event))) {
+          return false;
+        }
+        // Table cell paste is owned by tableOpsPlugin (TSV / HTML table).
+        // Never run markdown insert() over a CellSelection — it destroys the table.
+        if (view.state.selection instanceof CellSelection) {
           return false;
         }
         const text = dt?.getData('text/plain') ?? '';
@@ -73,8 +86,53 @@ export const clipboardMdPlugin = $prose((ctx: Ctx) => {
       const writeMarkdownSource = (event: ClipboardEvent): boolean => {
         const { empty, from, to } = editorView.state.selection;
         // 空选区或无 clipboardData：交默认（PM 不会为空选区复制，此处兜底）。
+        // CellSelection reports empty=false when cells are selected.
         if (empty || event.clipboardData === null || event.clipboardData === undefined) {
           return false;
+        }
+        // Table cell / row / column selection: TSV + HTML table.
+        // Prefer CellSelection even when empty text looks empty — never fall through
+        // to getMarkdown({from,to}) which serializes a broken table fragment.
+        if (editorView.state.selection instanceof CellSelection) {
+          const matrix = selectionToMatrix(editorView.state);
+          if (matrix !== null && matrix.length > 0) {
+            // In-session memory survives WebView tab→space normalization.
+            setSessionTableMatrix(matrix);
+            // Tab-safe wire format (+ TSV trailer for spreadsheets).
+            const plain = encodeMatrixClipboardText(matrix);
+            event.clipboardData.setData('text/plain', plain);
+            const html = matrixToHtmlTable(matrix);
+            if (html !== '') {
+              try {
+                event.clipboardData.setData('text/html', html);
+              } catch {
+                // Some environments only allow text/plain.
+              }
+            }
+            // Custom MIME when the host allows it (best structure for re-paste).
+            try {
+              event.clipboardData.setData(
+                'application/x-lightink-table',
+                JSON.stringify(matrix),
+              );
+            } catch {
+              /* ignore */
+            }
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+          const tsv = selectionToTsv(editorView.state);
+          if (tsv !== null) {
+            event.clipboardData.setData('text/plain', tsv);
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+          // CellSelection but matrix failed: still block markdown fallback.
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return true;
         }
         const markdown = getMarkdown({ from, to })(ctx);
         if (markdown === '') {

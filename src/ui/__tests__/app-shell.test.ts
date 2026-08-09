@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { InsertElementId } from '../../editor/insert-commands.js';
 import type { BuiltinThemeId } from '../../theme/theme-service.js';
 import {
+  abbreviatePath,
   buildMenus,
   buildRecentsMenuItems,
   createAppShell,
@@ -48,6 +49,14 @@ function stubActions(currentThemeId = 'warm-light'): AppShellActions {
     onToggleFullscreen: noop,
     isChromePinned: () => false,
     onToggleChromePinned: noop,
+    onZoomIn: noop,
+    onZoomOut: noop,
+    onZoomReset: noop,
+    getFontScaleLabel: () => '100%',
+    t: (key: string) => key,
+    formatShortcut: (combo: string) => combo,
+    getLocale: () => 'zh-CN' as const,
+    setLocale: () => undefined,
   };
 }
 
@@ -363,13 +372,16 @@ describe('buildMenus 生产结构', () => {
 
   it('文件菜单含「最近打开」子菜单入口（R12，VS Code 式）', () => {
     const item = file?.items.find((i) => i.id === 'file-recents');
-    expect(item?.label).toBe('最近打开');
+    // Labels may be factories (i18n); resolve for assertion.
+    const label = typeof item?.label === 'function' ? item.label() : item?.label;
+    expect(label).toMatch(/最近打开|file\.recents/);
     expect(typeof item?.submenu).toBe('function');
   });
 
   it('文件菜单含「版本历史…」入口，无活动文件时禁用（R13）', () => {
     const item = file?.items.find((i) => i.id === 'file-versions');
-    expect(item?.label).toBe('版本历史…');
+    const label = typeof item?.label === 'function' ? item.label() : item?.label;
+    expect(label).toMatch(/版本历史|file\.versions/);
     expect(item?.enabled?.()).toBe(false); // stub hasActiveFile → false
   });
 
@@ -385,23 +397,35 @@ describe('buildMenus 生产结构', () => {
     }
   });
 
-  it('视图菜单逐项列出全部预设主题，当前主题项禁用（R15）', () => {
+  it('视图菜单把主题收纳为子菜单，预设主题当前项禁用（R15）', () => {
     const viewMenus = buildMenus(stubActions('midnight'));
     const view = viewMenus.find((m) => m.id === 'view');
+    const themeEntry = view?.items.find((i) => i.id === 'view-theme');
+    expect(themeEntry?.submenu).toBeTypeOf('function');
+    // Top-level View no longer lists each theme inline.
+    expect(view?.items.some((i) => i.id === 'view-theme-midnight')).toBe(false);
+
+    const themeItems = themeEntry!.submenu!();
+    // submenu may be sync or Promise — production uses sync factory.
+    expect(Array.isArray(themeItems)).toBe(true);
+    const items = themeItems as import('../menus.js').MenuItem[];
     const presetIds = ['warm-light', 'cool-light', 'dark', 'midnight'].map(
       (id) => `view-theme-${id}`,
     );
-    const presetItems = view?.items.filter(
+    const presetItems = items.filter(
       (i) => i.separator !== true && i.id !== 'view-theme-toggle' && presetIds.includes(i.id),
     );
-    expect(presetItems?.map((i) => i.id)).toEqual(presetIds);
+    expect(presetItems.map((i) => i.id)).toEqual(presetIds);
     // 当前主题 midnight 禁用、其余启用。
-    expect(presetItems?.find((i) => i.id === 'view-theme-midnight')?.enabled?.()).toBe(false);
-    expect(presetItems?.find((i) => i.id === 'view-theme-warm-light')?.enabled?.()).toBe(true);
+    expect(presetItems.find((i) => i.id === 'view-theme-midnight')?.enabled?.()).toBe(false);
+    expect(presetItems.find((i) => i.id === 'view-theme-warm-light')?.enabled?.()).toBe(true);
     // 热重载自定义主题入口存在。
-    expect(view?.items.some((i) => i.id === 'view-reload-custom-theme')).toBe(true);
+    expect(items.some((i) => i.id === 'view-reload-custom-theme')).toBe(true);
+    // Toggle still present inside the submenu.
+    expect(items.some((i) => i.id === 'view-theme-toggle')).toBe(true);
   });
-});
+
+  });
 
 describe('buildRecentsMenuItems（R12 最近打开子菜单）', () => {
   it('路径拆分为文件名 + 目录（兼容 / 与 \\）', () => {
@@ -409,8 +433,19 @@ describe('buildRecentsMenuItems（R12 最近打开子菜单）', () => {
     expect(pathBaseName('/home/u/a.md')).toBe('a.md');
     expect(pathDirName('C:\\docs\\笔记.md')).toBe('C:\\docs');
     expect(pathDirName('/home/u/a.md')).toBe('/home/u');
-    // 无目录段 → 空串（hint 不渲染）。
+    // 无目录段 → 空串（description 不渲染）。
     expect(pathDirName('a.md')).toBe('');
+  });
+
+  it('abbreviatePath keeps root + last segments without RTL mangling', () => {
+    expect(abbreviatePath('C:\\docs')).toBe('C:\\docs');
+    expect(
+      abbreviatePath(
+        'C:\\Users\\12976\\project\\LightInk\\docs\\requirements',
+        42,
+      ),
+    ).toMatch(/^C:\\…\\/);
+    expect(abbreviatePath('short/path', 42)).toBe('short/path');
   });
 
   it('空列表返回占位禁用项', () => {
@@ -420,7 +455,7 @@ describe('buildRecentsMenuItems（R12 最近打开子菜单）', () => {
     expect(items[0].enabled?.()).toBe(false);
   });
 
-  it('每项 = 文件名 + 目录提示，末尾接清空入口；open/clear 正确派发', () => {
+  it('每项 = 文件名 + 次行目录 + 完整路径 title；末尾接清空入口', () => {
     const opened: string[] = [];
     let cleared = 0;
     const items = buildRecentsMenuItems(['C:\\docs\\a.md', '/home/u/b.md'], {
@@ -431,8 +466,11 @@ describe('buildRecentsMenuItems（R12 最近打开子菜单）', () => {
     });
     expect(items.map((i) => i.id)).toEqual(['recent-0', 'recent-1', 'recents-sep', 'recents-clear']);
     expect(items[0].label).toBe('a.md');
-    expect(items[0].hint).toBe('C:\\docs');
+    expect(items[0].description).toBe('C:\\docs');
+    expect(items[0].title).toBe('C:\\docs\\a.md');
+    expect(items[0].hint).toBeUndefined();
     expect(items[1].label).toBe('b.md');
+    expect(items[1].description).toBe('/home/u');
     expect(items[2].separator).toBe(true);
     items[0].action();
     items[3].action();

@@ -13,11 +13,133 @@ body {
   height: 100%;
 }
 
+html {
+  /* User reading zoom (font-scale.ts); multiplies body/code sizes only. */
+  --lightink-font-scale: 1;
+}
+
 body {
   background: var(--lightink-bg);
   color: var(--lightink-fg);
-  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-  font-size: 14px;
+  font-family: var(--lightink-font-ui);
+  font-size: var(--lightink-font-size-ui);
+  /* Smoother CJK/Latin rendering on Windows light themes. */
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Multi-resolution scale: compact (<1080p) → hd → qhd (2K) → uhd (4K) → xuhd (>4K).
+ *
+ * Two cooperating signals:
+ *   1) html[data-display] from display-scale.ts (DPR-aware; catches 4K@200%
+ *      which still reports ~1920 CSS px, and small tiled windows).
+ *   2) width media queries (fallback when JS is late / narrow or huge windows).
+ *
+ * The middle reading column (.lightink-tab-host) uses --lightink-measure as
+ * max-width and width:100%, so it grows with the tier instead of leaving
+ * huge empty gutters on wide editor panes.
+ */
+
+/* Compact: 1366×768, 1280×720, half-tiled — fill the pane, modest type. */
+html[data-display='compact'] {
+  --lightink-font-size: 15px;
+  --lightink-font-size-ui: 12.5px;
+  --lightink-font-size-code: 12.75px;
+  --lightink-measure: min(40rem, 100%);
+  --lightink-page-pad-x: 16px;
+  --lightink-page-pad-y: 16px;
+  --lightink-outline-width: 176px;
+}
+
+/* HD baseline extras (explicit for clarity when attribute is set). */
+html[data-display='hd'] {
+  --lightink-measure: min(48rem, 100%);
+  --lightink-page-pad-x: 28px;
+  --lightink-page-pad-y: 24px;
+}
+
+/* QHD / large laptop / 4K@~150%. */
+html[data-display='qhd'] {
+  --lightink-font-size: 16.5px;
+  --lightink-font-size-ui: 13.5px;
+  --lightink-font-size-code: 14px;
+  --lightink-measure: min(58rem, 100%);
+  --lightink-page-pad-x: 40px;
+  --lightink-page-pad-y: 32px;
+  --lightink-outline-width: 248px;
+}
+
+/* UHD / 4K native / high-DPI 4K. */
+html[data-display='uhd'] {
+  --lightink-font-size: 17.5px;
+  --lightink-font-size-ui: 14px;
+  --lightink-font-size-code: 14.5px;
+  --lightink-measure: min(68rem, 100%);
+  --lightink-page-pad-x: 48px;
+  --lightink-page-pad-y: 40px;
+  --lightink-outline-width: 280px;
+}
+
+/* >4K: 5K / 8K / ultra-wide high-DPI. */
+html[data-display='xuhd'] {
+  --lightink-font-size: 18.5px;
+  --lightink-font-size-ui: 14.5px;
+  --lightink-font-size-code: 15px;
+  --lightink-measure: min(78rem, 100%);
+  --lightink-page-pad-x: 56px;
+  --lightink-page-pad-y: 48px;
+  --lightink-outline-width: 304px;
+}
+
+/* CSS-pixel fallbacks (no JS or lagging attribute). */
+
+@media (max-width: 1279px) {
+  html:not([data-display='qhd']):not([data-display='uhd']):not([data-display='xuhd']) {
+    --lightink-font-size: 15px;
+    --lightink-font-size-ui: 12.5px;
+    --lightink-font-size-code: 12.75px;
+    --lightink-measure: min(40rem, 100%);
+    --lightink-page-pad-x: 16px;
+    --lightink-page-pad-y: 16px;
+    --lightink-outline-width: 176px;
+  }
+}
+
+@media (min-width: 1600px) {
+  html:not([data-display='uhd']):not([data-display='xuhd']):not([data-display='compact']) {
+    --lightink-font-size: 16.5px;
+    --lightink-font-size-ui: 13.5px;
+    --lightink-font-size-code: 14px;
+    --lightink-measure: min(58rem, 100%);
+    --lightink-page-pad-x: 40px;
+    --lightink-page-pad-y: 32px;
+    --lightink-outline-width: 248px;
+  }
+}
+
+@media (min-width: 2400px) {
+  html:not([data-display='xuhd']):not([data-display='compact']) {
+    --lightink-font-size: 17.5px;
+    --lightink-font-size-ui: 14px;
+    --lightink-font-size-code: 14.5px;
+    --lightink-measure: min(68rem, 100%);
+    --lightink-page-pad-x: 48px;
+    --lightink-page-pad-y: 40px;
+    --lightink-outline-width: 280px;
+  }
+}
+
+@media (min-width: 4400px) {
+  html {
+    --lightink-font-size: 18.5px;
+    --lightink-font-size-ui: 14.5px;
+    --lightink-font-size-code: 15px;
+    --lightink-measure: min(78rem, 100%);
+    --lightink-page-pad-x: 56px;
+    --lightink-page-pad-y: 48px;
+    --lightink-outline-width: 304px;
+  }
 }
 
 ::selection {
@@ -257,10 +379,13 @@ body {
 }
 
 .lightink-outline {
+  position: relative;
   display: flex;
   flex-direction: column;
-  width: 220px;
+  width: var(--lightink-outline-width, 220px);
+  min-width: 0;
   min-height: 0;
+  flex: 0 0 auto;
 }
 
 .lightink-outline.is-rail {
@@ -268,8 +393,51 @@ body {
 }
 
 .lightink-outline.is-rail .lightink-outline-title,
-.lightink-outline.is-rail .lightink-outline-body {
+.lightink-outline.is-rail .lightink-outline-body,
+.lightink-outline.is-rail .lightink-outline-resize {
   display: none;
+}
+
+/* Right-edge drag handle for resizing the outline panel. */
+.lightink-outline-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+
+.lightink-outline-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.lightink-outline-resize:hover::after,
+.lightink-outline.is-resizing .lightink-outline-resize::after {
+  background: var(--lightink-accent);
+}
+
+/* While dragging: lock cursor and avoid text selection in the editor. */
+body.lightink-outline-resizing,
+body.lightink-outline-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.lightink-outline.is-resizing {
+  /* Prevent layout thrash flicker while width tracks the pointer. */
+  transition: none;
 }
 
 .lightink-outline.is-hidden {
@@ -360,29 +528,81 @@ body {
   overflow-y: auto;
 }
 
+/*
+ * Reading surface: tier-scaled measure fills the editor pane on large screens
+ * (no huge empty gutters), still capped for line length on ultrawide.
+ */
+#lightink-editor-area {
+  /* Horizontal breathing room lives on the host so the column can grow. */
+  padding-inline: 0;
+}
+
 .lightink-tab-host {
-  max-width: 860px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--lightink-measure, 48rem);
   margin: 0 auto;
-  padding: 24px 32px 48px;
-  line-height: 1.7;
+  padding: var(--lightink-page-pad-y, 24px) var(--lightink-page-pad-x, 28px)
+    calc(var(--lightink-page-pad-y, 24px) * 2.2);
+  font-family: var(--lightink-font-body);
+  /* Tier baseline × user font scale (View → 放大/缩小字体). */
+  font-size: calc(var(--lightink-font-size, 16px) * var(--lightink-font-scale, 1));
+  line-height: var(--lightink-line-height-body, 1.75);
+  letter-spacing: 0.01em;
+  color: var(--lightink-fg);
 }
 
 .lightink-tab-host .ProseMirror {
   outline: none;
   min-height: 60vh;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 
-.lightink-tab-host pre {
+.lightink-tab-host .ProseMirror p {
+  margin: 0.55em 0;
+}
+
+.lightink-tab-host .ProseMirror h1,
+.lightink-tab-host .ProseMirror h2,
+.lightink-tab-host .ProseMirror h3,
+.lightink-tab-host .ProseMirror h4,
+.lightink-tab-host .ProseMirror h5,
+.lightink-tab-host .ProseMirror h6 {
+  line-height: 1.35;
+  letter-spacing: 0;
+  font-weight: 650;
+  color: var(--lightink-fg);
+}
+
+.lightink-tab-host .ProseMirror h1 { font-size: 1.75em; margin: 1.1em 0 0.5em; }
+.lightink-tab-host .ProseMirror h2 { font-size: 1.4em; margin: 1.05em 0 0.45em; }
+.lightink-tab-host .ProseMirror h3 { font-size: 1.2em; margin: 1em 0 0.4em; }
+
+.lightink-tab-host pre,
+.lightink-code-block > .lightink-code-pre,
+.lightink-tab-host .lightink-code-block > pre {
   background: var(--lightink-code-bg);
   border: 1px solid var(--lightink-border);
-  border-radius: 6px;
-  padding: 12px 16px;
+  border-radius: 8px;
+  padding: 14px 16px;
   overflow-x: auto;
-  font-size: 13px;
-  line-height: 1.5;
+  font-family: var(--lightink-font-mono);
+  font-size: calc(var(--lightink-font-size-code, 13.5px) * var(--lightink-font-scale, 1));
+  line-height: var(--lightink-line-height-code, 1.55);
+  color: var(--lightink-code-fg);
+  font-variant-ligatures: none; /* clearer operators for copy/read */
+  tab-size: 2;
   user-select: text;
   scrollbar-width: thin;
   scrollbar-color: var(--lightink-border) transparent;
+}
+
+.lightink-tab-host code,
+.lightink-code-block code {
+  font-family: var(--lightink-font-mono);
+  font-size: 0.92em;
 }
 
 /* 代码块横向滚动条 / 源码模式主滚动条 / 斜杠菜单滚动条：细轨、贴主题
@@ -465,13 +685,14 @@ body {
 
 .lightink-code-block > .lightink-code-pre > code,
 .lightink-tab-host .lightink-code-block > pre > code {
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
-  font-size: 13px;
-  line-height: 1.55;
+  font-family: var(--lightink-font-mono);
+  font-size: calc(var(--lightink-font-size-code, 13.5px) * var(--lightink-font-scale, 1));
+  line-height: var(--lightink-line-height-code, 1.55);
   color: var(--lightink-code-fg);
   background: transparent;
   padding: 0;
   border: none;
+  font-variant-ligatures: none;
 }
 
 /* Language trigger in header flow. */
@@ -579,7 +800,7 @@ body {
   color: var(--lightink-fg);
   padding: 7px 10px;
   font-size: 12.5px;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-family: var(--lightink-font-mono);
   cursor: pointer;
 }
 
@@ -741,6 +962,101 @@ body {
   color: var(--lightink-accent);
 }
 
+/*
+ * Math formula fences (```math / latex / katex) — same UX as mermaid:
+ *  rendered → preview only; double-click → edit source; pending/error → source.
+ */
+.lightink-code-block.lightink-math-source,
+.lightink-code-block[data-math-fence='rendered'] {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  margin: 0;
+  overflow: visible;
+  min-height: 0;
+}
+
+.lightink-code-block.lightink-math-source > .lightink-code-header,
+.lightink-code-block.lightink-math-source > .lightink-code-pre,
+.lightink-code-block[data-math-fence='rendered'] > .lightink-code-header,
+.lightink-code-block[data-math-fence='rendered'] > .lightink-code-pre,
+.lightink-tab-host .lightink-code-block.lightink-math-source > pre,
+.lightink-tab-host .lightink-code-block[data-math-fence='rendered'] > pre {
+  display: none !important;
+}
+
+.lightink-code-block.lightink-math-editing,
+.lightink-code-block[data-math-fence='editing'] {
+  border: 1px solid var(--lightink-accent);
+  box-shadow: 0 0 0 2px var(--lightink-accent-soft);
+}
+
+.lightink-code-block.lightink-math-editing > .lightink-code-header,
+.lightink-code-block.lightink-math-editing > .lightink-code-pre,
+.lightink-code-block[data-math-fence='editing'] > .lightink-code-header,
+.lightink-code-block[data-math-fence='editing'] > .lightink-code-pre {
+  display: flex !important;
+}
+
+.lightink-code-block.lightink-math-editing > .lightink-code-pre,
+.lightink-code-block[data-math-fence='editing'] > .lightink-code-pre,
+.lightink-tab-host .lightink-code-block.lightink-math-editing > pre {
+  display: block !important;
+}
+
+.lightink-code-block.lightink-math-pending,
+.lightink-code-block.lightink-math-fence-error {
+  border-style: dashed;
+}
+
+.lightink-code-block.lightink-math-fence-error {
+  border-color: var(--lightink-danger);
+}
+
+.lightink-math-preview {
+  margin: 0.35em 0 1em;
+  padding: 14px 16px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 10px;
+  background: var(--lightink-bg-elevated);
+  overflow-x: auto;
+  overflow-y: visible;
+  text-align: center;
+  cursor: pointer;
+  font-size: 1.1em;
+  /* Multi-line aligned/gather blocks need vertical room. */
+  line-height: 1.6;
+}
+
+.lightink-math-preview .katex-display {
+  margin: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.lightink-math-preview .katex-display > .katex {
+  text-align: center;
+  white-space: normal; /* allow multi-line environments to wrap cleanly */
+}
+
+.lightink-math-preview:hover {
+  border-color: color-mix(in srgb, var(--lightink-accent) 45%, var(--lightink-border));
+  box-shadow: 0 0 0 2px var(--lightink-accent-soft);
+}
+
+/* Editing multi-line formula source: keep pre wrapping readable. */
+.lightink-code-block.lightink-math-editing > .lightink-code-pre,
+.lightink-code-block[data-math-fence='editing'] > .lightink-code-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 4.5em;
+}
+
+.lightink-code-block.lightink-math-editing .lightink-code-lang-trigger,
+.lightink-code-block[data-math-fence='editing'] .lightink-code-lang-trigger {
+  color: var(--lightink-accent);
+}
+
 /* 源码模式选区（R10）：textarea 文字透明（高亮层在背后渲染），全局 18%
    透明度的 selection 洗色几乎不可见，用户感知为「无法选中」——用更强的
    accent 洗色让选中范围明确可读（文字仍由背后高亮层透出）。 */
@@ -770,7 +1086,7 @@ body {
 }
 
 .lightink-tab-host code {
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--lightink-font-mono);
 }
 
 .lightink-tab-host :not(pre) > code {
@@ -789,28 +1105,185 @@ body {
   border-radius: 0 4px 4px 0;
 }
 
-/* 表格：此前缺失的表格样式（R15）。复用既有令牌，所有主题自动获得一致的表格观感。 */
+/* Lists: comfortable vertical rhythm for long-session reading. */
+.lightink-tab-host .ProseMirror ul,
+.lightink-tab-host .ProseMirror ol {
+  margin: 0.55em 0;
+  padding-left: 1.55em;
+}
+
+.lightink-tab-host .ProseMirror li {
+  margin: 0.28em 0;
+  padding-left: 0.15em;
+}
+
+.lightink-tab-host .ProseMirror li > p {
+  margin: 0.15em 0;
+}
+
+/*
+ * GFM task checklist — interactive checkbox (widget) + completed styling.
+ * Schema attrs: data-item-type="task", data-checked="true|false".
+ * Plugin also stamps .lightink-task-item / .is-checked via node decorations.
+ * Checkbox is absolutely placed so nested lists keep normal block flow.
+ */
+.lightink-tab-host .ProseMirror li[data-item-type='task'],
+.lightink-tab-host .ProseMirror li.lightink-task-item {
+  list-style: none;
+  position: relative;
+  margin-left: -0.35em;
+  padding-left: 1.55em;
+}
+
+.lightink-tab-host .ProseMirror li[data-item-type='task'] > p,
+.lightink-tab-host .ProseMirror li.lightink-task-item > p {
+  margin: 0.1em 0;
+}
+
+.lightink-task-checkbox {
+  position: absolute;
+  left: 0;
+  top: 0.28em;
+  box-sizing: border-box;
+  width: 1.05em;
+  height: 1.05em;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid color-mix(in srgb, var(--lightink-muted) 70%, var(--lightink-border));
+  border-radius: 4px;
+  background: var(--lightink-bg-elevated);
+  color: var(--lightink-bg);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 0.95em;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+  /* Keep caret/selection out of the chrome. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.lightink-task-checkbox::after {
+  content: '';
+  width: 0.42em;
+  height: 0.22em;
+  border-left: 1.8px solid currentColor;
+  border-bottom: 1.8px solid currentColor;
+  transform: rotate(-45deg) translate(0.02em, -0.06em);
+  opacity: 0;
+}
+
+.lightink-task-checkbox:hover {
+  border-color: var(--lightink-accent);
+  box-shadow: 0 0 0 3px var(--lightink-accent-soft);
+}
+
+.lightink-task-checkbox:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 2px;
+}
+
+.lightink-task-checkbox.is-checked,
+.lightink-tab-host .ProseMirror li[data-checked='true'] .lightink-task-checkbox {
+  background: var(--lightink-accent);
+  border-color: var(--lightink-accent);
+  color: var(--lightink-bg-elevated);
+}
+
+.lightink-task-checkbox.is-checked::after,
+.lightink-tab-host .ProseMirror li[data-checked='true'] .lightink-task-checkbox::after {
+  opacity: 1;
+}
+
+/* Completed task body: muted + strike (Notion / checklist convention). */
+.lightink-tab-host .ProseMirror li[data-checked='true'] > p,
+.lightink-tab-host .ProseMirror li.lightink-task-item.is-checked > p {
+  color: var(--lightink-muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--lightink-muted) 65%, transparent);
+}
+
+/* 表格：GFM + prosemirror-tables（选中单元格 / 列宽拖拽）。 */
+.lightink-tab-host .tableWrapper {
+  overflow-x: auto;
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid var(--lightink-border);
+  background: var(--lightink-bg-elevated);
+}
+
 .lightink-tab-host table {
   border-collapse: collapse;
+  table-layout: fixed;
   width: 100%;
-  margin: 8px 0;
+  margin: 0;
   font-size: 0.95em;
+  overflow: hidden;
 }
 
 .lightink-tab-host th,
 .lightink-tab-host td {
   border: 1px solid var(--lightink-border);
-  padding: 6px 10px;
+  padding: 8px 12px;
   text-align: left;
+  vertical-align: top;
+  box-sizing: border-box;
+  position: relative;
+  min-width: 48px;
+  background: var(--lightink-bg);
+}
+
+.lightink-tab-host th {
+  background: color-mix(in srgb, var(--lightink-accent-soft) 55%, var(--lightink-bg-elevated));
+  font-weight: 600;
 }
 
 .lightink-tab-host thead th {
-  background: var(--lightink-bg-elevated);
+  background: color-mix(in srgb, var(--lightink-accent-soft) 55%, var(--lightink-bg-elevated));
   font-weight: 600;
 }
 
 .lightink-tab-host tbody tr:nth-child(even) td {
-  background: var(--lightink-bg-elevated);
+  background: color-mix(in srgb, var(--lightink-bg-elevated) 70%, var(--lightink-bg));
+}
+
+/* Cell selection overlay (prosemirror-tables .selectedCell). */
+.lightink-tab-host .ProseMirror .selectedCell {
+  background: color-mix(in srgb, var(--lightink-accent) 12%, var(--lightink-bg)) !important;
+}
+
+.lightink-tab-host .ProseMirror .selectedCell::after {
+  z-index: 2;
+  position: absolute;
+  content: '';
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--lightink-accent) 22%, transparent);
+  pointer-events: none;
+}
+
+.lightink-tab-host .ProseMirror .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  z-index: 20;
+  background-color: var(--lightink-accent);
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.lightink-tab-host .ProseMirror.resize-cursor {
+  cursor: col-resize;
 }
 
 .lightink-tab-host caption {
@@ -889,7 +1362,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   width: 100%;
   text-align: left;
   border: none;
@@ -911,28 +1384,65 @@ body {
   cursor: default;
 }
 
-/* 菜单项右侧弱化提示：快捷键 / 最近文件的目录路径。 */
+/* Recent files: filename + abbreviated directory on two lines. */
+.lightink-menu-item--stacked {
+  align-items: flex-start;
+  gap: 0;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  white-space: normal;
+}
+
+.lightink-menu-item-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .lightink-menu-item-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.lightink-menu-item--stacked .lightink-menu-item-label {
+  font-weight: 500;
+  max-width: 360px;
+}
+
+.lightink-menu-item-description {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--lightink-muted);
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.lightink-menu-item:hover:not(:disabled) .lightink-menu-item-description {
+  color: color-mix(in srgb, var(--lightink-fg) 70%, var(--lightink-muted));
 }
 
 .lightink-menu-item-hint {
   margin-left: auto;
+  flex: 0 0 auto;
   color: var(--lightink-muted);
   font-size: 12px;
 }
 
-/* 路径提示：头部省略（保留最有区分度的末尾目录段）。 */
-.lightink-menu-item-hint--path {
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl;
-}
-
 .lightink-menu-item:hover:not(:disabled) .lightink-menu-item-hint {
   color: var(--lightink-fg);
+}
+
+/* Recent-files flyout: wider so long names/paths stay readable. */
+.lightink-menu-flyout:has(.lightink-menu-item--stacked) {
+  min-width: 280px;
+  max-width: 420px;
 }
 
 /* 子菜单触发器的 ▸ 指示。 */
@@ -1083,7 +1593,7 @@ body {
 }
 
 .lightink-format-tool--code {
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--lightink-font-mono);
   font-size: 12px;
 }
 
@@ -1093,28 +1603,79 @@ body {
 
 /* 斜杠命令菜单（R11）：与右键菜单/格式工具条同一浮层语言；
    键盘选中项左侧加一道 accent 指示条与 hover 区分。 */
+/* Portaled to document.body (position:fixed) so #lightink-editor-area overflow
+   does not clip items. Default viewport shows ~5 rows; rest scrolls. */
 .lightink-slash-menu {
-  min-width: 160px;
-  max-height: 264px;
+  --lightink-slash-item-h: 32px;
+  --lightink-slash-gap: 2px;
+  --lightink-slash-pad-y: 16px; /* 6 top + 10 bottom */
+  --lightink-slash-visible: 5;
+  box-sizing: border-box;
+  min-width: 200px;
+  max-width: 280px;
+  /* ~5 items: 5*32 + 4*2 + 16 = 184px; placeSlashMenu may shrink further. */
+  max-height: calc(
+    var(--lightink-slash-visible) * var(--lightink-slash-item-h)
+    + (var(--lightink-slash-visible) - 1) * var(--lightink-slash-gap)
+    + var(--lightink-slash-pad-y)
+  );
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  padding: 5px;
+  gap: var(--lightink-slash-gap);
+  padding: 6px;
+  padding-bottom: 10px;
   border: 1px solid var(--lightink-border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--lightink-bg-elevated);
   box-shadow: var(--lightink-shadow-strong);
   font-size: 13px;
   animation: lightink-context-menu-in 90ms ease-out;
+  z-index: 10050;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lightink-border) transparent;
+}
+
+.lightink-slash-menu[data-flip='up'] {
+  transform-origin: bottom left;
 }
 
 .lightink-slash-menu__item {
-  padding: 6px 10px;
-  border-radius: 5px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--lightink-slash-item-h, 32px);
+  margin: 0;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--lightink-fg);
-  line-height: 1.4;
+  font: inherit;
+  line-height: 1.35;
+  text-align: left;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.lightink-slash-menu__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lightink-slash-menu__hint {
+  flex: 0 0 auto;
+  color: var(--lightink-muted);
+  font-size: 11.5px;
+  font-family: var(--lightink-font-mono);
+  opacity: 0.85;
 }
 
 .lightink-slash-menu__item:hover {
@@ -1128,7 +1689,7 @@ body {
 }
 
 .lightink-slash-menu__empty {
-  padding: 6px 10px;
+  padding: 8px 10px;
   color: var(--lightink-muted);
   font-size: 12.5px;
 }
@@ -1153,7 +1714,7 @@ body {
 }
 
 .lightink-cheatsheet-shortcut {
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--lightink-font-mono);
   font-size: 12px;
   padding: 1px 6px;
   border: 1px solid var(--lightink-border);
@@ -1321,11 +1882,10 @@ body {
   border: 1px solid var(--lightink-border);
   color: var(--lightink-accent);
   font-size: 12.5px;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-family: var(--lightink-font-mono);
   word-break: break-all;
   max-height: 6em;
   overflow: auto;
-}
 }
 
 /* 版本历史弹层（R13）：双栏——左版本时间线 / 右内容预览。 */
@@ -1407,9 +1967,9 @@ body {
   border-radius: 6px;
   background: var(--lightink-code-bg);
   color: var(--lightink-code-fg);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-family: var(--lightink-font-mono);
+  font-size: calc(var(--lightink-font-size-code, 13.5px) * var(--lightink-font-scale, 1));
+  line-height: var(--lightink-line-height-code, 1.55);
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;

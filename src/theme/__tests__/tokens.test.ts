@@ -72,6 +72,37 @@ describe('tokens.css 内置主题', () => {
     }
   });
 
+  it.each(['warm-light', 'dark'])('%s 定义可读性字体/排版令牌', (id) => {
+    const block = themeBlock(id);
+    for (const token of [
+      '--lightink-font-ui',
+      '--lightink-font-body',
+      '--lightink-font-mono',
+      '--lightink-font-size',
+      '--lightink-font-size-code',
+      '--lightink-line-height-body',
+      '--lightink-line-height-code',
+      '--lightink-measure',
+      '--lightink-page-pad-x',
+      '--lightink-page-pad-y',
+      '--lightink-outline-width',
+    ]) {
+      expect(tokenValue(block, token).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('warm-light 注释色比旧版更易读（非过浅灰）', () => {
+    const comment = tokenValue(themeBlock('warm-light'), '--lightink-syntax-comment').toLowerCase();
+    const hex = /^#([0-9a-f]{6})$/.exec(comment);
+    expect(hex).not.toBeNull();
+    const [r, g, b] = [1, 3, 5].map((i) =>
+      parseInt((hex as RegExpExecArray)[1].slice(i - 1, i + 1), 16),
+    );
+    // Readable muted text on cream: average channel should sit mid-dark, not washed out.
+    expect((r + g + b) / 3).toBeLessThan(0xb0);
+    expect((r + g + b) / 3).toBeGreaterThan(0x50);
+  });
+
   it.each(['warm-light', 'dark'])('%s 定义全部主要语法令牌', (id) => {
     const block = themeBlock(id);
     for (const token of [

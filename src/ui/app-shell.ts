@@ -75,6 +75,20 @@ export interface AppShellActions {
   isChromePinned(): boolean;
   /** Toggle pin for both menu and tabs chrome (fixed navigation). */
   onToggleChromePinned(): void;
+  /** Reading font: larger / smaller / reset to display-tier default. */
+  onZoomIn(): void;
+  onZoomOut(): void;
+  onZoomReset(): void;
+  /** Current font scale label (e.g. `100%`) for the menu. */
+  getFontScaleLabel(): string;
+  /** Translate UI string (en / zh-CN). */
+  t(key: string, vars?: Readonly<Record<string, string>>): string;
+  /** Format shortcut for current OS (⌘ on macOS). */
+  formatShortcut(combo: string): string;
+  /** Current UI locale. */
+  getLocale(): 'en' | 'zh-CN';
+  /** Switch UI language (rebuilds menus). */
+  setLocale(locale: 'en' | 'zh-CN'): void;
 }
 
 export interface AppShellOptions {
@@ -111,6 +125,8 @@ export interface AppShell {
   setChromePinned(pinned: boolean): void;
   /** Toggle pin; returns the new pinned value. */
   toggleChromePinned(): boolean;
+  /** Rebuild menu bar labels/items after language switch. */
+  rebuildMenus(): void;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -144,10 +160,40 @@ export function pathBaseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/** 取路径的目录部分（无目录段返回空串，hint 不渲染）。 */
+/** 取路径的目录部分（无目录段返回空串，description 不渲染）。 */
 export function pathDirName(path: string): string {
   const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
   return idx > 0 ? path.slice(0, idx) : '';
+}
+
+/**
+ * Abbreviate a directory path for the recents submenu secondary line.
+ * Keeps the drive/root and the last 1–2 segments so siblings stay distinguishable
+ * without the old RTL ellipsis hack that mangled mixed CJK/ASCII paths.
+ *
+ * Examples (maxLen=42):
+ *   C:\Users\a\project\docs\req  →  C:\…\project\docs\req  (if short enough)
+ *   very/long/unix/path/here     →  …/path/here
+ */
+export function abbreviatePath(path: string, maxLen = 42): string {
+  const trimmed = path.trim();
+  if (trimmed.length === 0 || trimmed.length <= maxLen) return trimmed;
+  const sep = trimmed.includes('\\') ? '\\' : '/';
+  const parts = trimmed.split(/[\\/]/).filter((p) => p.length > 0);
+  if (parts.length <= 1) {
+    return `…${trimmed.slice(-(maxLen - 1))}`;
+  }
+  const tailCount = parts.length >= 3 ? 2 : 1;
+  const tail = parts.slice(-tailCount).join(sep);
+  const head = parts[0]!;
+  // Prefer "C:\…\parent\name" when the drive/root is short.
+  if (head.length <= 12) {
+    const withHead = `${head}${sep}…${sep}${tail}`;
+    if (withHead.length <= maxLen) return withHead;
+  }
+  const tailOnly = `…${sep}${tail}`;
+  if (tailOnly.length <= maxLen) return tailOnly;
+  return `…${sep}${tail.slice(-(maxLen - 2))}`;
 }
 
 export interface RecentsMenuActions {
@@ -156,126 +202,217 @@ export interface RecentsMenuActions {
 }
 
 /**
- * 构建「最近打开」子菜单项：每行 = 文件名（label）+ 目录（右侧弱化 hint，
- * 头部省略），末尾分隔线 + 清空入口；空列表给占位禁用项。
+ * 构建「最近打开」子菜单项：
+ *   两行布局 = 文件名（主行）+ 缩略目录（次行，muted）
+ *   title = 完整路径（悬停可读）
+ * 末尾分隔线 + 清空入口；空列表给占位禁用项。
  */
 export function buildRecentsMenuItems(
   paths: readonly string[],
   actions: RecentsMenuActions,
+  t: (key: string) => string = (k) => k,
 ): MenuItem[] {
   if (paths.length === 0) {
     return [
-      { id: 'recents-empty', label: '（无最近打开的文件）', action: () => undefined, enabled: () => false },
+      {
+        id: 'recents-empty',
+        label: () => t('file.recentsEmpty'),
+        action: () => undefined,
+        enabled: () => false,
+      },
     ];
   }
   return [
-    ...paths.map((path, index) => ({
-      id: `recent-${index}`,
-      label: pathBaseName(path),
-      hint: pathDirName(path),
-      action: () => actions.open(path),
-    })),
+    ...paths.map((path, index) => {
+      const dir = pathDirName(path);
+      return {
+        id: `recent-${index}`,
+        label: pathBaseName(path),
+        description: dir === '' ? undefined : abbreviatePath(dir),
+        title: path,
+        action: () => actions.open(path),
+      };
+    }),
     separator('recents-sep'),
-    { id: 'recents-clear', label: '清空最近打开', action: actions.clear },
+    { id: 'recents-clear', label: () => t('file.clearRecents'), action: actions.clear },
   ];
 }
 
+function sc(actions: AppShellActions, combo: string): string {
+  return actions.formatShortcut(combo);
+}
+
 export function buildMenus(actions: AppShellActions): Menu[] {
+  const t = (key: string) => actions.t(key);
   const insertItems: MenuItem[] = INSERT_ELEMENTS.map((element) =>
     menuItem(
       `insert-${element.id}`,
-      element.label,
+      () => t(`insert.${element.id}`),
       () => actions.onInsertElement(element.id),
-      element.id === 'link' ? 'Ctrl+K' : element.id === 'image' ? 'Ctrl+Alt+I' : '',
+      element.id === 'link'
+        ? sc(actions, 'Ctrl+K')
+        : element.id === 'image'
+          ? sc(actions, 'Ctrl+Alt+I')
+          : '',
     ),
   );
+
+  /** View → Theme submenu: toggle + presets + custom reload. */
+  const themeSubmenu = (): MenuItem[] => [
+    menuItem(
+      'view-theme-toggle',
+      () => t('view.toggleTheme'),
+      actions.onToggleTheme,
+      sc(actions, 'Ctrl+J'),
+    ),
+    separator('view-theme-sep1'),
+    // R15：逐项列出全部预设主题，当前主题禁用（不可重复选择）。
+    ...BUILTIN_THEMES.map((theme) =>
+      menuItem(
+        `view-theme-${theme.id}`,
+        () => t(`theme.${theme.id}`),
+        () => actions.onApplyTheme(theme.id),
+        '',
+        () => actions.getCurrentThemeId() !== theme.id,
+      ),
+    ),
+    separator('view-theme-sep2'),
+    menuItem(
+      'view-reload-custom-theme',
+      () => t('view.reloadCustomTheme'),
+      actions.onReloadCustomTheme,
+      '',
+      () => actions.canReloadCustomTheme(),
+    ),
+  ];
 
   return [
     {
       id: 'file',
-      label: '文件',
+      label: () => t('menu.file'),
       items: [
-        menuItem('file-new', '新建', actions.onNew, 'Ctrl+N'),
-        menuItem('file-open', '打开', actions.onOpen, 'Ctrl+O'),
+        menuItem('file-new', () => t('file.new'), actions.onNew, sc(actions, 'Ctrl+N')),
+        menuItem('file-open', () => t('file.open'), actions.onOpen, sc(actions, 'Ctrl+O')),
         // R12：VS Code 式「最近打开」子菜单——悬停展开列表（打开时现取，
         // 读取失败按空列表处理），不再弹模态层。
         {
           id: 'file-recents',
-          label: '最近打开',
+          label: () => t('file.recents'),
           action: () => undefined,
           submenu: () =>
             actions
               .listRecents()
               .catch(() => [] as string[])
               .then((paths) =>
-                buildRecentsMenuItems(paths, {
-                  open: (path) => void actions.openRecent(path),
-                  clear: () => void actions.clearRecents(),
-                }),
+                buildRecentsMenuItems(
+                  paths,
+                  {
+                    open: (path) => void actions.openRecent(path),
+                    clear: () => void actions.clearRecents(),
+                  },
+                  t,
+                ),
               ),
         },
         separator('file-sep1'),
-        menuItem('file-save', '保存', actions.onSave, 'Ctrl+S'),
-        menuItem('file-save-as', '另存为', actions.onSaveAs, 'Ctrl+Shift+S'),
+        menuItem('file-save', () => t('file.save'), actions.onSave, sc(actions, 'Ctrl+S')),
+        menuItem('file-save-as', () => t('file.saveAs'), actions.onSaveAs, sc(actions, 'Ctrl+Shift+S')),
         separator('file-sep2'),
-        menuItem('file-versions', '版本历史…', actions.onShowVersions, '', () => actions.hasActiveFile()),
-        menuItem('file-export-html', '导出 HTML', actions.onExportHtml),
-        menuItem('file-export-pdf', '导出 PDF', actions.onExportPdf),
+        menuItem(
+          'file-versions',
+          () => t('file.versions'),
+          actions.onShowVersions,
+          '',
+          () => actions.hasActiveFile(),
+        ),
+        menuItem('file-export-html', () => t('file.exportHtml'), actions.onExportHtml),
+        menuItem('file-export-pdf', () => t('file.exportPdf'), actions.onExportPdf),
       ],
     },
     {
       id: 'edit',
-      label: '编辑',
+      label: () => t('menu.edit'),
       items: [
-        menuItem('edit-undo', '撤销', actions.onUndo, 'Ctrl+Z'),
-        menuItem('edit-redo', '重做', actions.onRedo, 'Ctrl+Shift+Z'),
+        menuItem('edit-undo', () => t('edit.undo'), actions.onUndo, sc(actions, 'Ctrl+Z')),
+        menuItem('edit-redo', () => t('edit.redo'), actions.onRedo, sc(actions, 'Ctrl+Shift+Z')),
         separator('edit-sep1'),
-        menuItem('edit-cut', '剪切', actions.onCut, 'Ctrl+X'),
-        menuItem('edit-copy', '复制', actions.onCopy, 'Ctrl+C'),
-        menuItem('edit-paste', '粘贴', actions.onPaste, 'Ctrl+V'),
+        menuItem('edit-cut', () => t('edit.cut'), actions.onCut, sc(actions, 'Ctrl+X')),
+        menuItem('edit-copy', () => t('edit.copy'), actions.onCopy, sc(actions, 'Ctrl+C')),
+        menuItem('edit-paste', () => t('edit.paste'), actions.onPaste, sc(actions, 'Ctrl+V')),
       ],
     },
-    { id: 'insert', label: '插入', items: insertItems },
+    { id: 'insert', label: () => t('menu.insert'), items: insertItems },
     {
       id: 'view',
-      label: '视图',
+      label: () => t('menu.view'),
       items: [
-        menuItem('view-theme-toggle', '切换主题（浅/深）', actions.onToggleTheme, 'Ctrl+J'),
-        separator('view-theme-sep1'),
-        // R15：逐项列出全部预设主题，当前主题禁用（不可重复选择）。
-        ...BUILTIN_THEMES.map((theme) =>
-          menuItem(
-            `view-theme-${theme.id}`,
-            theme.label,
-            () => actions.onApplyTheme(theme.id),
-            '',
-            () => actions.getCurrentThemeId() !== theme.id,
-          ),
-        ),
-        separator('view-theme-sep2'),
-        // R15：热重载自定义主题文件（无自定义文件时禁用）。
-        menuItem(
-          'view-reload-custom-theme',
-          '重新加载自定义主题',
-          actions.onReloadCustomTheme,
-          '',
-          () => actions.canReloadCustomTheme(),
-        ),
-        separator('view-theme-sep3'),
+        // Theme controls live under a single submenu (3rd level from the top bar).
+        {
+          id: 'view-theme',
+          label: () => t('view.theme'),
+          action: () => undefined,
+          submenu: themeSubmenu,
+        },
+        separator('view-theme-sep'),
         menuItem(
           'view-pin-chrome',
-          () => (actions.isChromePinned() ? '取消固定导航栏' : '固定导航栏'),
+          () => (actions.isChromePinned() ? t('view.unpinChrome') : t('view.pinChrome')),
           actions.onToggleChromePinned,
-          'Alt+P',
+          sc(actions, 'Alt+P'),
         ),
-        menuItem('view-fullscreen', '全屏', actions.onToggleFullscreen, 'F11'),
+        menuItem(
+          'view-fullscreen',
+          () => t('view.fullscreen'),
+          actions.onToggleFullscreen,
+          sc(actions, 'F11'),
+        ),
         separator('view-chrome-sep'),
-        menuItem('view-outline', '大纲切换（展开/窄条/隐藏）', actions.onToggleOutline, 'Ctrl+Shift+L'),
-        // T7/R10 已接通：整窗源码模式。
-        menuItem('view-source-mode', '源码模式', actions.onToggleSourceMode, 'Ctrl+/', () => true),
+        menuItem(
+          'view-outline',
+          () => t('view.outline'),
+          actions.onToggleOutline,
+          sc(actions, 'Ctrl+Shift+L'),
+        ),
+        menuItem(
+          'view-source-mode',
+          () => t('view.sourceMode'),
+          actions.onToggleSourceMode,
+          sc(actions, 'Ctrl+/'),
+          () => true,
+        ),
+        separator('view-font-sep'),
+        menuItem('view-zoom-in', () => t('view.zoomIn'), actions.onZoomIn, sc(actions, 'Ctrl+=')),
+        menuItem('view-zoom-out', () => t('view.zoomOut'), actions.onZoomOut, sc(actions, 'Ctrl+-')),
+        menuItem(
+          'view-zoom-reset',
+          () => `${t('view.zoomReset')} (${actions.getFontScaleLabel()})`,
+          actions.onZoomReset,
+          sc(actions, 'Ctrl+0'),
+        ),
       ],
     },
-    { id: 'help', label: '帮助', items: [menuItem('help-cheatsheet', '快捷键速查', () => undefined)] },
+    {
+      id: 'help',
+      label: () => t('menu.help'),
+      items: [
+        menuItem('help-cheatsheet', () => t('help.cheatsheet'), () => undefined),
+        separator('help-lang-sep'),
+        menuItem(
+          'help-lang-en',
+          () => t('view.language.en'),
+          () => actions.setLocale('en'),
+          '',
+          () => actions.getLocale() !== 'en',
+        ),
+        menuItem(
+          'help-lang-zh',
+          () => t('view.language.zh'),
+          () => actions.setLocale('zh-CN'),
+          '',
+          () => actions.getLocale() !== 'zh-CN',
+        ),
+      ],
+    },
   ];
 }
 
@@ -316,7 +453,7 @@ export function createAppShell(
   menuTrigger.id = 'lightink-menu-trigger';
   menuTrigger.className = 'lightink-chrome-trigger lightink-chrome-trigger--menu';
   menuTrigger.setAttribute('role', 'button');
-  menuTrigger.setAttribute('aria-label', '显示菜单栏');
+  menuTrigger.setAttribute('aria-label', actions.t('chrome.showMenu'));
   menuTrigger.tabIndex = 0;
 
   const toolbar = document.createElement('div');
@@ -330,7 +467,7 @@ export function createAppShell(
   tabsTrigger.id = 'lightink-tabs-trigger';
   tabsTrigger.className = 'lightink-chrome-trigger lightink-chrome-trigger--tabs';
   tabsTrigger.setAttribute('role', 'button');
-  tabsTrigger.setAttribute('aria-label', '显示标签栏');
+  tabsTrigger.setAttribute('aria-label', actions.t('chrome.showTabs'));
   tabsTrigger.tabIndex = 0;
 
   const tabBar = document.createElement('div');
@@ -344,18 +481,21 @@ export function createAppShell(
   mainRow.id = 'lightink-main';
   mainRow.replaceChildren(outlineSidebar, editorArea);
 
-  // 下拉菜单栏。
-  const menus = buildMenus(actions);
-  // 帮助菜单的快捷键速查弹出层。
-  const helpMenu = menus.find((m) => m.id === 'help');
-  if (helpMenu !== undefined) {
+  // 下拉菜单栏（语言切换时 rebuildMenus 整栏重建）。
+  function wireHelpCheatsheet(menus: Menu[]): void {
+    const helpMenu = menus.find((m) => m.id === 'help');
+    if (helpMenu === undefined) return;
     const cheatsheetItem = helpMenu.items.find((i) => i.id === 'help-cheatsheet');
     if (cheatsheetItem !== undefined) {
       cheatsheetItem.action = () => showCheatsheet(options.shortcutBindings());
     }
   }
+
+  const initialMenus = buildMenus(actions);
+  wireHelpCheatsheet(initialMenus);
   const menuBar = createMenuBar({
-    menus,
+    menus: initialMenus,
+    loadingLabel: () => actions.t('menu.loading'),
     onOpenChange: (openMenuId) => {
       const hold = openMenuId !== null;
       chrome.setHold('menu', hold);
@@ -368,6 +508,12 @@ export function createAppShell(
     },
   });
   toolbar.appendChild(menuBar.element);
+
+  function rebuildMenus(): void {
+    const next = buildMenus(actions);
+    wireHelpCheatsheet(next);
+    menuBar.rebuild(next, { loadingLabel: () => actions.t('menu.loading') });
+  }
 
   chromeHost.replaceChildren(menuTrigger, toolbar);
   tabsHost.replaceChildren(tabsTrigger, tabBar);
@@ -518,11 +664,11 @@ export function createAppShell(
     dialog.className = 'lightink-modal-dialog';
     const title = document.createElement('div');
     title.className = 'lightink-modal-title';
-    title.textContent = '快捷键速查';
+    title.textContent = actions.t('help.cheatsheet');
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'lightink-modal-close';
-    close.textContent = '关闭';
+    close.textContent = actions.t('dialog.close');
     dialog.append(title, renderCheatsheet(bindings), close);
     overlay.appendChild(dialog);
     function dismiss(): void {
@@ -595,6 +741,7 @@ export function createAppShell(
     isChromePinned,
     setChromePinned,
     toggleChromePinned,
+    rebuildMenus,
     renderTabBar,
   };
 }

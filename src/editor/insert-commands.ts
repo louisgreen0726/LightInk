@@ -33,7 +33,14 @@ export interface InsertElement {
 export const INSERT_ELEMENTS: readonly InsertElement[] = [
   { id: 'heading', label: '标题', keywords: ['标题', 'heading', 'h1', 'h2'], snippet: () => '## 标题' },
   { id: 'list', label: '列表', keywords: ['列表', 'list', '无序'], snippet: () => '- 列表项' },
-  { id: 'task-list', label: '任务列表', keywords: ['任务', 'task', '待办', '清单'], snippet: () => '- [ ] 任务' },
+  // Default insert is a clickable GFM checklist (not a plain bullet list).
+  // Existing `- [ ]` / `- [x]` markdown still renders; only the insert path is checklist-first.
+  {
+    id: 'task-list',
+    label: '任务清单',
+    keywords: ['任务', 'task', '待办', '清单', '任务列表', 'checkbox', 'todo'],
+    snippet: () => '- [ ] 未完成任务\n- [ ] 另一个任务\n- [x] 已完成任务',
+  },
   {
     id: 'table',
     label: '表格',
@@ -41,7 +48,23 @@ export const INSERT_ELEMENTS: readonly InsertElement[] = [
     snippet: () => '| 列1 | 列2 |\n| --- | --- |\n|  |  |',
   },
   { id: 'code', label: '代码块', keywords: ['代码', 'code', '代码块'], snippet: () => '```ts\n\n```' },
-  { id: 'formula', label: '公式', keywords: ['公式', 'formula', '数学', 'math'], snippet: () => '$$\nE = mc^2\n$$' },
+  // Block formula as a special fenced code block (same UX as mermaid flowchart).
+  // Inline `$…$` / body `$$…$$` still render via the math plugin.
+  {
+    id: 'formula',
+    label: '公式',
+    keywords: ['公式', 'formula', '数学', 'math', 'latex', 'katex'],
+    // Multi-line display math (KaTeX aligned) — same fence UX as mermaid.
+    snippet: () =>
+      [
+        '```math',
+        '\\begin{aligned}',
+        'E &= mc^2 \\\\',
+        'F &= ma',
+        '\\end{aligned}',
+        '```',
+      ].join('\n'),
+  },
   {
     id: 'flowchart',
     label: '流程图',
@@ -49,8 +72,20 @@ export const INSERT_ELEMENTS: readonly InsertElement[] = [
     snippet: () => '```mermaid\ngraph TD\n  A --> B\n```',
   },
   { id: 'image', label: '图片', keywords: ['图片', 'image', '图像'], snippet: () => '![描述](assets/image.png)' },
+  // Link insert is interactive (dialog for text + URL). Snippet is a fallback
+  // only for headless / pure-markdown append paths.
   { id: 'link', label: '链接', keywords: ['链接', 'link', '超链接'], snippet: () => '[文本](https://)' },
 ];
+
+/** Build a markdown link from dialog values (source mode / pure helpers). */
+export function formatLinkMarkdown(text: string, href: string): string {
+  const cleanHref = href.trim();
+  if (cleanHref === '') return '';
+  const label = text.trim() || cleanHref;
+  // Escape bare brackets in label so the markdown stays a single link token.
+  const safeLabel = label.replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+  return `[${safeLabel}](${cleanHref})`;
+}
 
 const ELEMENT_BY_ID: ReadonlyMap<InsertElementId, InsertElement> = new Map(
   INSERT_ELEMENTS.map((element) => [element.id, element]),

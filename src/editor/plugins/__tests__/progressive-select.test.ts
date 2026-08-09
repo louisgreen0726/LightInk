@@ -1,16 +1,24 @@
 /**
- * Progressive select-all pure helpers (block first → document).
+ * Progressive select-all pure helpers (block first → document; table middle step).
  */
 import { describe, expect, it } from 'vitest';
 import { Schema } from '@milkdown/prose/model';
 import { EditorState, TextSelection, AllSelection } from '@milkdown/prose/state';
+import { CellSelection, tableNodes } from '@milkdown/prose/tables';
 
 import {
   currentTextblockRange,
   isFullDocumentSelection,
+  isWholeTableSelected,
   progressiveSelectAll,
   selectionCoversRange,
 } from '../progressive-select.js';
+
+const tableNodeSpecs = tableNodes({
+  tableGroup: 'block',
+  cellContent: 'paragraph+',
+  cellAttributes: {},
+});
 
 const schema = new Schema({
   nodes: {
@@ -24,6 +32,7 @@ const schema = new Schema({
       attrs: { language: { default: '' } },
     },
     text: {},
+    ...tableNodeSpecs,
   },
 });
 
@@ -102,5 +111,64 @@ describe('progressiveSelectAll', () => {
     const state = stateWith([{ type: 'paragraph', text: 'xy' }], 1, 3);
     const range = currentTextblockRange(state)!;
     expect(selectionCoversRange(state, range)).toBe(true);
+  });
+});
+
+function makeTableState(): EditorState {
+  // 2x2 table: header row A B / body 1 2, plus a trailing paragraph.
+  const cell = (text: string, header = false) => {
+    const type = header ? schema.nodes['table_header']! : schema.nodes['table_cell']!;
+    return type.create(
+      { colspan: 1, rowspan: 1, colwidth: null },
+      schema.nodes['paragraph']!.create(null, schema.text(text)),
+    );
+  };
+  const headerRow = schema.nodes['table_row']!.create(null, [cell('A', true), cell('B', true)]);
+  const bodyRow = schema.nodes['table_row']!.create(null, [cell('1'), cell('2')]);
+  const table = schema.nodes['table']!.create(null, [headerRow, bodyRow]);
+  const para = schema.nodes['paragraph']!.create(null, schema.text('after'));
+  const doc = schema.nodes['doc']!.create(null, [table, para]);
+  // Caret inside first body cell text ("1").
+  // Walk to find a text position inside the table.
+  let caret = 1;
+  doc.descendants((node, pos) => {
+    if (node.isText && node.text === '1') {
+      caret = pos;
+      return false;
+    }
+    return undefined;
+  });
+  return EditorState.create({
+    doc,
+    schema,
+    selection: TextSelection.create(doc, caret, caret),
+  });
+}
+
+describe('progressiveSelectAll in tables', () => {
+  it('cell text → whole table → document (never skips table)', () => {
+    let state = makeTableState();
+
+    // 1st: select cell text "1"
+    progressiveSelectAll(state, (tr) => {
+      state = state.apply(tr);
+    });
+    expect(state.doc.textBetween(state.selection.from, state.selection.to)).toBe('1');
+    expect(state.selection instanceof CellSelection).toBe(false);
+    expect(isWholeTableSelected(state)).toBe(false);
+
+    // 2nd: whole table CellSelection
+    progressiveSelectAll(state, (tr) => {
+      state = state.apply(tr);
+    });
+    expect(state.selection instanceof CellSelection).toBe(true);
+    expect(isWholeTableSelected(state)).toBe(true);
+    expect(isFullDocumentSelection(state)).toBe(false);
+
+    // 3rd: whole document (includes trailing paragraph)
+    progressiveSelectAll(state, (tr) => {
+      state = state.apply(tr);
+    });
+    expect(state.selection instanceof AllSelection || isFullDocumentSelection(state)).toBe(true);
   });
 });

@@ -12,7 +12,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { EditorInstance } from '../../editor/types.js';
 import { TabManager, type TabManagerDeps } from '../../tabs/tab-manager.js';
-import { createOutlineView, type OutlineView } from '../outline-view.js';
+import {
+  clampOutlineWidth,
+  createOutlineView,
+  OUTLINE_WIDTH_DEFAULT,
+  OUTLINE_WIDTH_MAX,
+  OUTLINE_WIDTH_MIN,
+  OUTLINE_WIDTH_STORAGE_KEY,
+  readStoredOutlineWidth,
+  writeStoredOutlineWidth,
+  type OutlineView,
+} from '../outline-view.js';
 
 /** 最小 fake DOM 元素：只实现视图用到的子集。 */
 class FakeElement {
@@ -56,10 +66,17 @@ class FakeElement {
     this.children = [...children];
   }
 
-  addEventListener(type: string, listener: () => void): void {
+  addEventListener(type: string, listener: (...args: unknown[]) => void): void {
     const list = this.listeners.get(type) ?? [];
-    list.push(listener);
+    list.push(listener as () => void);
     this.listeners.set(type, list);
+  }
+
+  /** Test helper: fire a stored listener with an optional event payload. */
+  emit(type: string, event: unknown = {}): void {
+    for (const fn of this.listeners.get(type) ?? []) {
+      (fn as (event: unknown) => void)(event);
+    }
   }
 
   setAttribute(name: string, value: string): void {
@@ -86,8 +103,29 @@ class FakeElement {
 }
 
 function fakeDocument(): Document {
+  const listeners = new Map<string, Array<(event: Event) => void>>();
   return {
     createElement: (tag: string) => new FakeElement(tag),
+    body: new FakeElement('body'),
+    addEventListener(type: string, listener: (event: Event) => void): void {
+      const list = listeners.get(type) ?? [];
+      list.push(listener);
+      listeners.set(type, list);
+    },
+    removeEventListener(type: string, listener: (event: Event) => void): void {
+      const list = listeners.get(type) ?? [];
+      listeners.set(
+        type,
+        list.filter((fn) => fn !== listener),
+      );
+    },
+    /** Test helper: emit a document-level event to active listeners. */
+    dispatchEvent(event: { type: string; clientX?: number; button?: number; preventDefault?: () => void }): boolean {
+      for (const fn of listeners.get(event.type) ?? []) {
+        fn(event as unknown as Event);
+      }
+      return true;
+    },
   } as unknown as Document;
 }
 
@@ -100,7 +138,36 @@ function headerOf(view: OutlineView): FakeElement {
 }
 
 function bodyOf(view: OutlineView): FakeElement {
+  // children: [header, body, resizeHandle]
   return rootOf(view).children[1] as FakeElement;
+}
+
+function resizeHandleOf(view: OutlineView): FakeElement {
+  return rootOf(view).children[2] as FakeElement;
+}
+
+function memoryStorage(seed: Record<string, string> = {}): Storage {
+  const map = new Map<string, string>(Object.entries(seed));
+  return {
+    get length() {
+      return map.size;
+    },
+    clear() {
+      map.clear();
+    },
+    getItem(key: string) {
+      return map.has(key) ? map.get(key)! : null;
+    },
+    setItem(key: string, value: string) {
+      map.set(key, String(value));
+    },
+    removeItem(key: string) {
+      map.delete(key);
+    },
+    key() {
+      return null;
+    },
+  } as Storage;
 }
 
 function itemTexts(view: OutlineView): string[] {
@@ -197,6 +264,97 @@ describe('createOutlineView 刷新', () => {
   });
 });
 
+describe('outline width resize', () => {
+  it('clampOutlineWidth bounds width', () => {
+    expect(clampOutlineWidth(100)).toBe(OUTLINE_WIDTH_MIN);
+    expect(clampOutlineWidth(9999)).toBe(OUTLINE_WIDTH_MAX);
+    expect(clampOutlineWidth(240.7)).toBe(241);
+    expect(clampOutlineWidth(Number.NaN)).toBe(OUTLINE_WIDTH_DEFAULT);
+  });
+
+  it('read/write storage round-trips clamped width', () => {
+    const storage = memoryStorage();
+    writeStoredOutlineWidth(storage, 300);
+    expect(storage.getItem(OUTLINE_WIDTH_STORAGE_KEY)).toBe('300');
+    expect(readStoredOutlineWidth(storage)).toBe(300);
+    writeStoredOutlineWidth(storage, 50);
+    expect(readStoredOutlineWidth(storage)).toBe(OUTLINE_WIDTH_MIN);
+  });
+
+  it('restores width from storage and exposes setWidth', () => {
+    const storage = memoryStorage({ [OUTLINE_WIDTH_STORAGE_KEY]: '300' });
+    const view = createOutlineView({
+      doc: fakeDocument(),
+      storage,
+      getActiveHost: () => null,
+      getActiveMarkdown: () => '# A\n',
+    });
+    expect(view.widthPx).toBe(300);
+    expect(rootOf(view).style.width).toBe('300px');
+    expect(resizeHandleOf(view).classList.contains('lightink-outline-resize')).toBe(true);
+
+    view.setWidth(180);
+    expect(view.widthPx).toBe(180);
+    expect(storage.getItem(OUTLINE_WIDTH_STORAGE_KEY)).toBe('180');
+    view.destroy();
+  });
+
+  it('hides resize handle in rail/hidden; restores width when expanded', () => {
+    const view = createOutlineView({
+      doc: fakeDocument(),
+      getActiveHost: () => null,
+      getActiveMarkdown: () => '# A\n',
+    });
+    view.setWidth(260);
+    expect(resizeHandleOf(view).style.display).not.toBe('none');
+
+    view.setVisibility('rail');
+    expect(resizeHandleOf(view).style.display).toBe('none');
+    expect(rootOf(view).style.width).toBe('');
+
+    view.setVisibility('expanded');
+    expect(resizeHandleOf(view).style.display).not.toBe('none');
+    expect(view.widthPx).toBe(260);
+    expect(rootOf(view).style.width).toBe('260px');
+    view.destroy();
+  });
+
+  it('drag handle pointer events update width and persist on release', () => {
+    const storage = memoryStorage();
+    const doc = fakeDocument() as Document & {
+      dispatchEvent(event: { type: string; clientX?: number }): boolean;
+    };
+    const view = createOutlineView({
+      doc,
+      storage,
+      getActiveHost: () => null,
+      getActiveMarkdown: () => '# A\n',
+    });
+    expect(view.widthPx).toBe(OUTLINE_WIDTH_DEFAULT);
+
+    // Start drag at x=100; move to x=140 → width +40.
+    resizeHandleOf(view).emit('pointerdown', {
+      button: 0,
+      clientX: 100,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    expect(rootOf(view).classList.contains('is-resizing')).toBe(true);
+
+    doc.dispatchEvent({ type: 'pointermove', clientX: 140 });
+    expect(view.widthPx).toBe(OUTLINE_WIDTH_DEFAULT + 40);
+    // Not persisted until pointerup.
+    expect(storage.getItem(OUTLINE_WIDTH_STORAGE_KEY)).toBeNull();
+
+    doc.dispatchEvent({ type: 'pointerup', clientX: 140 });
+    expect(rootOf(view).classList.contains('is-resizing')).toBe(false);
+    expect(storage.getItem(OUTLINE_WIDTH_STORAGE_KEY)).toBe(
+      String(OUTLINE_WIDTH_DEFAULT + 40),
+    );
+    view.destroy();
+  });
+});
+
 describe('createOutlineView 三态', () => {
   it('toggleCollapse 循环 expanded → rail → hidden → expanded', () => {
     const view = createOutlineView({
@@ -288,6 +446,9 @@ describe('createOutlineView + TabManager', () => {
       toggleMark: () => undefined,
       setLink: () => undefined,
       insertImage: () => undefined,
+      insertMarkdown: () => false,
+      isInTable: () => false,
+      runTableOp: () => false,
       focus: () => undefined,
       undo: () => undefined,
       redo: () => undefined,

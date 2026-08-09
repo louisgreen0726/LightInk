@@ -98,6 +98,15 @@ export interface TabManagerDeps {
   confirmLinkOpen?: (href: string) => boolean | Promise<boolean>;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
+  /**
+   * Localized untitled tab title. Defaults to Chinese `未命名-{n}` when omitted
+   * (tests / headless). Production injects i18n `app.untitled`.
+   */
+  formatUntitledTitle?: (n: number) => string;
+  /**
+   * Localized restored untitled title. Defaults to `未命名-{n}（已恢复）`.
+   */
+  formatUntitledRestoredTitle?: (n: number) => string;
   reportError?: (message: string, error: unknown) => void;
   /** T4：图片落盘（生产为 asset-service 的 saveAsset）。 */
   saveAsset?: (
@@ -123,8 +132,19 @@ export function snapshotKeyOf(tab: Pick<TabState, 'filePath' | 'syntheticId'>): 
 
 const DEFAULT_DEBOUNCE_MS = 1000;
 
+type TabManagerOptionalUi =
+  | 'onTabsChanged'
+  | 'onActiveContentChanged'
+  | 'onFileOpened'
+  | 'onFileSaved'
+  | 'onLinkNavigate'
+  | 'confirmLinkOpen'
+  | 'formatUntitledTitle'
+  | 'formatUntitledRestoredTitle';
+
 export class TabManager {
-  private readonly deps: Required<Omit<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate' | 'confirmLinkOpen'>> & Pick<TabManagerDeps, 'onTabsChanged' | 'onActiveContentChanged' | 'onFileOpened' | 'onFileSaved' | 'onLinkNavigate' | 'confirmLinkOpen'>;
+  private readonly deps: Required<Omit<TabManagerDeps, TabManagerOptionalUi>> &
+    Pick<TabManagerDeps, TabManagerOptionalUi>;
   private tabs: TabState[] = [];
   private activeId: string | null = null;
   private counter = 0;
@@ -148,6 +168,8 @@ export class TabManager {
         // eslint-disable-next-line no-console
         console.error(`[lightink/tabs] ${message}`, error);
       },
+      formatUntitledTitle: (n) => `未命名-${n}`,
+      formatUntitledRestoredTitle: (n) => `未命名-${n}（已恢复）`,
       ...deps,
       onTabsChanged: deps.onTabsChanged,
       onActiveContentChanged: deps.onActiveContentChanged,
@@ -173,9 +195,11 @@ export class TabManager {
   /** 新建未命名标签。快照键含跨会话唯一 token，避免复用覆盖崩溃草稿。 */
   async newTab(initialMarkdown = ''): Promise<TabState> {
     this.untitledCounter += 1;
+    const format =
+      this.deps.formatUntitledTitle ?? ((n: number) => `未命名-${n}`);
     return this.createTab({
       filePath: null,
-      title: `未命名-${this.untitledCounter}`,
+      title: format(this.untitledCounter),
       syntheticId: `untitled-${newUntitledToken()}`,
       initialMarkdown,
       lastSavedMarkdown: initialMarkdown,
@@ -201,9 +225,12 @@ export class TabManager {
       const restore = await this.deps.promptRestore(draft.key);
       if (restore) {
         this.untitledCounter += 1;
+        const format =
+          this.deps.formatUntitledRestoredTitle ??
+          ((n: number) => `未命名-${n}（已恢复）`);
         const tab = await this.createTab({
           filePath: null,
-          title: `未命名-${this.untitledCounter}（已恢复）`,
+          title: format(this.untitledCounter),
           syntheticId: draft.key,
           initialMarkdown: draft.content,
           lastSavedMarkdown: '',

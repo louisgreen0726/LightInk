@@ -171,6 +171,16 @@ export interface MermaidPluginState {
 
 export const mermaidPluginKey = new PluginKey<MermaidPluginState>('lightink-mermaid');
 
+/** Tooltip on mermaid preview widget (host may retranslate). */
+let MERMAID_EDIT_TITLE = '双击编辑流程图源码';
+
+/** Update mermaid preview tooltip after language switch. */
+export function setMermaidEditTitle(title: string): void {
+  if (title.trim() !== '') {
+    MERMAID_EDIT_TITLE = title.trim();
+  }
+}
+
 /** PM 事务元数据：模块加载完成或单块渲染完成后由 view 回灌触发重装饰。 */
 interface MermaidPluginMeta {
   mermaid?: MermaidModule;
@@ -289,7 +299,7 @@ export function buildMermaidDecorations(
         () => {
           const el = document.createElement('div');
           el.className = 'lightink-mermaid';
-          el.setAttribute('title', '双击编辑流程图源码');
+          el.setAttribute('title', MERMAID_EDIT_TITLE);
           el.setAttribute('data-mermaid-preview', '');
           // mermaid 在 securityLevel:'strict' 下已对 SVG 消毒。
           el.innerHTML = svg;

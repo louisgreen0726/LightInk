@@ -122,6 +122,12 @@ export interface EditorMenuContext {
   hasLink: boolean;
   /** 是否处于源码模式（格式/链接项对源码 textarea 无意义，只保留剪贴板项）。 */
   inSourceMode?: boolean;
+  /** 光标是否在表格内（展示行列操作）。 */
+  inTable?: boolean;
+  /** Translate UI string (en / zh-CN). Optional for tests. */
+  t?: (key: string) => string;
+  /** Format shortcut for current OS. Optional for tests. */
+  formatShortcut?: (combo: string) => string;
 }
 
 export interface EditorMenuActions {
@@ -134,34 +140,126 @@ export interface EditorMenuActions {
   link(): void;
   openLink(): void;
   copyLinkAddress(): void;
+  /** Optional table structure actions (only when inTable). */
+  insertColLeft?(): void;
+  insertColRight?(): void;
+  insertRowAbove?(): void;
+  insertRowBelow?(): void;
+  deleteRow?(): void;
+  deleteColumn?(): void;
+  selectRow?(): void;
+  selectColumn?(): void;
+  deleteTable?(): void;
 }
 
-/** 构建编辑区右键菜单项：剪贴板/格式/链接，按上下文启用。 */
+/** 构建编辑区右键菜单项：剪贴板/格式/链接/表格，按上下文启用。 */
 export function buildEditorContextMenuItems(
   ctx: EditorMenuContext,
   actions: EditorMenuActions,
 ): MenuItem[] {
+  const t = ctx.t ?? ((key: string) => key);
+  const sc = ctx.formatShortcut ?? ((combo: string) => combo);
   const clipboardItems: MenuItem[] = [
-    { id: 'cut', label: '剪切', action: actions.cut, enabled: () => ctx.hasSelection },
-    { id: 'copy', label: '复制', action: actions.copy, enabled: () => ctx.hasSelection },
-    { id: 'paste', label: '粘贴', action: actions.paste },
-    { id: 'paste-plain', label: '粘贴为纯文本', action: actions.pastePlain },
+    { id: 'cut', label: t('ctx.cut'), action: actions.cut, enabled: () => ctx.hasSelection },
+    { id: 'copy', label: t('ctx.copy'), action: actions.copy, enabled: () => ctx.hasSelection },
+    { id: 'paste', label: t('ctx.paste'), action: actions.paste },
+    { id: 'paste-plain', label: t('ctx.pastePlain'), action: actions.pastePlain },
   ];
   // 源码模式：格式/链接动作作用于背后的 WYSIWYG 编辑器而非源码 textarea，
   // 展示会误导——只保留剪贴板项（execCommand 对聚焦的 textarea 同样生效）。
   if (ctx.inSourceMode === true) {
     return clipboardItems;
   }
-  return [
+  const items: MenuItem[] = [
     ...clipboardItems,
     { separator: true, id: 'sep-format', label: '', action: () => undefined },
-    { id: 'bold', label: '加粗', shortcut: 'Ctrl+B', action: actions.bold, enabled: () => ctx.hasSelection },
-    { id: 'italic', label: '斜体', shortcut: 'Ctrl+I', action: actions.italic, enabled: () => ctx.hasSelection },
-    { id: 'link', label: '链接', shortcut: 'Ctrl+K', action: actions.link, enabled: () => ctx.hasSelection },
+    {
+      id: 'bold',
+      label: t('ctx.bold'),
+      shortcut: sc('Ctrl+B'),
+      action: actions.bold,
+      enabled: () => ctx.hasSelection,
+    },
+    {
+      id: 'italic',
+      label: t('ctx.italic'),
+      shortcut: sc('Ctrl+I'),
+      action: actions.italic,
+      enabled: () => ctx.hasSelection,
+    },
+    {
+      id: 'link',
+      label: t('ctx.link'),
+      shortcut: sc('Ctrl+K'),
+      action: actions.link,
+      enabled: () => ctx.hasSelection,
+    },
     { separator: true, id: 'sep-link', label: '', action: () => undefined },
-    { id: 'open-link', label: '打开链接', action: actions.openLink, enabled: () => ctx.hasLink },
-    { id: 'copy-link', label: '复制链接地址', action: actions.copyLinkAddress, enabled: () => ctx.hasLink },
+    { id: 'open-link', label: t('ctx.openLink'), action: actions.openLink, enabled: () => ctx.hasLink },
+    {
+      id: 'copy-link',
+      label: t('ctx.copyLink'),
+      action: actions.copyLinkAddress,
+      enabled: () => ctx.hasLink,
+    },
   ];
+  if (ctx.inTable === true) {
+    items.push(
+      { separator: true, id: 'sep-table', label: '', action: () => undefined },
+      {
+        id: 'table-insert-col-left',
+        label: t('ctx.table.insertColLeft'),
+        shortcut: sc('Ctrl+Alt+←'),
+        action: () => actions.insertColLeft?.(),
+      },
+      {
+        id: 'table-insert-col-right',
+        label: t('ctx.table.insertColRight'),
+        shortcut: sc('Ctrl+Alt+→'),
+        action: () => actions.insertColRight?.(),
+      },
+      {
+        id: 'table-insert-row-above',
+        label: t('ctx.table.insertRowAbove'),
+        shortcut: sc('Ctrl+Shift+Enter'),
+        action: () => actions.insertRowAbove?.(),
+      },
+      {
+        id: 'table-insert-row-below',
+        label: t('ctx.table.insertRowBelow'),
+        shortcut: sc('Ctrl+Enter'),
+        action: () => actions.insertRowBelow?.(),
+      },
+      {
+        id: 'table-select-row',
+        label: t('ctx.table.selectRow'),
+        action: () => actions.selectRow?.(),
+      },
+      {
+        id: 'table-select-column',
+        label: t('ctx.table.selectColumn'),
+        action: () => actions.selectColumn?.(),
+      },
+      {
+        id: 'table-delete-row',
+        label: t('ctx.table.deleteRow'),
+        shortcut: sc('Ctrl+Shift+Backspace'),
+        action: () => actions.deleteRow?.(),
+      },
+      {
+        id: 'table-delete-column',
+        label: t('ctx.table.deleteColumn'),
+        shortcut: sc('Ctrl+Shift+Delete'),
+        action: () => actions.deleteColumn?.(),
+      },
+      {
+        id: 'table-delete',
+        label: t('ctx.table.delete'),
+        action: () => actions.deleteTable?.(),
+      },
+    );
+  }
+  return items;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +269,8 @@ export function buildEditorContextMenuItems(
 export interface TabMenuContext {
   /** 是否有磁盘文件路径（未保存的新标签无路径）。 */
   hasFile: boolean;
+  /** Translate UI string (en / zh-CN). Optional for tests. */
+  t?: (key: string) => string;
 }
 
 export interface TabMenuActions {
@@ -182,11 +282,22 @@ export interface TabMenuActions {
 
 /** 构建标签页右键菜单项：关闭/关闭其他/复制路径/在文件管理器中显示。 */
 export function buildTabContextMenuItems(ctx: TabMenuContext, actions: TabMenuActions): MenuItem[] {
+  const t = ctx.t ?? ((key: string) => key);
   return [
-    { id: 'close', label: '关闭', action: actions.close },
-    { id: 'close-others', label: '关闭其他', action: actions.closeOthers },
+    { id: 'close', label: t('ctx.tab.close'), action: actions.close },
+    { id: 'close-others', label: t('ctx.tab.closeOthers'), action: actions.closeOthers },
     { separator: true, id: 'sep-path', label: '', action: () => undefined },
-    { id: 'copy-path', label: '复制文件路径', action: actions.copyPath, enabled: () => ctx.hasFile },
-    { id: 'reveal', label: '在文件管理器中显示', action: actions.revealInFiles, enabled: () => ctx.hasFile },
+    {
+      id: 'copy-path',
+      label: t('ctx.tab.copyPath'),
+      action: actions.copyPath,
+      enabled: () => ctx.hasFile,
+    },
+    {
+      id: 'reveal',
+      label: t('ctx.tab.reveal'),
+      action: actions.revealInFiles,
+      enabled: () => ctx.hasFile,
+    },
   ];
 }

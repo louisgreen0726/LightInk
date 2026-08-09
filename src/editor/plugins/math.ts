@@ -44,9 +44,9 @@
  */
 
 import { $prose } from '@milkdown/utils';
-import { Plugin, PluginKey } from '@milkdown/prose/state';
+import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
-import { Decoration, DecorationSet } from '@milkdown/prose/view';
+import { Decoration, DecorationSet, type EditorView } from '@milkdown/prose/view';
 
 import { parseMarkdownToMdast } from '../parser.js';
 
@@ -263,7 +263,15 @@ function collectInlineMath(
       return;
     }
     if (child.type === 'break') {
-      append('\n', child.position?.start?.offset ?? 0);
+      // CommonMark turns a trailing backslash+newline into a hard break.
+      // Keep the original source slice so multi-line $$…$$ keeps LaTeX `\\`.
+      const brStart = child.position?.start?.offset;
+      const brEnd = child.position?.end?.offset;
+      if (brStart !== undefined && brEnd !== undefined && brEnd > brStart) {
+        append(source.slice(brStart, brEnd), brStart);
+      } else {
+        append('\n', brStart ?? 0);
+      }
       return;
     }
     for (const grand of child.children ?? []) visit(grand);
@@ -285,7 +293,11 @@ export function hasMath(markdown: string): boolean {
 export interface KatexRenderer {
   renderToString(
     latex: string,
-    options?: { throwOnError?: boolean; displayMode?: boolean },
+    options?: {
+      throwOnError?: boolean;
+      displayMode?: boolean;
+      strict?: boolean | 'ignore' | 'error' | 'warn';
+    },
   ): string;
 }
 
@@ -299,8 +311,20 @@ interface RenderOutcome {
  * HTML（调用方据此原样显示源码，而不是用 KaTeX 的红字错误样式）。
  */
 function tryRenderKatex(latex: string, displayMode: boolean, katex: KatexRenderer): RenderOutcome {
+  const source = displayMode ? normalizeDisplayLatex(latex) : latex;
+  if (source === '') {
+    return { html: '', error: true };
+  }
   try {
-    return { html: katex.renderToString(latex, { throwOnError: true, displayMode }), error: false };
+    return {
+      html: katex.renderToString(source, {
+        throwOnError: true,
+        displayMode,
+        // Multi-line environments (\begin{aligned} …) need full trust of \\ newlines.
+        strict: 'ignore',
+      }),
+      error: false,
+    };
   } catch {
     return { html: '', error: true };
   }
@@ -353,26 +377,94 @@ export function createKatexLoader(
 // ProseMirror decoration 层
 // ---------------------------------------------------------------------------
 
-/** 公式插件状态：已加载的 KaTeX（未加载时为 null）+ 当前 decorations。 */
+/** 公式插件状态：KaTeX + 块级公式编辑位 + decorations。 */
 export interface MathPluginState {
   readonly katex: KatexRenderer | null;
+  /**
+   * Position of a ```math / latex / katex code_block open for source editing
+   * (double-click preview). null = successful math fences show preview only.
+   */
+  readonly editingPos: number | null;
   readonly decorations: DecorationSet;
 }
 
 export const mathPluginKey = new PluginKey<MathPluginState>('lightink-math');
 
-/** PM 事务元数据形状：KaTeX 加载完成后由 view 回灌触发重装饰。 */
-interface KatexLoadedMeta {
-  katex: KatexRenderer;
+/** Tooltip on math preview widget (host may retranslate). */
+let MATH_EDIT_TITLE = '双击编辑公式源码';
+
+/** Update math preview tooltip after language switch. */
+export function setMathEditTitle(title: string): void {
+  if (title.trim() !== '') {
+    MATH_EDIT_TITLE = title.trim();
+  }
 }
 
-/** 快速判断 PM 文档是否含公式（不构建 decoration，供惰性加载门槛用）。 */
+/** PM 事务元数据：KaTeX 加载 / 进入退出块级公式编辑。 */
+interface MathPluginMeta {
+  katex?: KatexRenderer;
+  editingPos?: number | null;
+}
+
+/**
+ * Fence info-string is a math block (```math / latex / katex).
+ * Same token rule as mermaid: first whitespace-separated token, lowercased.
+ */
+export function isMathBlock(infoString: string | null | undefined): boolean {
+  if (infoString === null || infoString === undefined) return false;
+  const tag = infoString.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  return tag === 'math' || tag === 'latex' || tag === 'katex';
+}
+
+/**
+ * LaTeX source inside a math fence.
+ * Use textBetween(…, '\\n') so multi-line formulas keep real newlines (not
+ * collapsed textContent joining). Normalize CRLF. Empty → null (pending).
+ */
+export function mathFenceDefinitionOf(node: PMNode): string | null {
+  if (node.type.name !== 'code_block') return null;
+  const language =
+    typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+  if (!isMathBlock(language)) return null;
+  const text = node
+    .textBetween(0, node.content.size, '\n', '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+  return text === '' ? null : text;
+}
+
+/**
+ * Prepare fence LaTeX for KaTeX displayMode.
+ * Multi-line bodies without an environment still render as one display block;
+ * trailing \\ on intermediate lines is left to the author (aligned/gather).
+ */
+export function normalizeDisplayLatex(latex: string): string {
+  return (
+    latex
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      // CommonMark hard-break eats the final backslash before newline in PM.
+      // Restore LaTeX `\\` row breaks without doubling fence-sourced `\\`.
+      .replace(/(?<!\\)\\\n/g, '\\\\\n')
+      .trim()
+  );
+}
+
+/** 文档是否含行内/块级 $ 公式或 math 代码块（惰性加载门槛）。 */
 function docHasMath(doc: PMNode): boolean {
   let found = false;
   doc.descendants((node) => {
     if (found) return false;
-    // 代码块内容永远不当公式扫描（R8：公式只作用于正文）
-    if (node.type.name === 'code_block') return false;
+    if (node.type.name === 'code_block') {
+      const lang =
+        typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+      if (isMathBlock(lang)) {
+        found = true;
+        return false;
+      }
+      return false; // never scan ordinary code as $ math
+    }
     if (!node.isTextblock) return true;
     if (scanMathInTextblock(node).length > 0) {
       found = true;
@@ -428,24 +520,98 @@ function scanMathInTextblock(
 }
 
 /**
- * 为整篇文档构建公式 decorations。`katex` 为 null（尚未加载）时返回空集
- * —— 此时公式以源码形态原样显示，加载完成后由插件重新构建。
+ * 为整篇文档构建公式 decorations。
  *
- * 每个公式段产生：
- *   - source 范围的 inline decoration（成功：`lightink-math-inline-source`
- *     / `lightink-math-block-source`；失败：`lightink-math-error`）；
- *   - 成功时追加一个 widget decoration，承载渲染好的 KaTeX HTML。
- * 文档本身不被修改，源码始终可编辑；错误只影响该段自身。
+ *   A) 行内/块级 `$…$` / `$$…$$`（正文 textblock）
+ *   B) 特殊代码块 ```math / latex / katex（对齐 mermaid 流程图 UX）：
+ *        - 成功且未编辑 → 隐藏源码 + KaTeX 预览 widget（双击进入编辑）
+ *        - 成功且 editingPos 命中 → 显示源码（lightink-math-editing）
+ *        - 失败 / 空 / katex 未加载 → 源码可见 + pending/error 样式
+ *
+ * `katex` 为 null 时：行内 $ 不渲染；math fence 仍打 pending 样式。
  */
-export function buildMathDecorations(doc: PMNode, katex: KatexRenderer | null): DecorationSet {
-  if (katex === null) return DecorationSet.empty;
+export function buildMathDecorations(
+  doc: PMNode,
+  katex: KatexRenderer | null,
+  editingPos: number | null = null,
+  onEditRequest?: (blockPos: number) => void,
+): DecorationSet {
   const decorations: Decoration[] = [];
   doc.descendants((node, pos) => {
-    // 代码块内容永远不当公式渲染（R8：公式只作用于正文）
-    if (node.type.name === 'code_block') return false;
+    // --- Special math code fences (```math) ---------------------------------
+    if (node.type.name === 'code_block') {
+      const lang =
+        typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+      if (!isMathBlock(lang)) return false;
+      const def = mathFenceDefinitionOf(node);
+      const isEditing = editingPos === pos;
+      if (def === null || katex === null) {
+        decorations.push(
+          Decoration.node(pos, pos + node.nodeSize, {
+            class: 'lightink-math-pending',
+            'data-math-fence': 'pending',
+          }),
+        );
+        return false;
+      }
+      const outcome = tryRenderKatex(def, true, katex);
+      if (outcome.error) {
+        decorations.push(
+          Decoration.node(pos, pos + node.nodeSize, {
+            class: 'lightink-math-fence-error',
+            'data-math-fence': 'error',
+            // Keep enough of multi-line source for the dashed error chrome.
+            'data-math-error': def.slice(0, 240).replace(/\n/g, '↵'),
+          }),
+        );
+        return false;
+      }
+      if (isEditing) {
+        decorations.push(
+          Decoration.node(pos, pos + node.nodeSize, {
+            class: 'lightink-math-editing',
+            'data-math-fence': 'editing',
+          }),
+        );
+        return false;
+      }
+      decorations.push(
+        Decoration.node(pos, pos + node.nodeSize, {
+          class: 'lightink-math-source',
+          'data-math-fence': 'rendered',
+        }),
+      );
+      const html = outcome.html;
+      const blockPos = pos;
+      // Content-address key so multi-line edits re-render the widget reliably.
+      const lineCount = def.split('\n').length;
+      const keyHash = `${blockPos}-${def.length}-${lineCount}`;
+      decorations.push(
+        Decoration.widget(
+          pos + node.nodeSize,
+          () => {
+            const el = document.createElement('div');
+            el.className = 'lightink-math-preview';
+            el.setAttribute('title', MATH_EDIT_TITLE);
+            el.setAttribute('data-math-preview', '');
+            el.setAttribute('data-math-lines', String(lineCount));
+            el.innerHTML = html;
+            el.addEventListener('dblclick', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onEditRequest?.(blockPos);
+            });
+            return el;
+          },
+          { side: 1, key: `lightink-math-fence-${keyHash}` },
+        ),
+      );
+      return false;
+    }
+
+    // --- Inline / body $…$  /  $$…$$  (requires katex) ----------------------
+    if (katex === null) return true;
     if (!node.isTextblock) return true;
-    // textblock 内文本从 pos+1 开始；扫描时排除 inline code（code mark）
-    // 区间（leaf 节点以单字符占位，保证「文本下标 ↔ 文档位置」一一对应）。
     const segments = scanMathInTextblock(node).map((seg) => ({
       ...seg,
       from: seg.from + pos + 1,
@@ -455,7 +621,6 @@ export function buildMathDecorations(doc: PMNode, katex: KatexRenderer | null): 
       const displayMode = seg.type === 'block';
       const outcome = tryRenderKatex(seg.latex, displayMode, katex);
       if (outcome.error) {
-        // R8：语法错误 → 原样显示源码，仅加错误样式类，不插入渲染结果。
         decorations.push(
           Decoration.inline(seg.from, seg.to, {
             class: 'lightink-math-error',
@@ -484,7 +649,7 @@ export function buildMathDecorations(doc: PMNode, katex: KatexRenderer | null): 
         ),
       );
     }
-    return false; // textblock 的文本已整体扫描，无需下降
+    return false;
   });
   return DecorationSet.create(doc, decorations);
 }
@@ -494,34 +659,97 @@ export function buildMathDecorations(doc: PMNode, katex: KatexRenderer | null): 
 // ---------------------------------------------------------------------------
 
 /**
- * Milkdown 插件（`$prose`）：行内/块级 LaTeX 公式即时渲染。
- * 在 mountEditor 中于 commonmark/gfm/history 之后注册。
- *
- * 加载策略：`view` 在挂载与每次更新后检查文档；仅当存在公式且 KaTeX 未
- * 加载时才触发一次动态 import，完成后通过带 meta 的事务回灌插件状态并
- * 重建 decorations。加载失败时静默保持源码显示（不阻塞编辑）。
+ * Milkdown 插件（`$prose`）：行内 `$…$` / 块级 `$$…$$` + 特殊代码块 ```math。
+ * 代码块路径对齐 mermaid：预览 / 双击编辑源码 / 错误隔离。
  */
 export const mathPlugin = $prose(() => {
   const loadKatex = createKatexLoader();
   let loadRequested = false;
+  let editorView: EditorView | null = null;
+
+  const requestEdit = (blockPos: number): void => {
+    if (editorView === null) return;
+    const node = editorView.state.doc.nodeAt(blockPos);
+    let tr = editorView.state.tr.setMeta(mathPluginKey, {
+      editingPos: blockPos,
+    } satisfies MathPluginMeta);
+    if (node !== null) {
+      const inner = Math.min(blockPos + 1, editorView.state.doc.content.size);
+      try {
+        tr = tr.setSelection(TextSelection.create(tr.doc, inner));
+      } catch {
+        /* ignore */
+      }
+    }
+    editorView.dispatch(tr.scrollIntoView());
+    editorView.focus();
+  };
+
+  const rebuild = (
+    doc: PMNode,
+    katex: KatexRenderer | null,
+    editingPos: number | null,
+  ): MathPluginState => ({
+    katex,
+    editingPos,
+    decorations: buildMathDecorations(doc, katex, editingPos, requestEdit),
+  });
 
   return new Plugin<MathPluginState>({
     key: mathPluginKey,
     state: {
-      init: (_config, state) => ({
-        katex: null,
-        decorations: buildMathDecorations(state.doc, null),
-      }),
+      init: (_config, state) => rebuild(state.doc, null, null),
       apply: (tr, old, _oldState, newState) => {
-        const meta = tr.getMeta(mathPluginKey) as KatexLoadedMeta | undefined;
+        const meta = tr.getMeta(mathPluginKey) as MathPluginMeta | undefined;
         const katex = meta?.katex ?? old.katex;
-        if (meta?.katex !== undefined || tr.docChanged) {
-          return { katex, decorations: buildMathDecorations(newState.doc, katex) };
+
+        let editingPos = old.editingPos;
+        if (meta !== undefined && 'editingPos' in meta) {
+          editingPos = meta.editingPos ?? null;
+        } else if (editingPos !== null && tr.docChanged) {
+          const mapped = tr.mapping.mapResult(editingPos, 1);
+          if (mapped.deleted) {
+            editingPos = null;
+          } else {
+            editingPos = mapped.pos;
+            const node = newState.doc.nodeAt(editingPos);
+            const lang =
+              node !== null && typeof node.attrs['language'] === 'string'
+                ? (node.attrs['language'] as string)
+                : '';
+            if (node === null || node.type.name !== 'code_block' || !isMathBlock(lang)) {
+              editingPos = null;
+            }
+          }
         }
-        return { katex, decorations: old.decorations.map(tr.mapping, tr.doc) };
+
+        // Leave edit mode when selection leaves the math fence.
+        if (editingPos !== null && tr.selectionSet && !tr.docChanged) {
+          const node = newState.doc.nodeAt(editingPos);
+          if (node !== null) {
+            const from = editingPos;
+            const to = editingPos + node.nodeSize;
+            const { from: selFrom, to: selTo } = newState.selection;
+            if (!(selFrom >= from && selTo <= to)) {
+              editingPos = null;
+            }
+          } else {
+            editingPos = null;
+          }
+        }
+
+        if (meta !== undefined || tr.docChanged || editingPos !== old.editingPos) {
+          return rebuild(newState.doc, katex, editingPos);
+        }
+        return {
+          katex,
+          editingPos,
+          decorations: old.decorations.map(tr.mapping, tr.doc),
+        };
       },
     },
     view: (view) => {
+      editorView = view as EditorView;
       const ensureKatex = (): void => {
         const pluginState = mathPluginKey.getState(view.state);
         if (pluginState === undefined || pluginState.katex !== null || loadRequested) return;
@@ -529,16 +757,24 @@ export const mathPlugin = $prose(() => {
         loadRequested = true;
         loadKatex()
           .then((katex) => {
-            // 视图可能已销毁；dispatch 前状态检查由 PM 自身保证安全。
-            view.dispatch(view.state.tr.setMeta(mathPluginKey, { katex } satisfies KatexLoadedMeta));
+            view.dispatch(
+              view.state.tr.setMeta(mathPluginKey, { katex } satisfies MathPluginMeta),
+            );
           })
           .catch(() => {
-            // 加载失败：保持源码显示，不打扰编辑；重试留给下次挂载。
             loadRequested = false;
           });
       };
       ensureKatex();
-      return { update: () => ensureKatex() };
+      return {
+        update: () => {
+          editorView = view as EditorView;
+          ensureKatex();
+        },
+        destroy: () => {
+          editorView = null;
+        },
+      };
     },
     props: {
       decorations(state) {

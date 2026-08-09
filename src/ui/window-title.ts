@@ -8,13 +8,20 @@ export interface WindowTitleTab {
   dirty: boolean;
 }
 
-const APP_NAME = '轻墨 LightInk';
+let appName = 'LightInk';
+
+/** Set localized application name used in the window title. */
+export function setAppDisplayName(name: string): void {
+  if (name.trim() !== '') {
+    appName = name.trim();
+  }
+}
 
 /** Build the browser/webview title for the active tab (or app-only when none). */
 export function formatDocumentTitle(tab: WindowTitleTab | null): string {
   if (tab === null) {
-    return APP_NAME;
+    return appName;
   }
   const dirty = tab.dirty ? '● ' : '';
-  return `${dirty}${tab.title} — ${APP_NAME}`;
+  return `${dirty}${tab.title} — ${appName}`;
 }

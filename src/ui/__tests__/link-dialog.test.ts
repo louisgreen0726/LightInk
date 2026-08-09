@@ -106,7 +106,7 @@ describe('showLinkDialog', () => {
     const doc = fakeDoc();
     const pending = showLinkDialog(doc, { initialText: 'a', initialHref: 'https://x' });
     const cancel = doc.body.query(
-      (el) => el.tagName === 'BUTTON' && el.textContent === '取消',
+      (el) => el.tagName === 'BUTTON' && (el.textContent === '取消' || el.textContent === 'Cancel'),
     );
     expect(cancel).not.toBeNull();
     cancel!.click();
@@ -144,14 +144,14 @@ describe('showOpenLinkConfirm', () => {
     const doc = fakeDoc();
     const pending = showOpenLinkConfirm(doc, 'https://example.com');
     const cancel = doc.body.query(
-      (el) => el.tagName === 'BUTTON' && el.textContent === '取消',
+      (el) => el.tagName === 'BUTTON' && (el.textContent === '取消' || el.textContent === 'Cancel'),
     );
     cancel!.click();
     await expect(pending).resolves.toBe(false);
 
     const pending2 = showOpenLinkConfirm(doc, 'https://example.com');
     const open = doc.body.query(
-      (el) => el.tagName === 'BUTTON' && el.textContent === '打开',
+      (el) => el.tagName === 'BUTTON' && (el.textContent === '打开' || el.textContent === 'Open'),
     );
     open!.click();
     await expect(pending2).resolves.toBe(true);

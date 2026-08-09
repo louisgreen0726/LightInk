@@ -36,7 +36,8 @@ const PLAIN_TEXT_MARKERS: ReadonlySet<string> = new Set([
  * Non-hljs languages that still need a picker label / stable fence tag
  * (e.g. mermaid diagrams rendered by a dedicated plugin).
  */
-export const SPECIAL_LANGUAGES: readonly string[] = ['mermaid'];
+/** Non-hljs fences rendered by dedicated plugins (mermaid / math). */
+export const SPECIAL_LANGUAGES: readonly string[] = ['mermaid', 'math', 'latex', 'katex'];
 
 /**
  * Extra fence tags that hljs does not alias itself → registered language names.
@@ -107,6 +108,12 @@ export function listSupportedLanguages(): readonly string[] {
 /** True when fence is a mermaid diagram block (rendered by mermaid plugin). */
 export function isDiagramLanguage(infoString: string | null | undefined): boolean {
   return resolveLanguage(infoString) === 'mermaid';
+}
+
+/** True when fence is a LaTeX math block (rendered by math plugin). */
+export function isMathLanguage(infoString: string | null | undefined): boolean {
+  const tag = resolveLanguage(infoString);
+  return tag === 'math' || tag === 'latex' || tag === 'katex';
 }
 
 /** Flattened highlight token: hljs scope + source text. */
@@ -248,12 +255,36 @@ export const LANG_LIST_CLASS = 'lightink-code-lang-list';
 export const LANG_OPTION_CLASS = 'lightink-code-lang-option';
 export const LANG_OPTION_ACTIVE_CLASS = 'lightink-code-lang-option--active';
 export const LANG_OPTION_EMPTY_CLASS = 'lightink-code-lang-option--empty';
-export const COPY_LABEL = '复制';
-export const COPIED_LABEL = '已复制';
-export const PLAIN_LANGUAGE_LABEL = '纯文本';
-export const LANG_FILTER_PLACEHOLDER = '筛选语言…';
-export const LANG_EMPTY_FILTER_LABEL = '无匹配语言';
+/** Mutable UI labels (host retranslates after language switch). */
+export let COPY_LABEL = 'Copy';
+export let COPIED_LABEL = 'Copied';
+export let PLAIN_LANGUAGE_LABEL = 'Plain text';
+export let LANG_FILTER_PLACEHOLDER = 'Filter languages…';
+export let LANG_EMPTY_FILTER_LABEL = 'No matching language';
+export let MERMAID_LANGUAGE_LABEL = 'Flowchart';
+export let MATH_LANGUAGE_LABEL = 'Formula';
 const COPY_FEEDBACK_MS = 1500;
+
+export interface CodeChromeLabels {
+  copy?: string;
+  copied?: string;
+  plain?: string;
+  filterPlaceholder?: string;
+  emptyFilter?: string;
+  mermaid?: string;
+  math?: string;
+}
+
+/** Apply localized chrome labels for code blocks (copy / language picker). */
+export function setCodeChromeLabels(labels: CodeChromeLabels): void {
+  if (labels.copy !== undefined) COPY_LABEL = labels.copy;
+  if (labels.copied !== undefined) COPIED_LABEL = labels.copied;
+  if (labels.plain !== undefined) PLAIN_LANGUAGE_LABEL = labels.plain;
+  if (labels.filterPlaceholder !== undefined) LANG_FILTER_PLACEHOLDER = labels.filterPlaceholder;
+  if (labels.emptyFilter !== undefined) LANG_EMPTY_FILTER_LABEL = labels.emptyFilter;
+  if (labels.mermaid !== undefined) MERMAID_LANGUAGE_LABEL = labels.mermaid;
+  if (labels.math !== undefined) MATH_LANGUAGE_LABEL = labels.math;
+}
 
 export function copyButtonLabel(copied: boolean): string {
   return copied ? COPIED_LABEL : COPY_LABEL;
@@ -291,10 +322,11 @@ export function languageSelectValue(infoString: string | null | undefined): stri
   return resolveLanguage(infoString) ?? '';
 }
 
-/** Display label for a picker value (empty → 纯文本). */
+/** Display label for a picker value (empty → plain text). */
 export function languageDisplayLabel(value: string): string {
   if (value === '') return PLAIN_LANGUAGE_LABEL;
-  if (value === 'mermaid') return '流程图';
+  if (value === 'mermaid') return MERMAID_LANGUAGE_LABEL;
+  if (value === 'math' || value === 'latex' || value === 'katex') return MATH_LANGUAGE_LABEL;
   return value;
 }
 

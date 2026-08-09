@@ -9,7 +9,7 @@
  *     并 `scrollIntoView({ block: 'start' })`；
  *   - 显示三态循环（菜单 / Ctrl+Shift+L / 侧栏按钮）：
  *       expanded → rail（窄条 »）→ hidden（完全隐藏）→ expanded
- *     状态仅会话内有效，不持久化。
+ *   - Expanded 态右侧拖动手柄可调宽度，写入 localStorage `lightink.outlineWidth`。
  *
  * 可测试性：DOM 创建经 `doc` 注入、宿主/内容经 `getActiveHost` /
  * `getActiveMarkdown` 注入，node 环境下以 fake 元素驱动全部行为。
@@ -22,6 +22,14 @@ import { buildOutline, type OutlineItem } from './outline-model.js';
 const HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
 
 const DEFAULT_DEBOUNCE_MS = 250;
+
+/** localStorage key for user-resized outline width (px). */
+export const OUTLINE_WIDTH_STORAGE_KEY = 'lightink.outlineWidth';
+
+/** Default / clamp bounds for the drag-resizable outline. */
+export const OUTLINE_WIDTH_DEFAULT = 220;
+export const OUTLINE_WIDTH_MIN = 160;
+export const OUTLINE_WIDTH_MAX = 480;
 
 /** expanded: full panel; rail: narrow reopen strip; hidden: no sidebar chrome. */
 export type OutlineVisibility = 'expanded' | 'rail' | 'hidden';
@@ -37,6 +45,13 @@ export interface OutlineViewDeps {
   doc?: Document;
   /** 重算防抖间隔（毫秒），默认 250。 */
   debounceMs?: number;
+  /** Translate UI strings (en / zh-CN). */
+  t?: (key: string) => string;
+  /**
+   * Persist outline width. Production: window.localStorage.
+   * Tests may inject a Map-backed fake.
+   */
+  storage?: Pick<Storage, 'getItem' | 'setItem'>;
 }
 
 export interface OutlineView {
@@ -49,6 +64,8 @@ export interface OutlineView {
    * Prefer `visibility` for new code.
    */
   readonly collapsed: boolean;
+  /** Current expanded-panel width in px (user-resized or default). */
+  readonly widthPx: number;
   /** Cycle expanded → rail → hidden → expanded. */
   toggleCollapse(): void;
   /** Set exact visibility (immersive / fullscreen / tests). */
@@ -60,12 +77,51 @@ export interface OutlineView {
    * For full hide use setVisibility('hidden').
    */
   setCollapsed(next: boolean): void;
+  /** Set expanded width (clamped + persisted). No-op when not a finite number. */
+  setWidth(px: number): void;
   /** 防抖调度一次大纲重算（内容变化/切换标签时调用）。 */
   scheduleRefresh(): void;
   /** 立即重算并渲染（绕过防抖）。 */
   refreshNow(): void;
-  /** 清理待执行的防抖计时器。 */
+  /** Re-apply localized chrome strings after language switch. */
+  retranslate(): void;
+  /** 清理待执行的防抖计时器 / 拖动监听。 */
   destroy(): void;
+}
+
+/** Clamp outline width into the supported range. */
+export function clampOutlineWidth(px: number): number {
+  if (!Number.isFinite(px)) return OUTLINE_WIDTH_DEFAULT;
+  return Math.min(OUTLINE_WIDTH_MAX, Math.max(OUTLINE_WIDTH_MIN, Math.round(px)));
+}
+
+/** Read a stored width; invalid / missing → null. */
+export function readStoredOutlineWidth(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): number | null {
+  if (storage === null || storage === undefined) return null;
+  try {
+    const raw = storage.getItem(OUTLINE_WIDTH_STORAGE_KEY);
+    if (raw === null || raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    return clampOutlineWidth(n);
+  } catch {
+    return null;
+  }
+}
+
+/** Persist width; ignores storage failures (private mode). */
+export function writeStoredOutlineWidth(
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+  px: number,
+): void {
+  if (storage === null || storage === undefined) return;
+  try {
+    storage.setItem(OUTLINE_WIDTH_STORAGE_KEY, String(clampOutlineWidth(px)));
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 function nextVisibility(current: OutlineVisibility): OutlineVisibility {
@@ -73,9 +129,31 @@ function nextVisibility(current: OutlineVisibility): OutlineVisibility {
   return VISIBILITY_CYCLE[(idx + 1) % VISIBILITY_CYCLE.length] ?? 'expanded';
 }
 
+/** Chinese fallbacks when host does not inject `t` (tests / headless). */
+const OUTLINE_DEFAULTS: Readonly<Record<string, string>> = {
+  'outline.title': '大纲',
+  'outline.collapse': '折叠大纲',
+  'outline.expand': '展开大纲',
+  'outline.show': '显示大纲',
+  'outline.noTab': '无活动标签',
+  'outline.empty': '暂无标题',
+  'outline.resize': '拖动调整大纲宽度',
+};
+
 export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   const doc = deps.doc ?? document;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const storage =
+    deps.storage ??
+    (typeof window !== 'undefined' ? window.localStorage : undefined);
+  const t = (key: string): string => {
+    if (deps.t !== undefined) {
+      const translated = deps.t(key);
+      // Host may return the key itself for missing entries — fall back.
+      if (translated !== key) return translated;
+    }
+    return OUTLINE_DEFAULTS[key] ?? key;
+  };
 
   const root = doc.createElement('div');
   root.classList.add('lightink-outline');
@@ -85,12 +163,12 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   header.classList.add('lightink-outline-header');
   const title = doc.createElement('span');
   title.classList.add('lightink-outline-title');
-  title.textContent = '大纲';
+  title.textContent = t('outline.title');
   const toggle = doc.createElement('button');
   toggle.type = 'button';
   toggle.classList.add('lightink-outline-toggle');
-  toggle.setAttribute('title', '折叠大纲');
-  toggle.setAttribute('aria-label', '折叠大纲');
+  toggle.setAttribute('title', t('outline.collapse'));
+  toggle.setAttribute('aria-label', t('outline.collapse'));
   toggle.setAttribute('aria-expanded', 'true');
   toggle.textContent = '«';
   header.appendChild(title);
@@ -99,11 +177,47 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   const body = doc.createElement('div');
   body.classList.add('lightink-outline-body');
 
+  // Right-edge drag handle (expanded only). Kept after body so body stays children[1].
+  const resizeHandle = doc.createElement('div');
+  resizeHandle.classList.add('lightink-outline-resize');
+  resizeHandle.setAttribute('role', 'separator');
+  resizeHandle.setAttribute('aria-orientation', 'vertical');
+  resizeHandle.setAttribute('aria-label', t('outline.resize'));
+  resizeHandle.setAttribute('title', t('outline.resize'));
+
   root.appendChild(header);
   root.appendChild(body);
+  root.appendChild(resizeHandle);
 
   let visibility: OutlineVisibility = 'expanded';
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let widthPx = readStoredOutlineWidth(storage) ?? OUTLINE_WIDTH_DEFAULT;
+  let dragCleanup: (() => void) | null = null;
+
+  function applyWidth(px: number, persist: boolean): void {
+    widthPx = clampOutlineWidth(px);
+    // Inline width only in expanded mode; rail/hidden use CSS classes.
+    if (visibility === 'expanded') {
+      root.style.width = `${widthPx}px`;
+      try {
+        // Optional CSS var for consumers; fake DOMs may lack setProperty.
+        const style = root.style as CSSStyleDeclaration & {
+          setProperty?: (name: string, value: string) => void;
+        };
+        if (typeof style.setProperty === 'function') {
+          style.setProperty('--lightink-outline-width', `${widthPx}px`);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (persist) {
+      writeStoredOutlineWidth(storage, widthPx);
+    }
+  }
+
+  // Restore persisted width on first paint (expanded default).
+  applyWidth(widthPx, false);
 
   /** 点击跳转：按序号锚点取活动宿主中第 n 个 h1-h6 并滚动到视口顶部。 */
   function scrollToItem(item: OutlineItem): void {
@@ -133,12 +247,12 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   function render(): void {
     const markdown = deps.getActiveMarkdown();
     if (markdown === null) {
-      renderEmpty('无活动标签');
+      renderEmpty(t('outline.noTab'));
       return;
     }
     const items = buildOutline(markdown);
     if (items.length === 0) {
-      renderEmpty('暂无标题');
+      renderEmpty(t('outline.empty'));
       return;
     }
     body.replaceChildren(
@@ -186,24 +300,101 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
     if (next === 'hidden') {
       root.setAttribute('hidden', '');
       toggle.setAttribute('aria-expanded', 'false');
-      toggle.setAttribute('title', '显示大纲');
-      toggle.setAttribute('aria-label', '显示大纲');
+      toggle.setAttribute('title', t('outline.show'));
+      toggle.setAttribute('aria-label', t('outline.show'));
       toggle.textContent = '»';
+      root.style.width = '';
     } else if (next === 'rail') {
       root.removeAttribute('hidden');
       toggle.setAttribute('aria-expanded', 'false');
-      toggle.setAttribute('title', '展开大纲');
-      toggle.setAttribute('aria-label', '展开大纲');
+      toggle.setAttribute('title', t('outline.expand'));
+      toggle.setAttribute('aria-label', t('outline.expand'));
       toggle.textContent = '»';
+      root.style.width = '';
     } else {
       root.removeAttribute('hidden');
       toggle.setAttribute('aria-expanded', 'true');
-      toggle.setAttribute('title', '折叠大纲');
-      toggle.setAttribute('aria-label', '折叠大纲');
+      toggle.setAttribute('title', t('outline.collapse'));
+      toggle.setAttribute('aria-label', t('outline.collapse'));
       toggle.textContent = '«';
+      root.style.width = `${widthPx}px`;
     }
+    // Resize handle only meaningful when the panel is expanded.
+    resizeHandle.style.display = next === 'expanded' ? '' : 'none';
+    resizeHandle.setAttribute('aria-hidden', next === 'expanded' ? 'false' : 'true');
     syncHostClass();
   }
+
+  function endDrag(): void {
+    if (dragCleanup !== null) {
+      dragCleanup();
+      dragCleanup = null;
+    }
+    root.classList.remove('is-resizing');
+    try {
+      doc.body?.classList?.remove('lightink-outline-resizing');
+    } catch {
+      /* fake DOM */
+    }
+  }
+
+  function startDrag(clientX: number): void {
+    if (visibility !== 'expanded') return;
+    endDrag();
+    const startX = clientX;
+    const startW = widthPx;
+    root.classList.add('is-resizing');
+    try {
+      doc.body?.classList?.add('lightink-outline-resizing');
+    } catch {
+      /* fake DOM */
+    }
+
+    const onMove = (event: Event): void => {
+      const pe = event as PointerEvent | MouseEvent;
+      const x = typeof pe.clientX === 'number' ? pe.clientX : startX;
+      // Outline is on the left; dragging the right edge rightward widens.
+      applyWidth(startW + (x - startX), false);
+      if (typeof pe.preventDefault === 'function') pe.preventDefault();
+    };
+    const onUp = (): void => {
+      applyWidth(widthPx, true);
+      endDrag();
+    };
+
+    // Prefer pointer events; fall back to mouse for older / fake DOMs.
+    const target = doc as Document;
+    if (typeof target.addEventListener === 'function') {
+      target.addEventListener('pointermove', onMove);
+      target.addEventListener('pointerup', onUp);
+      target.addEventListener('pointercancel', onUp);
+      target.addEventListener('mousemove', onMove);
+      target.addEventListener('mouseup', onUp);
+      dragCleanup = () => {
+        target.removeEventListener('pointermove', onMove);
+        target.removeEventListener('pointerup', onUp);
+        target.removeEventListener('pointercancel', onUp);
+        target.removeEventListener('mousemove', onMove);
+        target.removeEventListener('mouseup', onUp);
+      };
+    }
+  }
+
+  resizeHandle.addEventListener('pointerdown', (event: Event) => {
+    const pe = event as PointerEvent;
+    if (typeof pe.button === 'number' && pe.button !== 0) return;
+    if (typeof pe.preventDefault === 'function') pe.preventDefault();
+    if (typeof pe.stopPropagation === 'function') pe.stopPropagation();
+    startDrag(typeof pe.clientX === 'number' ? pe.clientX : 0);
+  });
+  // Mouse fallback when pointer events are unavailable on the handle.
+  resizeHandle.addEventListener('mousedown', (event: Event) => {
+    const me = event as MouseEvent;
+    if (typeof me.button === 'number' && me.button !== 0) return;
+    if (typeof me.preventDefault === 'function') me.preventDefault();
+    if (typeof me.stopPropagation === 'function') me.stopPropagation();
+    startDrag(typeof me.clientX === 'number' ? me.clientX : 0);
+  });
 
   toggle.addEventListener('click', () => {
     // Rail strip is a reopen control: click expands. Menu / Ctrl+Shift+L still
@@ -223,6 +414,9 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
     get collapsed() {
       return visibility !== 'expanded';
     },
+    get widthPx() {
+      return widthPx;
+    },
     toggleCollapse(): void {
       applyVisibility(nextVisibility(visibility));
     },
@@ -236,6 +430,9 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
       // true → rail (recoverable strip); false → expanded. Full hide is setVisibility.
       applyVisibility(next ? 'rail' : 'expanded');
     },
+    setWidth(px: number): void {
+      applyWidth(px, true);
+    },
     scheduleRefresh(): void {
       cancelTimer();
       timer = setTimeout(() => {
@@ -247,8 +444,16 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
       cancelTimer();
       render();
     },
+    retranslate(): void {
+      title.textContent = t('outline.title');
+      resizeHandle.setAttribute('aria-label', t('outline.resize'));
+      resizeHandle.setAttribute('title', t('outline.resize'));
+      applyVisibility(visibility);
+      render();
+    },
     destroy(): void {
       cancelTimer();
+      endDrag();
     },
   };
 

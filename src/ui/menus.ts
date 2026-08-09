@@ -18,7 +18,14 @@ export interface MenuItem {
   label: string | (() => string);
   /** 显示在标签右侧的快捷键提示（弱化右对齐）。 */
   shortcut?: string;
-  /** 右侧弱化提示（如最近文件的目录路径，省略号截断头部）。与 shortcut 二选一。 */
+  /**
+   * Secondary line under the label (e.g. recent-file directory).
+   * Prefer this over `hint` for long paths so the filename stays readable.
+   */
+  description?: string;
+  /** Tooltip for the whole item (e.g. full path). */
+  title?: string;
+  /** 右侧弱化提示（快捷键旁的短文案）。与 shortcut 二选一。 */
   hint?: string;
   /** 触发该菜单项的动作。 */
   action(): void;
@@ -36,7 +43,8 @@ function resolveMenuLabel(label: string | (() => string)): string {
 
 export interface Menu {
   id: string;
-  label: string;
+  /** Static label, or factory refreshed when menus rebuild / open. */
+  label: string | (() => string);
   items: MenuItem[];
 }
 
@@ -44,6 +52,8 @@ export interface MenuBarSpec {
   menus: Menu[];
   /** Fires when open menu id changes (null = all closed). Used by immersive chrome hold. */
   onOpenChange?: (openMenuId: string | null) => void;
+  /** Localized “Loading…” placeholder for async submenus (defaults to Chinese). */
+  loadingLabel?: string | (() => string);
 }
 
 export interface MenuBar {
@@ -53,14 +63,27 @@ export interface MenuBar {
   openMenu(menuId: string): void;
   /** 关闭所有下拉面板。 */
   closeAll(): void;
+  /**
+   * Replace menu definitions (e.g. after language switch) and re-render triggers
+   * + panels in place. Keeps the same root element.
+   */
+  /**
+   * Replace menu definitions (e.g. after language switch) and re-render triggers
+   * + panels in place. Keeps the same root element.
+   * Optional loadingLabel updates the async-submenu placeholder.
+   */
+  rebuild(menus: Menu[], options?: { loadingLabel?: string | (() => string) }): void;
 }
 
 export function createMenuBar(spec: MenuBarSpec, doc: Document = document): MenuBar {
   const element = doc.createElement('div');
   element.className = 'lightink-menu-bar';
+  let menus = [...spec.menus];
+  let loadingLabel: string | (() => string) = spec.loadingLabel ?? '加载中…';
   let openMenuId: string | null = null;
   const panels = new Map<string, HTMLDivElement>();
   const itemButtons = new Map<string, HTMLButtonElement>();
+  const triggers = new Map<string, HTMLButtonElement>();
   /** 当前打开的子菜单浮层（同时最多一个）。 */
   let openFlyout: { itemId: string; el: HTMLDivElement } | null = null;
 
@@ -116,11 +139,15 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     }
   }
 
-  /** 打开菜单前刷新其所有项的启用态（上下文相关项据此更新）。 */
+  /** 打开菜单前刷新触发器文案、启用态与快捷键（i18n / 上下文）。 */
   function refreshMenu(menuId: string): void {
-    const menu = spec.menus.find((m) => m.id === menuId);
+    const menu = menus.find((m) => m.id === menuId);
     if (menu === undefined) {
       return;
+    }
+    const trigger = triggers.get(menuId);
+    if (trigger !== undefined) {
+      trigger.textContent = resolveMenuLabel(menu.label);
     }
     for (const item of menu.items) {
       if (item.separator !== true) {
@@ -135,17 +162,35 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     btn.type = 'button';
     btn.className = 'lightink-menu-item';
     btn.dataset.itemId = item.id;
-    const label = doc.createElement('span');
-    label.className = 'lightink-menu-item-label';
-    label.textContent = resolveMenuLabel(item.label);
-    btn.appendChild(label);
+    if (item.title !== undefined && item.title !== '') {
+      btn.setAttribute('title', item.title);
+    }
+
+    const hasDescription =
+      item.description !== undefined && item.description !== '';
+    if (hasDescription) {
+      btn.classList.add('lightink-menu-item--stacked');
+      const textCol = doc.createElement('span');
+      textCol.className = 'lightink-menu-item-text';
+      const label = doc.createElement('span');
+      label.className = 'lightink-menu-item-label';
+      label.textContent = resolveMenuLabel(item.label);
+      const desc = doc.createElement('span');
+      desc.className = 'lightink-menu-item-description';
+      desc.textContent = item.description ?? '';
+      textCol.append(label, desc);
+      btn.appendChild(textCol);
+    } else {
+      const label = doc.createElement('span');
+      label.className = 'lightink-menu-item-label';
+      label.textContent = resolveMenuLabel(item.label);
+      btn.appendChild(label);
+    }
+
     const hintText = item.hint ?? item.shortcut;
     if (hintText !== undefined && hintText !== '') {
       const hint = doc.createElement('span');
-      hint.className =
-        item.hint !== undefined
-          ? 'lightink-menu-item-hint lightink-menu-item-hint--path'
-          : 'lightink-menu-item-hint';
+      hint.className = 'lightink-menu-item-hint';
       hint.textContent = hintText;
       btn.appendChild(hint);
     }
@@ -182,7 +227,12 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     flyout.style.top = `${btn.offsetTop}px`;
     flyout.style.left = '100%';
     const loading = createItemButton(
-      { id: `${item.id}-loading`, label: '加载中…', enabled: () => false, action: () => undefined },
+      {
+        id: `${item.id}-loading`,
+        label: resolveMenuLabel(loadingLabel),
+        enabled: () => false,
+        action: () => undefined,
+      },
       () => undefined,
     );
     flyout.appendChild(loading);
@@ -213,69 +263,78 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     });
   }
 
-  for (const menu of spec.menus) {
-    const trigger = doc.createElement('button');
-    trigger.type = 'button';
-    trigger.className = 'lightink-menu-trigger';
-    trigger.dataset.menuId = menu.id;
-    trigger.textContent = menu.label;
-    trigger.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (openMenuId === menu.id) {
-        closeAll();
-      } else {
-        refreshMenu(menu.id);
-        openMenu(menu.id);
-      }
-    });
-    // VS Code 式菜单栏跟踪：已有菜单展开时，悬停其他触发器直接切换过去
-    //（无菜单展开时不响应悬停，避免指针滑过误开）。
-    trigger.addEventListener('mouseenter', () => {
-      if (openMenuId !== null && openMenuId !== menu.id) {
-        refreshMenu(menu.id);
-        openMenu(menu.id);
-      }
-    });
-    // Immersive shell: opening any menu panel keeps chrome held via onOpenChange.
+  function renderMenus(nextMenus: Menu[]): void {
+    closeAll();
+    panels.clear();
+    itemButtons.clear();
+    triggers.clear();
+    element.replaceChildren();
+    menus = [...nextMenus];
 
-    const panel = doc.createElement('div');
-    panel.className = 'lightink-menu-panel';
-    panel.dataset.menuId = menu.id;
-    panel.hidden = true;
-    for (const item of menu.items) {
-      if (item.separator === true) {
-        const sep = doc.createElement('hr');
-        sep.className = 'lightink-menu-separator';
-        panel.appendChild(sep);
-        continue;
+    for (const menu of menus) {
+      const trigger = doc.createElement('button');
+      trigger.type = 'button';
+      trigger.className = 'lightink-menu-trigger';
+      trigger.dataset.menuId = menu.id;
+      trigger.textContent = resolveMenuLabel(menu.label);
+      trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (openMenuId === menu.id) {
+          closeAll();
+        } else {
+          refreshMenu(menu.id);
+          openMenu(menu.id);
+        }
+      });
+      // VS Code 式菜单栏跟踪：已有菜单展开时，悬停其他触发器直接切换过去
+      //（无菜单展开时不响应悬停，避免指针滑过误开）。
+      trigger.addEventListener('mouseenter', () => {
+        if (openMenuId !== null && openMenuId !== menu.id) {
+          refreshMenu(menu.id);
+          openMenu(menu.id);
+        }
+      });
+
+      const panel = doc.createElement('div');
+      panel.className = 'lightink-menu-panel';
+      panel.dataset.menuId = menu.id;
+      panel.hidden = true;
+      for (const item of menu.items) {
+        if (item.separator === true) {
+          const sep = doc.createElement('hr');
+          sep.className = 'lightink-menu-separator';
+          panel.appendChild(sep);
+          continue;
+        }
+        const btn = createItemButton(item, () => closeAll());
+        if (item.submenu !== undefined) {
+          btn.addEventListener('mouseenter', () => {
+            refreshItemEnabled(item);
+            if (!btn.disabled) openSubmenu(item, btn, panel);
+          });
+          btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            refreshItemEnabled(item);
+            if (!btn.disabled) openSubmenu(item, btn, panel);
+          });
+        } else {
+          btn.addEventListener('mouseenter', () => closeFlyout());
+        }
+        panel.appendChild(btn);
+        itemButtons.set(item.id, btn);
+        refreshItemEnabled(item);
       }
-      const btn = createItemButton(item, () => closeAll());
-      if (item.submenu !== undefined) {
-        // 子菜单触发器：action 不直达，悬停/点击展开浮层；点击重复触发即重载数据。
-        btn.addEventListener('mouseenter', () => {
-          refreshItemEnabled(item);
-          if (!btn.disabled) openSubmenu(item, btn, panel);
-        });
-        btn.addEventListener('click', (event) => {
-          event.stopPropagation();
-          refreshItemEnabled(item);
-          if (!btn.disabled) openSubmenu(item, btn, panel);
-        });
-      } else {
-        // 悬停普通项时关掉已展开的子菜单浮层。
-        btn.addEventListener('mouseenter', () => closeFlyout());
-      }
-      panel.appendChild(btn);
-      itemButtons.set(item.id, btn);
-      refreshItemEnabled(item);
+      panels.set(menu.id, panel);
+      triggers.set(menu.id, trigger);
+
+      const wrap = doc.createElement('div');
+      wrap.className = 'lightink-menu';
+      wrap.append(trigger, panel);
+      element.appendChild(wrap);
     }
-    panels.set(menu.id, panel);
-
-    const wrap = doc.createElement('div');
-    wrap.className = 'lightink-menu';
-    wrap.append(trigger, panel);
-    element.appendChild(wrap);
   }
+
+  renderMenus(menus);
 
   // 外部 pointerdown 与 Esc 关闭菜单。
   const onPointerDown = (event: Event): void => {
@@ -293,5 +352,15 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
   doc.addEventListener('pointerdown', onPointerDown);
   doc.addEventListener('keydown', onKeyDown);
 
-  return { element, openMenu, closeAll };
+  return {
+    element,
+    openMenu,
+    closeAll,
+    rebuild(nextMenus: Menu[], options?: { loadingLabel?: string | (() => string) }): void {
+      if (options?.loadingLabel !== undefined) {
+        loadingLabel = options.loadingLabel;
+      }
+      renderMenus(nextMenus);
+    },
+  };
 }

@@ -22,6 +22,21 @@ export interface VersionActions {
   saveCurrent(): Promise<void>;
 }
 
+export interface VersionModalLabels {
+  readonly title?: string;
+  readonly loading?: string;
+  readonly pick?: string;
+  readonly empty?: string;
+  readonly restore?: string;
+  readonly saveNew?: string;
+  readonly close?: string;
+  readonly loadFailed?: string;
+  readonly justNow?: string;
+  readonly minutesAgo?: (n: number) => string;
+  readonly hoursAgo?: (n: number) => string;
+  readonly daysAgo?: (n: number) => string;
+}
+
 /** 纯逻辑：按 created_at_ms 降序（最新在前）。后端已降序返回，本函数作契约保证。 */
 export function newestFirst(metas: readonly VersionMeta[]): VersionMeta[] {
   return [...metas].sort((a, b) => b.created_at_ms - a.created_at_ms);
@@ -32,28 +47,66 @@ export function newestFirst(metas: readonly VersionMeta[]): VersionMeta[] {
  * <1 分钟「刚刚」；<1 小时「N 分钟前」；<24 小时「N 小时前」；<7 天「N 天前」；
  * 更早返回空串（调用方回落到绝对时间）。
  */
-export function formatRelativeTime(ms: number, nowMs: number): string {
+export interface RelativeTimeLabels {
+  readonly justNow?: string;
+  readonly minutesAgo?: (n: number) => string;
+  readonly hoursAgo?: (n: number) => string;
+  readonly daysAgo?: (n: number) => string;
+}
+
+/** Default Chinese-style relative labels (tests + zh-CN). */
+const DEFAULT_RELATIVE: Required<RelativeTimeLabels> = {
+  justNow: '刚刚',
+  minutesAgo: (n) => `${n} 分钟前`,
+  hoursAgo: (n) => `${n} 小时前`,
+  daysAgo: (n) => `${n} 天前`,
+};
+
+export function formatRelativeTime(
+  ms: number,
+  nowMs: number,
+  labels: RelativeTimeLabels = {},
+): string {
+  const L = { ...DEFAULT_RELATIVE, ...labels };
   const diff = nowMs - ms;
   if (diff < 0) return '';
   const minutes = Math.floor(diff / 60_000);
-  if (minutes < 1) return '刚刚';
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 1) return L.justNow;
+  if (minutes < 60) return L.minutesAgo(minutes);
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return L.hoursAgo(hours);
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
+  if (days < 7) return L.daysAgo(days);
   return '';
 }
 
 /** 创建版本历史弹层并挂载到 document.body。 */
-export function showVersionsModal(doc: Document, actions: VersionActions): void {
+export function showVersionsModal(
+  doc: Document,
+  actions: VersionActions,
+  labels: VersionModalLabels = {},
+): void {
+  const L = {
+    title: labels.title ?? 'Version History',
+    loading: labels.loading ?? 'Loading…',
+    pick: labels.pick ?? 'Select a version to preview',
+    empty: labels.empty ?? 'No versions yet — snapshots are created when you save.',
+    restore: labels.restore ?? 'Restore this version',
+    saveNew: labels.saveNew ?? 'Save current as new version',
+    close: labels.close ?? 'Close',
+    loadFailed: labels.loadFailed ?? '(Could not read this version)',
+    justNow: labels.justNow ?? 'Just now',
+    minutesAgo: labels.minutesAgo,
+    hoursAgo: labels.hoursAgo,
+    daysAgo: labels.daysAgo,
+  };
   const overlay = doc.createElement('div');
   overlay.className = 'lightink-modal-overlay';
   const dialog = doc.createElement('div');
   dialog.className = 'lightink-modal-dialog lightink-versions-dialog';
   const title = doc.createElement('div');
   title.className = 'lightink-modal-title';
-  title.textContent = '版本历史';
+  title.textContent = L.title;
 
   // 双栏主体：左版本列表 / 右内容预览。
   const body = doc.createElement('div');
@@ -62,26 +115,26 @@ export function showVersionsModal(doc: Document, actions: VersionActions): void 
   listEl.className = 'lightink-versions-list';
   const loading = doc.createElement('div');
   loading.className = 'lightink-versions-empty';
-  loading.textContent = '加载中…';
+  loading.textContent = L.loading;
   listEl.appendChild(loading);
   const preview = doc.createElement('pre');
   preview.className = 'lightink-versions-preview';
-  preview.textContent = '选择左侧版本以预览';
+  preview.textContent = L.pick;
   body.append(listEl, preview);
 
   const restoreBtn = doc.createElement('button');
   restoreBtn.type = 'button';
   restoreBtn.className = 'lightink-modal-btn lightink-modal-btn--primary';
-  restoreBtn.textContent = '恢复此版本';
+  restoreBtn.textContent = L.restore;
   restoreBtn.disabled = true;
   const saveBtn = doc.createElement('button');
   saveBtn.type = 'button';
   saveBtn.className = 'lightink-modal-btn lightink-modal-btn--plain';
-  saveBtn.textContent = '保存当前为新版本';
+  saveBtn.textContent = L.saveNew;
   const closeBtn = doc.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'lightink-modal-btn lightink-modal-btn--plain';
-  closeBtn.textContent = '关闭';
+  closeBtn.textContent = L.close;
   const footer = doc.createElement('div');
   footer.className = 'lightink-modal-actions';
   footer.append(saveBtn, closeBtn, restoreBtn);
@@ -131,14 +184,14 @@ export function showVersionsModal(doc: Document, actions: VersionActions): void 
     }
     row.classList.add('selected');
     restoreBtn.disabled = false;
-    preview.textContent = '加载中…';
+    preview.textContent = L.loading;
     void actions
       .read(id)
       .then((content) => {
         preview.textContent = content;
       })
       .catch(() => {
-        preview.textContent = '（无法读取该版本）';
+        preview.textContent = L.loadFailed;
       });
   }
 
@@ -147,7 +200,7 @@ export function showVersionsModal(doc: Document, actions: VersionActions): void 
     if (metas.length === 0) {
       const empty = doc.createElement('div');
       empty.className = 'lightink-versions-empty';
-      empty.textContent = '暂无版本——保存文档后会自动生成快照';
+      empty.textContent = L.empty;
       listEl.appendChild(empty);
       return;
     }
@@ -158,7 +211,12 @@ export function showVersionsModal(doc: Document, actions: VersionActions): void 
       row.className = 'lightink-versions-item';
       const rel = doc.createElement('span');
       rel.className = 'lightink-versions-item-rel';
-      const relative = formatRelativeTime(meta.created_at_ms, now);
+      const relative = formatRelativeTime(meta.created_at_ms, now, {
+        justNow: L.justNow,
+        minutesAgo: L.minutesAgo,
+        hoursAgo: L.hoursAgo,
+        daysAgo: L.daysAgo,
+      });
       // 超出相对时间范围（>7 天）：主行直接显示绝对时间，不再重复副行。
       rel.textContent = relative !== '' ? relative : formatVersionTime(meta.created_at_ms);
       row.appendChild(rel);

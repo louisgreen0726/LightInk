@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   filterInsertElements,
+  formatLinkMarkdown,
   getInsertElement,
   INSERT_ELEMENTS,
   insertElementMarkdown,
@@ -19,9 +20,19 @@ describe('元素目录', () => {
     expect(new Set(ids).size).toBe(9);
   });
 
+  
   it('getInsertElement 按 id 取元素', () => {
     expect(getInsertElement('table')?.label).toBe('表格');
     expect(getInsertElement('heading')?.snippet()).toBe('## 标题');
+  });
+
+  it('任务清单默认插入 GFM 勾选列表（含未完成与已完成示例）', () => {
+    const task = getInsertElement('task-list');
+    expect(task?.label).toBe('任务清单');
+    const snippet = task!.snippet();
+    expect(snippet).toContain('- [ ]');
+    expect(snippet).toContain('- [x]');
+    expect(snippet).not.toBe('- 列表项');
   });
 });
 
@@ -43,6 +54,16 @@ describe('filterInsertElements', () => {
   it('英文 code 命中代码块', () => {
     const result = filterInsertElements('code');
     expect(result.map((e) => e.id)).toEqual(['code']);
+  });
+});
+
+describe('formatLinkMarkdown', () => {
+  it('builds a markdown link from dialog values', () => {
+    expect(formatLinkMarkdown('Docs', 'https://example.com')).toBe(
+      '[Docs](https://example.com)',
+    );
+    expect(formatLinkMarkdown('  ', 'https://a')).toBe('[https://a](https://a)');
+    expect(formatLinkMarkdown('x', '  ')).toBe('');
   });
 });
 

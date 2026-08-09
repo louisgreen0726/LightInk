@@ -30,8 +30,11 @@ import {
   escapeMathHtml,
   extractMathSegments,
   hasMath,
+  isMathBlock,
+  mathFenceDefinitionOf,
   mathPlugin,
   mathPluginKey,
+  normalizeDisplayLatex,
   renderMathHtml,
   scanTextMath,
   type KatexRenderer,
@@ -119,6 +122,30 @@ describe('extractMathSegments', () => {
     expect(segments).toHaveLength(1);
     expect(segments[0]).toMatchObject({ type: 'block', latex: '\\int_0^1 x\\,dx' });
     expect(md.slice(segments[0]!.from, segments[0]!.to)).toBe('$$\\int_0^1 x\\,dx$$');
+  });
+
+  it('extracts multi-line $$…$$ (bmatrix) keeping LaTeX source intact', () => {
+    // Multi-line display math as authors write it (row breaks are `\\`).
+    // CommonMark turns trailing `\\` into hard breaks; we keep the source slice.
+    const md = [
+      '$$\\begin{bmatrix}',
+      '1 & 2 & \\cdots \\\\',
+      '67 & 95 & \\cdots \\\\',
+      '\\vdots  & \\vdots & \\ddots \\\\',
+      '\\end{bmatrix}$$',
+    ].join('\n');
+    const segments = extractMathSegments(md);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]!.type).toBe('block');
+    const latex = segments[0]!.latex;
+    expect(latex).toContain('\\begin{bmatrix}');
+    expect(latex).toContain('\\end{bmatrix}');
+    expect(latex).toContain('\\cdots');
+    expect(latex).toContain('\\\\');
+    // Renders as a single display formula (not split into multiple).
+    const html = renderMathHtml(latex, true, katex);
+    expect(html).toContain('katex');
+    expect(html).not.toContain('lightink-math-error');
   });
 
   it('extracts mixed docs and keeps offsets accurate', () => {
@@ -271,7 +298,12 @@ const codeSchema = new Schema({
   nodes: {
     doc: { content: 'block+' },
     paragraph: { group: 'block', content: 'text*' },
-    code_block: { group: 'block', content: 'text*', code: true },
+    code_block: {
+      group: 'block',
+      content: 'text*',
+      code: true,
+      attrs: { language: { default: '' } },
+    },
     text: {},
   },
   marks: {
@@ -297,10 +329,91 @@ function decoClass(d: unknown): string {
   return decoAttrs(d)?.['class'] ?? '';
 }
 
+describe('isMathBlock', () => {
+  it('recognizes math / latex / katex fences', () => {
+    expect(isMathBlock('math')).toBe(true);
+    expect(isMathBlock('LaTeX')).toBe(true);
+    expect(isMathBlock('katex')).toBe(true);
+    expect(isMathBlock('ts')).toBe(false);
+    expect(isMathBlock('mermaid')).toBe(false);
+  });
+});
+
+describe('normalizeDisplayLatex / mathFenceDefinitionOf', () => {
+  it('restores hard-break-eaten row breaks without doubling fence `\\\\`', () => {
+    // PM hard_break path: single `\` before newline should become `\\`.
+    expect(normalizeDisplayLatex('a = b\\\nc = d')).toBe('a = b\\\\\nc = d');
+    // Already-correct LaTeX `\\` must not become `\\\`.
+    expect(normalizeDisplayLatex('a = b\\\\\nc = d')).toBe('a = b\\\\\nc = d');
+  });
+
+  it('reads multi-line fence body with real newlines', () => {
+    const multi = ['\\begin{aligned}', 'E &= mc^2 \\\\', 'F &= ma', '\\end{aligned}'].join('\n');
+    const fence = codeSchema.nodes['code_block']!.create(
+      { language: 'math' },
+      codeSchema.text(multi),
+    );
+    expect(mathFenceDefinitionOf(fence)).toBe(multi);
+  });
+});
+
 describe('buildMathDecorations', () => {
   it('returns an empty set when katex is not loaded (lazy: source shown as-is)', () => {
     const doc = paraDoc('有公式 $E=mc^2$ 但不渲染');
     expect(buildMathDecorations(doc, null).find()).toHaveLength(0);
+  });
+
+  it('renders ```math fences as preview (source class + widget), like mermaid', () => {
+    const fence = codeSchema.nodes['code_block']!.create(
+      { language: 'math' },
+      codeSchema.text('E = mc^2'),
+    );
+    const doc = codeSchema.nodes['doc']!.create(null, fence);
+    const found = buildMathDecorations(doc, katex).find();
+    expect(found.some((d) => decoClass(d).includes('lightink-math-source'))).toBe(true);
+    // Preview widget after the fence.
+    expect(found.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders multi-line ```math fences (aligned) as a single display preview', () => {
+    const multi = ['\\begin{aligned}', 'E &= mc^2 \\\\', 'F &= ma', '\\end{aligned}'].join('\n');
+    const fence = codeSchema.nodes['code_block']!.create(
+      { language: 'math' },
+      codeSchema.text(multi),
+    );
+    const doc = codeSchema.nodes['doc']!.create(null, fence);
+    const found = buildMathDecorations(doc, katex).find();
+    expect(found.some((d) => decoClass(d).includes('lightink-math-source'))).toBe(true);
+    expect(found.some((d) => decoClass(d).includes('lightink-math-fence-error'))).toBe(false);
+    expect(found.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('preserves newlines when reading math fence definition', () => {
+    const multi = 'a = b\nc = d';
+    const fence = codeSchema.nodes['code_block']!.create(
+      { language: 'math' },
+      codeSchema.text(multi),
+    );
+    // mathFenceDefinitionOf is tested via successful multi-line render above;
+    // also assert scan of $$ multi-line in a single textblock.
+    const para = testSchema.nodes['paragraph']!.create(
+      null,
+      testSchema.text('$$\na + b\n= c\n$$'),
+    );
+    const doc = testSchema.nodes['doc']!.create(null, para);
+    const found = buildMathDecorations(doc, katex).find();
+    expect(found.some((d) => decoClass(d) === 'lightink-math-block-source')).toBe(true);
+    expect(fence).toBeDefined();
+  });
+
+  it('shows math fence as pending when katex is null', () => {
+    const fence = codeSchema.nodes['code_block']!.create(
+      { language: 'math' },
+      codeSchema.text('x^2'),
+    );
+    const doc = codeSchema.nodes['doc']!.create(null, fence);
+    const found = buildMathDecorations(doc, null).find();
+    expect(found.some((d) => decoClass(d).includes('lightink-math-pending'))).toBe(true);
   });
 
   it('returns no decorations for a math-free document', () => {
@@ -325,6 +438,39 @@ describe('buildMathDecorations', () => {
     const doc = paraDoc('$$\\int_0^1 x\\,dx$$');
     const found = buildMathDecorations(doc, katex).find();
     expect(found.some((d) => decoClass(d) === 'lightink-math-block-source')).toBe(true);
+  });
+
+  it('renders multi-line $$…$$ with hard_break nodes (CommonMark row breaks)', () => {
+    // CommonMark: trailing `\\` → one `\` left in text + hard_break.
+    const hardBreakSchema = new Schema({
+      nodes: {
+        doc: { content: 'block+' },
+        paragraph: { group: 'block', content: 'inline*' },
+        text: { group: 'inline' },
+        hard_break: {
+          group: 'inline',
+          inline: true,
+          selectable: false,
+          linebreakReplacement: true,
+        },
+      },
+    });
+    const hb = hardBreakSchema.nodes['hard_break']!;
+    const t = (s: string) => hardBreakSchema.text(s);
+    const para = hardBreakSchema.nodes['paragraph']!.create(null, [
+      t('$$\\begin{bmatrix}'),
+      hb.create(),
+      t('1 & 2 & \\cdots \\'),
+      hb.create(),
+      t('3 & 4 & \\cdots \\'),
+      hb.create(),
+      t('\\end{bmatrix}$$'),
+    ]);
+    const doc = hardBreakSchema.nodes['doc']!.create(null, para);
+    const found = buildMathDecorations(doc, katex).find();
+    expect(found.some((d) => decoClass(d) === 'lightink-math-block-source')).toBe(true);
+    expect(found.some((d) => decoClass(d) === 'lightink-math-error')).toBe(false);
+    expect(found.some((d) => decoClass(d) === '')).toBe(true); // widget
   });
 
   it('isolates a bad formula: error class on it, good sibling still renders, text untouched', () => {

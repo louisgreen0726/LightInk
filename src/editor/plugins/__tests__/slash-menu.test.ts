@@ -6,7 +6,15 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { nextIndex, parseSlashQuery, slashMenuPlugin } from '../slash-menu.js';
+import {
+  nextIndex,
+  parseSlashQuery,
+  placeSlashMenu,
+  scrollSlashItemIntoView,
+  slashMenuHeightForItems,
+  slashMenuPlugin,
+  SLASH_MENU_VISIBLE_ITEMS,
+} from '../slash-menu.js';
 import { filterInsertElements } from '../../insert-commands.js';
 
 describe('parseSlashQuery (R11)', () => {
@@ -52,6 +60,50 @@ describe('nextIndex (R11 menu navigation)', () => {
   });
 });
 
+describe('placeSlashMenu (viewport placement)', () => {
+  it('opens below the caret when there is room', () => {
+    const p = placeSlashMenu(
+      { left: 40, top: 100, bottom: 120 },
+      { width: 220, height: 280 },
+      { width: 1280, height: 800 },
+    );
+    expect(p.flipUp).toBe(false);
+    expect(p.top).toBeGreaterThanOrEqual(120);
+    expect(p.maxHeight).toBeGreaterThan(100);
+  });
+
+  it('caps height to ~5 visible items (scroll for the rest)', () => {
+    const five = slashMenuHeightForItems(SLASH_MENU_VISIBLE_ITEMS);
+    expect(five).toBe(184); // 5*32 + 4*2 + 16
+    const p = placeSlashMenu(
+      { left: 40, top: 100, bottom: 120 },
+      { width: 220, height: 400 }, // natural height of a long list
+      { width: 1280, height: 800 },
+    );
+    expect(p.maxHeight).toBeLessThanOrEqual(five);
+    expect(p.maxHeight).toBe(five);
+  });
+
+  it('flips upward near the bottom of the viewport', () => {
+    const p = placeSlashMenu(
+      { left: 40, top: 700, bottom: 720 },
+      { width: 220, height: 280 },
+      { width: 1280, height: 760 },
+    );
+    expect(p.flipUp).toBe(true);
+    expect(p.top + p.maxHeight).toBeLessThanOrEqual(720);
+  });
+
+  it('keeps the menu inside horizontal bounds', () => {
+    const p = placeSlashMenu(
+      { left: 1200, top: 100, bottom: 120 },
+      { width: 220, height: 200 },
+      { width: 1280, height: 800 },
+    );
+    expect(p.left + 220).toBeLessThanOrEqual(1280);
+  });
+});
+
 describe('slash-menu filtering uses shared INSERT_ELEMENTS', () => {
   it('empty query returns all elements (same source as insert menu)', () => {
     expect(filterInsertElements('').length).toBeGreaterThanOrEqual(9);
@@ -60,6 +112,28 @@ describe('slash-menu filtering uses shared INSERT_ELEMENTS', () => {
   it('narrows by keyword', () => {
     expect(filterInsertElements('表格').map((e) => e.id)).toContain('table');
     expect(filterInsertElements('code').map((e) => e.id)).toContain('code');
+  });
+});
+
+describe('scrollSlashItemIntoView', () => {
+  it('adjusts menu.scrollTop without using scrollIntoView', () => {
+    const menu = {
+      scrollTop: 0,
+      clientHeight: 100,
+    } as HTMLElement;
+    const item = {
+      offsetTop: 160,
+      offsetHeight: 32,
+    } as HTMLElement;
+    scrollSlashItemIntoView(menu, item);
+    expect(menu.scrollTop).toBe(160 + 32 - 100);
+    const upper = {
+      offsetTop: 10,
+      offsetHeight: 32,
+    } as HTMLElement;
+    menu.scrollTop = 50;
+    scrollSlashItemIntoView(menu, upper);
+    expect(menu.scrollTop).toBe(10);
   });
 });
 

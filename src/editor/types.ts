@@ -150,6 +150,29 @@ export interface EditorInstance {
    */
   insertImage(url: string, alt: string): void;
   /**
+   * Insert structured markdown at the caret (parses via Milkdown, replaces the
+   * enclosing empty/line-start textblock). Returns false on parse/range failure.
+   */
+  insertMarkdown(markdown: string): boolean;
+  /** Whether the caret is inside a GFM table. */
+  isInTable(): boolean;
+  /**
+   * Table structure op (insert/delete row/col, select row/col, delete table).
+   * Returns false when not in a table or the command cannot run.
+   */
+  runTableOp(
+    op:
+      | 'insert-col-left'
+      | 'insert-col-right'
+      | 'insert-row-above'
+      | 'insert-row-below'
+      | 'delete-row'
+      | 'delete-column'
+      | 'delete-table'
+      | 'select-row'
+      | 'select-column',
+  ): boolean;
+  /**
    * Focus the ProseMirror surface so typing can start without hunting the caret
    * (immersive shell R4 empty/new-tab path). No-op if the editor is not ready.
    */

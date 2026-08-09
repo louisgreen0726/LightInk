@@ -10,12 +10,22 @@ export interface LinkDialogValues {
   readonly href: string;
 }
 
+export interface LinkDialogLabels {
+  readonly text?: string;
+  readonly textPlaceholder?: string;
+  readonly href?: string;
+  readonly hrefPlaceholder?: string;
+  readonly cancel?: string;
+}
+
 export interface LinkDialogSpec {
   readonly title?: string;
   readonly initialText?: string;
   readonly initialHref?: string;
-  /** Confirm button label (default 确定). */
+  /** Confirm button label (default OK / 确定). */
   readonly confirmLabel?: string;
+  /** Optional localized field / button labels. */
+  readonly labels?: LinkDialogLabels;
 }
 
 export type LinkDialogResult = LinkDialogValues | null;
@@ -49,25 +59,26 @@ export function showLinkDialog(
     dialog.className = 'lightink-modal-dialog lightink-link-dialog';
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-label', spec.title ?? '编辑链接');
+    const L = spec.labels ?? {};
+    dialog.setAttribute('aria-label', spec.title ?? 'Edit link');
 
     const heading = doc.createElement('div');
     heading.className = 'lightink-modal-title';
-    heading.textContent = spec.title ?? '编辑链接';
+    heading.textContent = spec.title ?? 'Edit link';
 
     const form = doc.createElement('div');
     form.className = 'lightink-link-dialog-form';
 
     const textField = buildField(doc, {
       id: 'lightink-link-text',
-      label: '显示文本',
-      placeholder: '链接标题',
+      label: L.text ?? 'Display text',
+      placeholder: L.textPlaceholder ?? 'Link title',
       value: spec.initialText ?? '',
     });
     const hrefField = buildField(doc, {
       id: 'lightink-link-href',
-      label: '链接地址',
-      placeholder: 'https://… 或 相对路径.md',
+      label: L.href ?? 'URL',
+      placeholder: L.hrefPlaceholder ?? 'https://… or relative/path.md',
       value: spec.initialHref ?? '',
     });
     form.append(textField.wrap, hrefField.wrap);
@@ -78,13 +89,13 @@ export function showLinkDialog(
     const cancelBtn = doc.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'lightink-modal-btn lightink-modal-btn--plain';
-    cancelBtn.textContent = '取消';
+    cancelBtn.textContent = L.cancel ?? 'Cancel';
     cancelBtn.addEventListener('click', () => settle(null));
 
     const okBtn = doc.createElement('button');
     okBtn.type = 'button';
     okBtn.className = 'lightink-modal-btn lightink-modal-btn--primary';
-    okBtn.textContent = spec.confirmLabel ?? '确定';
+    okBtn.textContent = spec.confirmLabel ?? 'OK';
     okBtn.addEventListener('click', () => {
       const href = hrefField.input.value.trim();
       if (!isNonEmpty(href)) {
@@ -144,12 +155,20 @@ export function showLinkDialog(
   });
 }
 
+export interface OpenLinkConfirmLabels {
+  readonly title?: string;
+  readonly message?: string;
+  readonly openLabel?: string;
+  readonly cancelLabel?: string;
+}
+
 /**
  * Confirm opening a link (Ctrl+click path). Returns true when user confirms.
  */
 export function showOpenLinkConfirm(
   doc: Document,
   href: string,
+  labels: OpenLinkConfirmLabels = {},
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
@@ -170,11 +189,11 @@ export function showOpenLinkConfirm(
 
     const title = doc.createElement('div');
     title.className = 'lightink-modal-title';
-    title.textContent = '打开链接';
+    title.textContent = labels.title ?? 'Open Link';
 
     const message = doc.createElement('div');
     message.className = 'lightink-modal-message';
-    message.textContent = '确定打开以下链接吗？';
+    message.textContent = labels.message ?? 'Open the following link?';
 
     const target = doc.createElement('div');
     target.className = 'lightink-link-dialog-target';
@@ -187,13 +206,13 @@ export function showOpenLinkConfirm(
     const cancelBtn = doc.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'lightink-modal-btn lightink-modal-btn--plain';
-    cancelBtn.textContent = '取消';
+    cancelBtn.textContent = labels.cancelLabel ?? 'Cancel';
     cancelBtn.addEventListener('click', () => settle(false));
 
     const okBtn = doc.createElement('button');
     okBtn.type = 'button';
     okBtn.className = 'lightink-modal-btn lightink-modal-btn--primary';
-    okBtn.textContent = '打开';
+    okBtn.textContent = labels.openLabel ?? 'Open';
     okBtn.addEventListener('click', () => settle(true));
 
     actions.append(cancelBtn, okBtn);

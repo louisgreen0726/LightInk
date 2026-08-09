@@ -30,13 +30,24 @@ export interface FormatTool {
 }
 
 /** 工具条按钮目录（顺序即渲染顺序）。markName 与 Milkdown schema 一致。 */
-export const FORMAT_TOOLS: readonly FormatTool[] = [
-  { id: 'bold', label: 'B', title: '加粗', markName: 'strong' },
-  { id: 'italic', label: 'I', title: '斜体', markName: 'emphasis' },
-  { id: 'strikethrough', label: 'S', title: '删除线', markName: 'strike_through' },
-  { id: 'code', label: '</>', title: '行内代码', markName: 'inlineCode' },
-  { id: 'link', label: 'link', title: '链接', markName: 'link' },
+/** Default English titles; host may retranslate via setFormatToolbarTitles. */
+export const FORMAT_TOOLS: FormatTool[] = [
+  { id: 'bold', label: 'B', title: 'Bold', markName: 'strong' },
+  { id: 'italic', label: 'I', title: 'Italic', markName: 'emphasis' },
+  { id: 'strikethrough', label: 'S', title: 'Strikethrough', markName: 'strike_through' },
+  { id: 'code', label: '</>', title: 'Inline code', markName: 'inlineCode' },
+  { id: 'link', label: 'link', title: 'Link', markName: 'link' },
 ];
+
+/** Update tooltip titles after language switch (mutates FORMAT_TOOLS in place). */
+export function setFormatToolbarTitles(titles: Partial<Record<FormatToolId, string>>): void {
+  for (const tool of FORMAT_TOOLS) {
+    const next = titles[tool.id];
+    if (typeof next === 'string' && next !== '') {
+      (tool as { title: string }).title = next;
+    }
+  }
+}
 
 /** 链接按钮的内联 SVG（描边取 currentColor，随主题令牌着色；替代风格不一的 emoji）。 */
 const LINK_ICON_SVG =
@@ -111,6 +122,14 @@ let linkEditor: LinkEditorFn | null = null;
 /** Inject the app-level link dialog (called once from main). */
 export function setFormatToolbarLinkEditor(editor: LinkEditorFn | null): void {
   linkEditor = editor;
+}
+
+/**
+ * Shared link dialog for format toolbar, slash menu, and Insert → Link.
+ * Returns null when not wired (headless / tests).
+ */
+export function getFormatToolbarLinkEditor(): LinkEditorFn | null {
+  return linkEditor;
 }
 
 /** 应用某个格式工具到当前选区（mark 切换 / link 包裹）。 */

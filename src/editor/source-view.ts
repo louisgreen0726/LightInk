@@ -87,9 +87,10 @@ function applySourceMetrics(el: HTMLElement): void {
   // 与 theme.css 编辑器代码字体同一字体栈：高亮层 <code> 受
   // `.lightink-tab-host code` 规则影响，若两层字体不同，字形宽度逐字漂移，
   // 选区洗色与可见文字错位（用户感知为「源码模式选中有问题」）。
-  el.style.fontFamily = '"Cascadia Code", "JetBrains Mono", Consolas, monospace';
-  el.style.fontSize = '14px';
-  el.style.lineHeight = '1.5';
+  el.style.fontFamily = 'var(--lightink-font-mono, "Cascadia Code", "JetBrains Mono", Consolas, monospace)';
+  // Follow reading zoom: tier code size × user font scale (same as code blocks).
+  el.style.fontSize = 'calc(var(--lightink-font-size-code, 13.5px) * var(--lightink-font-scale, 1))';
+  el.style.lineHeight = 'var(--lightink-line-height-code, 1.55)';
   el.style.whiteSpace = 'pre-wrap';
   el.style.wordBreak = 'break-word';
 }

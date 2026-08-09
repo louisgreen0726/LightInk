@@ -23,6 +23,7 @@ import {
   editorViewCtx,
   Editor as MilkdownEditor,
   EditorStatus,
+  parserCtx,
   rootCtx,
 } from '@milkdown/core';
 import { commonmark } from '@milkdown/preset-commonmark';
@@ -35,8 +36,10 @@ import {
 import { toggleMark } from '@milkdown/prose/commands';
 import { redo, undo } from '@milkdown/prose/history';
 import { TextSelection } from '@milkdown/prose/state';
+import { isInTable } from '@milkdown/prose/tables';
 
 import { attachCursorListeners, type CursorEventBinding } from './dom-events.js';
+import { insertMarkdownAtSelection } from './insert-markdown.js';
 import { codeHighlightPlugin } from './plugins/code-highlight.js';
 import { clipboardMdPlugin } from './plugins/clipboard-md.js';
 import { formatToolbarPlugin } from './plugins/format-toolbar.js';
@@ -47,6 +50,9 @@ import { mathPlugin } from './plugins/math.js';
 import { mermaidPlugin } from './plugins/mermaid.js';
 import { progressiveSelectPlugin } from './plugins/progressive-select.js';
 import { slashMenuPlugin } from './plugins/slash-menu.js';
+import { taskCheckboxPlugin } from './plugins/task-checkbox.js';
+import { runTableOp, type TableOpId } from './plugins/table-ops.js';
+import { tableOpsPlugin } from './plugins/table-ops.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
 import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
@@ -188,6 +194,10 @@ export async function mountEditor(
       editor.use(linkExclusiveEndsPlugin());
       // Progressive Ctrl/Cmd+A: current block first, then whole document.
       editor.use(progressiveSelectPlugin);
+      // GFM task list: clickable checkboxes (toggle checked ↔ markdown - [ ] / - [x]).
+      editor.use(taskCheckboxPlugin);
+      // Table: insert/delete row-col, TSV paste, Typora-style shortcuts.
+      editor.use(tableOpsPlugin);
       // T4：注入图片落盘回调时拦截粘贴/拖拽图片 → 落盘 → 插入相对引用。
       if (options.assetSaver !== undefined) {
         editor.use(
@@ -318,6 +328,27 @@ export async function mountEditor(
       const view = getView(state);
       if (view === null) return;
       insertImageAt(view, null, url, alt);
+    },
+    insertMarkdown(markdown: string): boolean {
+      const view = getView(state);
+      if (view === null || state.editor === null) return false;
+      try {
+        // Prefer action(ctx) — Editor.ctx is not a stable public surface across builds.
+        const parse = state.editor.action((ctx) => ctx.get(parserCtx));
+        return insertMarkdownAtSelection(view, markdown, parse);
+      } catch {
+        return false;
+      }
+    },
+    isInTable(): boolean {
+      const view = getView(state);
+      if (view === null) return false;
+      return isInTable(view.state);
+    },
+    runTableOp(op: TableOpId): boolean {
+      const view = getView(state);
+      if (view === null) return false;
+      return runTableOp(view, op);
     },
     focus(): void {
       const view = getView(state);

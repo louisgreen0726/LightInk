@@ -38,7 +38,10 @@ export type ShortcutAction =
   | 'toggle-chrome-pin'
   | 'toggle-fullscreen'
   | 'next-tab'
-  | 'prev-tab';
+  | 'prev-tab'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'zoom-reset';
 
 export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   new: 'Ctrl+N',
@@ -59,6 +62,10 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   'toggle-fullscreen': 'F11',
   'next-tab': 'Ctrl+Tab',
   'prev-tab': 'Ctrl+Shift+Tab',
+  // Reading font size (multiplies tier baseline; persists across sessions).
+  'zoom-in': 'Ctrl+=',
+  'zoom-out': 'Ctrl+-',
+  'zoom-reset': 'Ctrl+0',
 };
 
 /** 结构化键盘事件（兼容 DOM KeyboardEvent 的结构子集）。 */
@@ -97,16 +104,38 @@ export function parseCombo(combo: string): ParsedCombo {
   return parsed;
 }
 
+/**
+ * Key equality with zoom-friendly aliases:
+ *   Ctrl+= also matches Ctrl++ (Shift+=)
+ *   Ctrl+- also matches Ctrl+_ (Shift+-)
+ */
+function keysMatch(eventKey: string, comboKey: string): boolean {
+  const ek = eventKey.toLowerCase();
+  const ck = comboKey.toLowerCase();
+  if (ek === ck) return true;
+  if (ck === '=' && (ek === '=' || ek === '+')) return true;
+  if (ck === '-' && (ek === '-' || ek === '_')) return true;
+  return false;
+}
+
 /** 事件是否命中组合键（Ctrl 与 macOS Cmd/meta 等价对待）。 */
 export function matchEvent(event: KeyboardEventLike, combo: string): boolean {
   const c = parseCombo(combo);
   const ctrl = event.ctrlKey || event.metaKey;
-  return (
-    ctrl === c.ctrl &&
-    event.shiftKey === c.shift &&
-    event.altKey === c.alt &&
-    event.key.toLowerCase() === c.key
-  );
+  if (ctrl !== c.ctrl || event.altKey !== c.alt) {
+    return false;
+  }
+  if (!keysMatch(event.key, c.key)) {
+    return false;
+  }
+  // Shift must match, except zoom aliases where Shift is only used to type + / _.
+  const zoomAlias =
+    (c.key === '=' && (event.key === '+' || event.key === '=')) ||
+    (c.key === '-' && (event.key === '_' || event.key === '-'));
+  if (zoomAlias) {
+    return true;
+  }
+  return event.shiftKey === c.shift;
 }
 
 /** 目标是否为可编辑元素（结构化判定，兼容 fake）。 */
