@@ -67,6 +67,9 @@ hr { border: none; border-top: 1px solid var(--lightink-border); }
 /* 默认响应式；显式宽度（nodeView 写入 width 样式）不被钳制（R12）。 */
 img { max-width: 100%; height: auto; }
 img[style*="width"] { max-width: none; }
+/* nodeView 交互 chrome（缩放柄/对齐条）不得外泄到导出文档——PM 失焦不调
+   deselectNode，选中态可能保留，故用 !important 兜底隐藏（R12 导出无回归）。 */
+.lightink-image-handle, .lightink-image-alignbar { display: none !important; }
 table { border-collapse: collapse; margin: 8px 0; }
 th, td { border: 1px solid var(--lightink-border); padding: 4px 10px; }
 th { background: var(--lightink-bg-elevated); }

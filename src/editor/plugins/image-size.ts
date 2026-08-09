@@ -305,14 +305,15 @@ function createResizableImageNodeView(
   const applyAttrs = (n: PMNode): void => {
     const width = typeof n.attrs.width === 'number' ? n.attrs.width : null;
     const align = (n.attrs.align as ImageAlign | null) ?? null;
-    const style = buildImageStyle(width, align);
-    // 重置尺寸/对齐相关 inline 样式后写入新值。
+    // 尺寸/对齐相关 inline 样式逐项写入。
     img.style.width = width !== null ? `${clampWidth(width)}px` : '';
+    // 显式宽度时不钳制 max-width（编辑器内显式宽图不被压到 100%，且导出 css 的
+    // 免钳制规则成为真正 backstop）；无显式宽度保持响应式 100%。
+    img.style.maxWidth = width !== null ? 'none' : '100%';
     img.style.marginLeft = align === 'center' || align === 'right' ? 'auto' : '';
     img.style.marginRight = align === 'center' ? 'auto' : '';
     img.style.display = align === null ? 'inline' : 'block';
     img.classList.toggle('lightink-image-sized', width !== null);
-    void style; // buildImageStyle 已分项写入；保留以便导出 DOM 一致（class 已设）
     wrap.dataset.align = align ?? '';
   };
 
