@@ -101,6 +101,7 @@ const en: Dict = {
   'error.recentRemoved': 'Removed from recent files.',
   'error.unsupportedType':
     'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
+  'reader.empty': 'Open an eBook to start reading.',
   'slash.noMatch': 'No matches',
   'math.editTitle': 'Double-click to edit formula source',
   'mermaid.editTitle': 'Double-click to edit flowchart source',
@@ -304,6 +305,7 @@ const zhCN: Dict = {
   'error.recentRemoved': '已从最近打开中移除。',
   'error.unsupportedType':
     '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
+  'reader.empty': '打开一本电子书开始阅读。',
   'slash.noMatch': '无匹配项',
   'math.editTitle': '双击编辑公式源码',
   'mermaid.editTitle': '双击编辑流程图源码',

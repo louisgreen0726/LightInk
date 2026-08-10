@@ -67,7 +67,7 @@ import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, TabState } from './tabs/types.js';
-import type { ReaderInstance } from './reader/types.js';
+import { createReaderView } from './reader/reader-view.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
@@ -150,18 +150,6 @@ let autosave: AutosaveController;
 function activeMarkdownTab(): MarkdownTabState | null {
   const tab = manager?.activeTab ?? null;
   return tab !== null && isMarkdownTab(tab) ? tab : null;
-}
-
-/**
- * 只读阅读视图挂载占位（T1 仅保证 reader 标签可创建/销毁；T3 reader-view
- * 接入真实格式渲染后替换本实现）。reader 标签不挂 Milkdown 编辑器。
- */
-async function mountReaderPlaceholder(container: HTMLElement): Promise<ReaderInstance> {
-  return {
-    destroy: async () => {
-      container.replaceChildren();
-    },
-  };
 }
 
 /**
@@ -777,7 +765,7 @@ manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
   mountEditor,
-  mountReader: mountReaderPlaceholder,
+  mountReader: async (host) => createReaderView(host, { t: (key, vars) => i18n.t(key, vars) }),
   createHostElement: (tabId) => {
     const el = document.createElement('div');
     el.className = 'lightink-tab-host';

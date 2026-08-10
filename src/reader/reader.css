@@ -1,0 +1,48 @@
+/**
+ * reader-view 样式（ebook-reader T3）。
+ *
+ * 只消费主题令牌 var(--lightink-*) 与字号缩放 var(--lightink-font-scale)：
+ * 亮/暗/自定义主题与字号缩放切换即时生效，零新机制。阅读视图挂在 shell
+ * 根内，自动继承 :root / [data-theme] 上的令牌。
+ */
+
+.lightink-reader {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  font-family: var(--lightink-font-body);
+  /* 字号缩放：复用编辑器同一因子，Ctrl + / - 在阅读视图内同样生效。 */
+  font-size: calc(var(--lightink-font-size) * var(--lightink-font-scale));
+  line-height: 1.7;
+  overflow: hidden;
+}
+
+/* 流式格式：居中栏宽 + 垂直滚动阅读（EPUB/MOBI/FB2/TXT）。 */
+.lightink-reader-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-width: var(--lightink-reader-content-width);
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+/* 页式格式：逐页浏览（PDF/CBZ）。默认隐藏，T5 激活页模式时显示。 */
+.lightink-reader-pages {
+  display: none;
+  flex: 1;
+}
+.lightink-reader-pages[data-reader-active='true'] {
+  display: flex;
+}
+
+/* 空态占位：T4/T5 填充内容前的默认显示。 */
+.lightink-reader-empty {
+  color: var(--lightink-fg);
+  opacity: 0.5;
+  font-style: italic;
+  text-align: center;
+  padding: 4rem 1rem;
+}

@@ -27,6 +27,9 @@
 [data-theme="warm-light"] {
   color-scheme: light;
 
+  /* 阅读视图流式栏宽（可读行长，主题无关；仅在 :root 定义，各主题继承）。 */
+  --lightink-reader-content-width: 42rem;
+
   /* Paper stack: cream page, slightly cooler elevated surfaces for chrome/code. */
   --lightink-bg: #f4efe6;
   --lightink-bg-elevated: #fbf7f0;
