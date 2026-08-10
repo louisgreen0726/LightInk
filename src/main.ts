@@ -1147,7 +1147,10 @@ function selectSourceMatch(
   scrollTextareaMatchIntoView(ta, match.start);
 }
 
-/** 按命中字符偏移把源码 textarea 滚到可见区（中部偏上）。 */
+/**
+ * 按命中字符偏移把源码命中滚到可见区（中部偏上）。
+ * 源码表面与 WYSIWYG 共用 #lightink-editor-area 滚动；不再滚 textarea 自身。
+ */
 function scrollTextareaMatchIntoView(ta: HTMLTextAreaElement, offset: number): void {
   const style = window.getComputedStyle(ta);
   const lineHeight = Number.parseFloat(style.lineHeight) || 20;
@@ -1179,12 +1182,43 @@ function scrollTextareaMatchIntoView(ta: HTMLTextAreaElement, offset: number): v
   marker.textContent = '​';
   mirror.appendChild(marker);
   document.body.appendChild(mirror);
-  const top = marker.offsetTop;
+  const topInTextarea = marker.offsetTop;
   mirror.remove();
-  const viewH = ta.clientHeight;
-  const desired = Math.max(0, top - Math.min(viewH * 0.35, 3 * lineHeight));
-  const maxScroll = Math.max(0, ta.scrollHeight - viewH);
-  ta.scrollTop = Math.min(desired, maxScroll);
+
+  const scroller =
+    ta.ownerDocument.getElementById('lightink-editor-area') ??
+    findNearestScrollContainer(ta);
+  if (scroller === null) {
+    // 无外层滚动容器时回落：尽量滚 textarea 自身（测试/无壳层环境）。
+    const viewH = ta.clientHeight;
+    const desired = Math.max(0, topInTextarea - Math.min(viewH * 0.35, 3 * lineHeight));
+    const maxScroll = Math.max(0, ta.scrollHeight - viewH);
+    ta.scrollTop = Math.min(desired, maxScroll);
+    return;
+  }
+
+  // textarea 相对滚动容器的文档偏移 + 命中在 textarea 内的偏移。
+  const taRect = ta.getBoundingClientRect();
+  const scRect = scroller.getBoundingClientRect();
+  const absoluteTop = scroller.scrollTop + (taRect.top - scRect.top) + topInTextarea;
+  const viewH = scroller.clientHeight;
+  const desired = Math.max(0, absoluteTop - Math.min(viewH * 0.35, 3 * lineHeight));
+  const maxScroll = Math.max(0, scroller.scrollHeight - viewH);
+  scroller.scrollTop = Math.min(desired, maxScroll);
+}
+
+/** 最近 overflow 可滚祖先（源码查找滚动回落）。 */
+function findNearestScrollContainer(fromEl: HTMLElement): HTMLElement | null {
+  let el: HTMLElement | null = fromEl.parentElement;
+  while (el !== null && el !== fromEl.ownerDocument.body) {
+    const computed = el.ownerDocument.defaultView?.getComputedStyle(el);
+    const oy = computed?.overflowY ?? '';
+    if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+      return el;
+    }
+    el = el.parentElement;
+  }
+  return null;
 }
 
 function runFindQuery(query: string): void {

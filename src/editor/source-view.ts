@@ -9,10 +9,11 @@
  * 分层：
  *   - `SourceModeController`（纯逻辑、headless 可测）：管理模式态 + 以
  *     `getMarkdown/setMarkdown` 字符串往返；`enterSource` 取快照、`exitSource` 写回。
- *   - `SourceView`（DOM 层、挂载态）：在标签宿主上覆盖一个「透明 textarea + 背后高亮
- *     pre/code」的叠加层——textarea 负责可编辑输入（透明文字、可见光标），pre/code 经
+ *   - `SourceView`（DOM 层、挂载态）：在标签宿主上挂「透明 textarea + 背后高亮
+ *     pre/code」叠加层——textarea 负责可编辑输入（透明文字、可见光标），pre/code 经
  *     highlight.js（markdown 语法，复用 code-highlight 的 highlightCode + 共享 hljs 单例）
- *     提供语法高亮，二者按相同字体度量对齐、滚动同步。
+ *     提供语法高亮；二者按相同字体度量对齐。表面按内容撑高宿主，滚动交给
+ *     #lightink-editor-area（与正常模式同一条编辑区进度条）。
  */
 
 import hljs from 'highlight.js/lib/core';
@@ -107,8 +108,6 @@ export function applySourceMetrics(el: HTMLElement): void {
   // 关掉字偶距/连字相关 OpenType 特性，避免高亮层与 textarea 几何再分叉。
   el.style.fontKerning = 'none';
   el.style.fontFeatureSettings = '"liga" 0, "calt" 0';
-  // textarea 的垂直滚动条不能独占内容宽度，否则它会比背后的 pre 提前折行。
-  el.style.scrollbarGutter = 'stable';
 }
 
 /**
@@ -139,10 +138,11 @@ function renderHighlightedSource(source: string): string {
 }
 
 /**
- * DOM 层：在宿主上覆盖「透明 textarea + 背后高亮 pre/code」叠加层实现可编辑的带高亮
- * 源码视图。进入时把宿主置为定位上下文并覆盖一层不透明背景（隐藏背后编辑器、避免宿主
- * 塌陷）；退出时把 textarea 文本写回编辑器并移除叠加层。属挂载态行为（同既有插件，仅
- * 断言工厂形态）；纯逻辑往返由 SourceModeController 覆盖。
+ * DOM 层：在宿主上挂「透明 textarea + 背后高亮 pre/code」叠加层实现可编辑的带高亮
+ * 源码视图。表面按内容撑高宿主，滚动交给 #lightink-editor-area（与 WYSIWYG 同一条
+ * 编辑区进度条）；隐藏底层 ProseMirror 以免 min-height 叠高。退出时把 textarea 文本
+ * 写回编辑器并移除叠加层。属挂载态行为（同既有插件，仅断言工厂形态）；纯逻辑往返由
+ * SourceModeController 覆盖。
  */
 export class SourceView {
   private readonly controller: SourceModeController;
@@ -150,13 +150,9 @@ export class SourceView {
   private textarea: HTMLTextAreaElement | null = null;
   /** 高亮层 <code> 元素（enter 时创建，随 overlay 移除）。 */
   private codeEl: HTMLElement | null = null;
-  private savedHostPosition = '';
-  private savedHostHeight = '';
-  private savedHostOverflow = '';
-  /** 进入源码前编辑区 overflow，退出时还原（避免双滚动条）。 */
-  private savedAreaOverflow = '';
-  private savedAreaOverflowX = '';
-  private savedAreaOverflowY = '';
+  /** 进入源码前被隐藏的 WYSIWYG 根（避免其 min-height 撑高宿主）。 */
+  private proseMirror: HTMLElement | null = null;
+  private savedPmDisplay = '';
   /** 源码态视口尺寸跟随（enter 注册，exit 移除）。 */
   private onWindowResize: (() => void) | null = null;
   /** 最近一次同步到编辑器的文本（用于跳过无变化的冗余 setMarkdown/解析）。 */
@@ -174,6 +170,97 @@ export class SourceView {
     return this.textarea?.value ?? '';
   }
 
+  /**
+   * 源码表面最小高度：填满 #lightink-editor-area 可视区（扣除宿主上下 padding），
+   * 与 WYSIWYG 短文仍占满一屏的手感一致。
+   */
+  private computeMinHeight(): number {
+    const area = this.host.parentElement;
+    if (area === null) return 0;
+    const styles = this.host.ownerDocument.defaultView?.getComputedStyle(this.host);
+    const padY =
+      (Number.parseFloat(styles?.paddingTop ?? '0') || 0) +
+      (Number.parseFloat(styles?.paddingBottom ?? '0') || 0);
+    return Math.max(0, area.clientHeight - padY);
+  }
+
+  /**
+   * 按内容撑高 textarea（进而撑高宿主），让 #lightink-editor-area 成为唯一滚动容器——
+   * 滚动条落在编辑区右缘，与正常模式同一条「进度条」，而不是内容栏内侧那条。
+   */
+  private syncSurfaceHeight(): void {
+    const ta = this.textarea;
+    if (ta === null) return;
+    const minH = this.computeMinHeight();
+    // 先塌到 0 再读 scrollHeight，避免沿用旧 height 时量不到真实内容高。
+    ta.style.height = '0px';
+    const next = Math.max(ta.scrollHeight, minH);
+    ta.style.height = `${next}px`;
+  }
+
+  /** 编辑区滚动容器：优先 #lightink-editor-area，否则宿主父元素。 */
+  private scrollContainer(): HTMLElement | null {
+    const byId = this.host.ownerDocument.getElementById('lightink-editor-area');
+    if (byId instanceof HTMLElement) return byId;
+    return this.host.parentElement;
+  }
+
+  /**
+   * 把光标/选区末端滚进 #lightink-editor-area 可视区。
+   * textarea 高度=内容且 overflow:hidden 时浏览器不会自滚外层容器。
+   */
+  private ensureCaretVisible(): void {
+    const ta = this.textarea;
+    const scroller = this.scrollContainer();
+    if (ta === null || scroller === null) return;
+
+    const style = this.host.ownerDocument.defaultView?.getComputedStyle(ta);
+    const lineHeight = Number.parseFloat(style?.lineHeight ?? '') || 20;
+    const mirror = this.host.ownerDocument.createElement('div');
+    mirror.setAttribute('aria-hidden', 'true');
+    const ms = mirror.style;
+    ms.position = 'absolute';
+    ms.visibility = 'hidden';
+    ms.pointerEvents = 'none';
+    ms.whiteSpace = 'pre-wrap';
+    ms.wordBreak = style?.wordBreak || 'break-word';
+    ms.overflowWrap = style?.overflowWrap || 'break-word';
+    ms.font = style?.font ?? '';
+    ms.fontFamily = style?.fontFamily ?? '';
+    ms.fontSize = style?.fontSize ?? '';
+    ms.fontWeight = style?.fontWeight ?? '';
+    ms.fontStyle = style?.fontStyle ?? '';
+    ms.letterSpacing = style?.letterSpacing ?? '';
+    ms.lineHeight = style?.lineHeight ?? '';
+    ms.tabSize = style?.tabSize ?? '';
+    ms.boxSizing = style?.boxSizing ?? 'border-box';
+    ms.padding = style?.padding ?? '0';
+    ms.border = style?.border ?? 'none';
+    ms.width = `${ta.clientWidth}px`;
+    const offset = Math.max(0, Math.min(ta.selectionEnd, ta.value.length));
+    mirror.textContent = ta.value.slice(0, offset);
+    const marker = this.host.ownerDocument.createElement('span');
+    marker.textContent = '​';
+    mirror.appendChild(marker);
+    this.host.ownerDocument.body.appendChild(mirror);
+    const topInTextarea = marker.offsetTop;
+    mirror.remove();
+
+    const taRect = ta.getBoundingClientRect();
+    const scRect = scroller.getBoundingClientRect();
+    const caretTop = scroller.scrollTop + (taRect.top - scRect.top) + topInTextarea;
+    const caretBottom = caretTop + lineHeight;
+    const margin = Math.min(72, lineHeight * 2);
+    if (caretTop < scroller.scrollTop + margin) {
+      scroller.scrollTop = Math.max(0, caretTop - margin);
+    } else if (caretBottom > scroller.scrollTop + scroller.clientHeight - margin) {
+      scroller.scrollTop = Math.max(
+        0,
+        caretBottom - scroller.clientHeight + margin,
+      );
+    }
+  }
+
   /** 进入源码模式。 */
   enter(): void {
     if (this.controller.isSourceMode() || this.wrapper !== null) return;
@@ -182,11 +269,12 @@ export class SourceView {
 
     const wrapper = doc.createElement('div');
     wrapper.className = 'lightink-source-overlay';
-    wrapper.style.position = 'absolute';
-    wrapper.style.inset = '0';
+    // 文档流布局：高度由内部 textarea 内容决定，宿主随之增高，
+    // 外层 #lightink-editor-area 承担滚动（与 WYSIWYG 同源）。
+    wrapper.style.position = 'relative';
     wrapper.style.zIndex = '10';
     wrapper.style.background = 'var(--lightink-bg)';
-    wrapper.style.overflow = 'hidden';
+    wrapper.style.width = '100%';
 
     const pre = doc.createElement('pre');
     // 专用类：theme.css 据此中和 `.lightink-tab-host pre` 的代码块样式
@@ -194,10 +282,10 @@ export class SourceView {
     pre.className = 'lightink-source-highlight';
     pre.style.position = 'absolute';
     pre.style.inset = '0';
-    // overflow hidden：滚动只由 textarea 同步驱动（hidden 仍可编程滚动），
-    // 否则 pre/textarea/编辑区三层各出一条滚动条（双滚动条问题）。
+    // 高亮层随 wrapper 同高，完整绘制源码；不自带滚动。
     pre.style.overflow = 'hidden';
     pre.style.pointerEvents = 'none';
+    pre.style.margin = '0';
     pre.style.color = 'var(--lightink-fg)';
     pre.style.background = 'transparent';
     applySourceMetrics(pre);
@@ -210,9 +298,12 @@ export class SourceView {
 
     const textarea = doc.createElement('textarea');
     textarea.className = 'lightink-source-editor';
-    textarea.style.position = 'absolute';
-    textarea.style.inset = '0';
-    textarea.style.overflow = 'auto';
+    // 相对定位占位：宽 100%、高度 = 内容高，overflow 隐藏自身滚动条。
+    // 滚轮/键盘滚动交给祖先 #lightink-editor-area（与正常模式同一条进度条）。
+    textarea.style.position = 'relative';
+    textarea.style.display = 'block';
+    textarea.style.width = '100%';
+    textarea.style.overflow = 'hidden';
     textarea.style.background = 'transparent';
     textarea.style.color = 'transparent';
     textarea.style.caretColor = 'var(--lightink-fg)';
@@ -224,13 +315,26 @@ export class SourceView {
 
     const onInput = (): void => {
       this.refreshFromTextarea();
+      this.ensureCaretVisible();
     };
-    const onScroll = (): void => {
-      pre.scrollTop = textarea.scrollTop;
-      pre.scrollLeft = textarea.scrollLeft;
+    // 方向键/点击改选区：textarea 自身不再滚动，需把光标保持在外层编辑区视口内。
+    const onCaretMove = (): void => {
+      this.ensureCaretVisible();
+    };
+    // overflow:hidden 的 textarea 在部分 WebView 下不会把滚轮冒泡给祖先；
+    // 显式把 delta 转给 #lightink-editor-area，保持与正常模式同一滚动条。
+    const onWheel = (event: WheelEvent): void => {
+      const scroller = this.scrollContainer();
+      if (scroller === null) return;
+      // 仅处理纵向滚；横向/捏合缩放留给浏览器。
+      if (event.deltaY === 0) return;
+      scroller.scrollTop += event.deltaY;
+      event.preventDefault();
     };
     textarea.addEventListener('input', onInput);
-    textarea.addEventListener('scroll', onScroll);
+    textarea.addEventListener('keyup', onCaretMove);
+    textarea.addEventListener('click', onCaretMove);
+    textarea.addEventListener('wheel', onWheel, { passive: false });
     // R8：源码模式粘贴富文本（text/html）同样转结构化 Markdown 插入，不插入原始
     // HTML 标签；无 text/html 或转换失败则回落原生纯文本粘贴，保证不丢内容。
     const onPaste = (event: ClipboardEvent): void => {
@@ -256,56 +360,48 @@ export class SourceView {
         ta2.setRangeText(md, ta2.selectionStart, ta2.selectionEnd, 'end');
       }
       this.refreshFromTextarea();
+      this.ensureCaretVisible();
     };
     textarea.addEventListener('paste', onPaste);
 
     wrapper.appendChild(pre);
     wrapper.appendChild(textarea);
 
-    this.savedHostPosition = this.host.style.position;
-    this.savedHostHeight = this.host.style.height;
-    this.savedHostOverflow = this.host.style.overflow;
-    this.host.style.position = 'relative';
-    // 源码态把宿主钳制到编辑区视口高并裁掉溢出：背后的 WYSIWYG 内容不再
-    // 撑长页面（编辑区不出现页面级滚动条），滚动完全由 textarea 承担，
-    // 整个源码模式只留一条滚动条。
-    this.host.style.overflow = 'hidden';
-    const area = this.host.parentElement;
-    // 同时锁住编辑区本身的 overflow：仅关 host 时，#lightink-editor-area 仍可能
-    // 因 host 内边距/测量时序或底层 ProseMirror 残留高度出现第二条滚动条
-    // （2026-08-09 Tauri 实测双滚动条）。
-    if (area !== null) {
-      this.savedAreaOverflow = area.style.overflow;
-      this.savedAreaOverflowX = area.style.overflowX;
-      this.savedAreaOverflowY = area.style.overflowY;
-      area.style.overflow = 'hidden';
+    // 隐藏 WYSIWYG 根，避免 .ProseMirror { min-height: 60vh } 与源码表面叠高，
+    // 也避免底层仍参与命中/选区。
+    const pm = this.host.querySelector('.ProseMirror');
+    if (pm instanceof HTMLElement) {
+      this.proseMirror = pm;
+      this.savedPmDisplay = pm.style.display;
+      pm.style.display = 'none';
     } else {
-      this.savedAreaOverflow = '';
-      this.savedAreaOverflowX = '';
-      this.savedAreaOverflowY = '';
+      this.proseMirror = null;
+      this.savedPmDisplay = '';
     }
-    const fitViewport = (): void => {
-      if (area !== null) {
-        this.host.style.height = `${area.clientHeight}px`;
-      }
-    };
-    fitViewport();
-    window.addEventListener('resize', fitViewport);
-    this.onWindowResize = fitViewport;
+    this.host.classList.add('is-source-mode');
     this.host.appendChild(wrapper);
 
     this.wrapper = wrapper;
     this.textarea = textarea;
     this.codeEl = code;
     this.lastSynced = text;
+
+    const onResize = (): void => {
+      this.syncSurfaceHeight();
+    };
+    window.addEventListener('resize', onResize);
+    this.onWindowResize = onResize;
+
+    this.syncSurfaceHeight();
     textarea.focus();
   }
 
-  /** 高亮层重绘 + 变更同步（textarea 内容变化的统一入口）。 */
+  /** 高亮层重绘 + 高度跟随 + 变更同步（textarea 内容变化的统一入口）。 */
   private refreshFromTextarea(): void {
     if (this.codeEl !== null && this.textarea !== null) {
       this.codeEl.innerHTML = renderHighlightedSource(this.textarea.value);
     }
+    this.syncSurfaceHeight();
     // 即时同步（先于 host 的 handleContentChanged 冒泡）：让背后编辑器
     // 跟随 textarea，使脏标记/崩溃快照/导出/大纲等所有读取 editor 的站点都读到最新源码。
     this.syncIfChanged();
@@ -321,6 +417,7 @@ export class SourceView {
     ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
     this.refreshFromTextarea();
     ta.focus();
+    this.ensureCaretVisible();
   }
 
   /** 源码 textarea 是否有非空选区（源码态右键菜单的启用判定）。 */
@@ -354,18 +451,12 @@ export class SourceView {
     this.wrapper = null;
     this.textarea = null;
     this.codeEl = null;
-    this.host.style.position = this.savedHostPosition;
-    this.host.style.height = this.savedHostHeight;
-    this.host.style.overflow = this.savedHostOverflow;
-    const area = this.host.parentElement;
-    if (area !== null) {
-      area.style.overflow = this.savedAreaOverflow;
-      area.style.overflowX = this.savedAreaOverflowX;
-      area.style.overflowY = this.savedAreaOverflowY;
+    if (this.proseMirror !== null) {
+      this.proseMirror.style.display = this.savedPmDisplay;
+      this.proseMirror = null;
+      this.savedPmDisplay = '';
     }
-    this.savedAreaOverflow = '';
-    this.savedAreaOverflowX = '';
-    this.savedAreaOverflowY = '';
+    this.host.classList.remove('is-source-mode');
   }
 
   /** 切换模式。 */

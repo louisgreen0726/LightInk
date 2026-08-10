@@ -612,24 +612,22 @@ body.lightink-outline-resizing * {
   font-size: 0.92em;
 }
 
-/* 代码块横向滚动条 / 源码模式主滚动条 / 斜杠菜单滚动条：细轨、贴主题
+/* 代码块横向滚动条 / 斜杠菜单滚动条：细轨、贴主题
    （原生经典滚动条的箭头按钮/宽轨在暖色背景上像一条脱落的白条——隐藏
-   按钮、thumb 用透明描边内缩）。 */
+   按钮、thumb 用透明描边内缩）。源码模式滚动交给 #lightink-editor-area，
+   与 WYSIWYG 共用同一条编辑区滚动条。 */
 .lightink-tab-host pre::-webkit-scrollbar,
-.lightink-source-editor::-webkit-scrollbar,
 .lightink-slash-menu::-webkit-scrollbar {
   height: 10px;
   width: 10px;
 }
 
 .lightink-tab-host pre::-webkit-scrollbar-track,
-.lightink-source-editor::-webkit-scrollbar-track,
 .lightink-slash-menu::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .lightink-tab-host pre::-webkit-scrollbar-thumb,
-.lightink-source-editor::-webkit-scrollbar-thumb,
 .lightink-slash-menu::-webkit-scrollbar-thumb {
   background: var(--lightink-border);
   border: 2px solid transparent;
@@ -638,7 +636,6 @@ body.lightink-outline-resizing * {
 }
 
 .lightink-tab-host pre::-webkit-scrollbar-thumb:hover,
-.lightink-source-editor::-webkit-scrollbar-thumb:hover,
 .lightink-slash-menu::-webkit-scrollbar-thumb:hover {
   background: var(--lightink-muted);
   border: 2px solid transparent;
@@ -646,7 +643,6 @@ body.lightink-outline-resizing * {
 }
 
 .lightink-tab-host pre::-webkit-scrollbar-button,
-.lightink-source-editor::-webkit-scrollbar-button,
 .lightink-slash-menu::-webkit-scrollbar-button {
   display: none;
 }
@@ -1069,11 +1065,11 @@ body.lightink-outline-resizing * {
    accent 色让选中范围明确可读。R15：selection-strong 必须为不透明实色
    （半透明会逐 token 与底层语法色混合出不均色块）；实色会遮住背后高亮层
    字形，故 ::selection 同时指定前景色，由 textarea 把选中文字以主题前景色
-   重绘（未选中文字仍由背后高亮层透出，语法色不变）。 */
+   重绘（未选中文字仍由背后高亮层透出，语法色不变）。
+   滚动：textarea 内容撑高宿主，#lightink-editor-area 是唯一滚动容器
+   （与正常模式同一条编辑区进度条）。 */
 .lightink-source-editor {
   user-select: text;
-  scrollbar-width: thin;
-  scrollbar-color: var(--lightink-border) transparent;
   /* 与 applySourceMetrics 双保险：防止主题/宿主继承再次拉开两层几何。 */
   letter-spacing: normal !important;
   text-rendering: auto !important;
@@ -1099,7 +1095,7 @@ body.lightink-outline-resizing * {
   text-rendering: auto !important;
   font-kerning: none !important;
   font-variant-ligatures: none !important;
-  /* 不显示滚动条：滚动只由 textarea 驱动（JS 同步 scrollTop）。 */
+  /* 不显示滚动条：整页滚动交给 #lightink-editor-area。 */
   scrollbar-width: none;
 }
 
@@ -1107,6 +1103,11 @@ body.lightink-outline-resizing * {
   width: 0;
   height: 0;
   display: none;
+}
+
+/* 源码态：宿主不再需要 WYSIWYG 的 min-height 占位（PM 已 display:none）。 */
+.lightink-tab-host.is-source-mode {
+  min-height: 0;
 }
 
 /* R15 对齐补强：高亮层 hljs token 只允许颜色差异。字重（.hljs-strong 600）、

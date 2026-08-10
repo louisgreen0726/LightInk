@@ -120,7 +120,6 @@ describe('SourceView (factory shape)', () => {
     expect(surface.style.whiteSpace).toBe('pre-wrap');
     expect(surface.style.wordBreak).toBe('break-word');
     expect(surface.style.overflowWrap).toBe('break-word');
-    expect(surface.style.scrollbarGutter).toBe('stable');
     expect(surface.style.fontVariantLigatures).toBe('none');
     // 字距/字偶距对齐（textarea UA 默认 vs 高亮层继承值，2026-08-09 漂移根因）。
     expect(surface.style.letterSpacing).toBe('normal');
