@@ -76,6 +76,14 @@ class FakeEl {
     }
     return null;
   }
+
+  addEventListener(): void {
+    /* no-op for reader-view tests（T5 起 reader-view 在 root 上挂 keydown） */
+  }
+
+  removeEventListener(): void {
+    /* no-op */
+  }
 }
 
 class FakeDoc {
