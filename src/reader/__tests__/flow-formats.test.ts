@@ -163,10 +163,15 @@ describe('parseMobi', () => {
     return new Uint8Array(flat);
   }
 
-  /** 合成最小 PalmDOC MOBI（compression=1 无压缩）。 */
-  function buildMobi(html: string, opts: { encryption?: number } = {}): Uint8Array {
+  /** 合成最小 PalmDOC MOBI。record 默认为 html 的 UTF-8（compression=1）；可传压缩记录（compression=2）。 */
+  function buildMobi(
+    html: string,
+    opts: { encryption?: number; compression?: number; record?: number[]; textLength?: number } = {},
+  ): Uint8Array {
     const encryption = opts.encryption ?? 0;
-    const text = enc(html);
+    const compression = opts.compression ?? 1;
+    const record = opts.record ?? [...enc(html)];
+    const textLength = opts.textLength ?? record.length;
     const header = asciiPadded('TESTBOOK', 78); // 78 字节 PalmDB 头（name 占 32，其余填零）
     header[76] = u16(2)[0]!; // numRecords = 2（大端）
     header[77] = u16(2)[1]!;
@@ -175,13 +180,13 @@ describe('parseMobi', () => {
     // PalmDOC 头(16) + MOBI 头标识(MOBI)+headerLength+type+codepage(=65001 UTF-8)。
     const mobi = [...asciiCodes('MOBI'), ...u32(232), ...u32(2), ...u32(65001)];
     const rec0 = [
-      ...u16(1), ...u16(0), ...u32(text.length), ...u16(1), ...u16(4096), ...u16(encryption), ...u16(0),
+      ...u16(compression), ...u16(0), ...u32(textLength), ...u16(1), ...u16(4096), ...u16(encryption), ...u16(0),
       ...mobi,
     ];
     const rec1Offset = rec0Offset + rec0.length;
     index[0] = u32(rec0Offset)[0]!; index[1] = u32(rec0Offset)[1]!; index[2] = u32(rec0Offset)[2]!; index[3] = u32(rec0Offset)[3]!;
     index[8] = u32(rec1Offset)[0]!; index[9] = u32(rec1Offset)[1]!; index[10] = u32(rec1Offset)[2]!; index[11] = u32(rec1Offset)[3]!;
-    return concat([header, index, rec0, [...text]]);
+    return concat([header, index, rec0, record]);
   }
 
   it('无压缩 MOBI 提取正文 HTML 为一章', () => {
@@ -189,6 +194,18 @@ describe('parseMobi', () => {
     expect(content.chapters).toHaveLength(1);
     expect(content.chapters[0]!.title).toBe('标题');
     expect(content.chapters[0]!.html).toContain('<p>正文内容</p>');
+  });
+
+  it('PalmDOC LZ77 解压回引（compression=2）', () => {
+    // "AAAA" 的 PalmDOC LZ77 压缩：0x41(字面 'A') + 0x80,0x00(回引 distance=1,length=3)。
+    const content = parseMobi(buildMobi('', { compression: 2, record: [0x41, 0x80, 0x00], textLength: 4 }));
+    expect(content.chapters[0]!.html).toContain('AAAA');
+  });
+
+  it('PalmDOC LZ77 字面转义（c=0 拷贝下一字节）', () => {
+    // 0x00 → 拷贝下一字节 0x42('B')；0x41 → 字面 'A'。
+    const content = parseMobi(buildMobi('', { compression: 2, record: [0x00, 0x42, 0x41], textLength: 2 }));
+    expect(content.chapters[0]!.html).toContain('BA');
   });
 
   it('按 <mbp:pagebreak/> 切章', () => {
@@ -201,5 +218,12 @@ describe('parseMobi', () => {
 
   it('DRM 文件抛 ParseError', () => {
     expect(() => parseMobi(buildMobi('<p>x</p>', { encryption: 1 }))).toThrow(ParseError);
+  });
+
+  it('损坏记录索引（numRecords 越界）抛 ParseError', () => {
+    // 构造一个 numRecords 虚高但文件不足的伪造头。
+    const bad = asciiPadded('X', 78);
+    bad[76] = 0xff; bad[77] = 0xff; // numRecords = 65535，远超文件长度
+    expect(() => parseMobi(new Uint8Array(bad))).toThrow(ParseError);
   });
 });

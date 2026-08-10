@@ -32,10 +32,11 @@ export function sanitizeHtml(input: string): string {
   s = s.replace(new RegExp(`</?(?:${DANGEROUS_NAMES})\\b[^>]*>`, 'gi'), '');
   // 事件处理器属性。
   s = s.replace(EVENT_ATTR, '');
-  // 危险 URL 协议中和：把 href/src 中的 javascript:/vbscript:/data:text-html 值替换为 #。
+  // 危险 URL 协议中和：把 href/src 中的 javascript:/vbscript:/data:text-html 值替换为 #
+  // （覆盖引号与无引号两种属性值形式）。
   s = s.replace(
-    /((?:href|src)\s*=\s*["'])(?:javascript|vbscript|data:text\/html)[^"']*?(["'])/gi,
-    '$1#$2',
+    /((?:href|src)\s*=\s*)(["']?)(?:javascript|vbscript|data:text\/html)[^"'\s>]*\2/gi,
+    '$1$2#$2',
   );
   return s;
 }

@@ -27,7 +27,10 @@ function palmDocDecompress(input: Uint8Array): Uint8Array {
   while (i < input.length) {
     const c = input[i++]!;
     if (c === 0) {
-      out.push(0);
+      // 字面转义：拷贝下一字节（用于无法作单字节字面量的字节）。
+      if (i < input.length) {
+        out.push(input[i++]!);
+      }
     } else if (c <= 8) {
       // 复制随后 c 字节字面量。
       for (let k = 0; k < c && i < input.length; k++) {
@@ -37,10 +40,10 @@ function palmDocDecompress(input: Uint8Array): Uint8Array {
       // 单字节字面量。
       out.push(c);
     } else if (c <= 0xbf) {
-      // 两字节回引：length 3 位 + distance 11 位。
-      const d = input[i++] ?? 0;
+      // 两字节回引：length 3 位 + distance 11 位（distance 编码为 0 基，解码 +1）。
+      const d = i < input.length ? input[i++]! : 0;
       const count = (c & 0x07) + 3;
-      const distance = (((c >> 3) & 0x07) << 8) | d;
+      const distance = (((c >> 3) & 0x07) << 8) + d + 1;
       for (let k = 0; k < count; k++) {
         const src = out.length - distance;
         out.push(src >= 0 && src < out.length ? (out[src] ?? 0) : 0);
@@ -78,8 +81,8 @@ export function parseMobi(bytes: Uint8Array): ReaderContent {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   const numRecords = be16(dv, 76);
-  if (numRecords < 1) {
-    throw new ParseError('MOBI 无数据记录');
+  if (numRecords < 1 || 78 + numRecords * 8 > bytes.length) {
+    throw new ParseError('MOBI 文件损坏：记录索引越界');
   }
 
   // 记录偏移索引（每条 8 字节：offset 4 + attrib 1 + uniqueID 3）。
