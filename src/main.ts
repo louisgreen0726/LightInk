@@ -63,9 +63,10 @@ import {
 import { printViaMainWindow } from './export/pdf-export.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
-import { TabManager } from './tabs/tab-manager.js';
+import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
-import type { CloseChoice } from './tabs/types.js';
+import type { CloseChoice, MarkdownTabState } from './tabs/types.js';
+import type { ReaderInstance } from './reader/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
@@ -141,6 +142,27 @@ let statusBar: StatusBar;
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
 
+/**
+ * 活动 markdown 标签：reader 标签活动时返回 null，编辑器动作据此系统性空转。
+ * 构造期 manager 尚未赋值时经 ?. 短路返回 null（菜单 enabled 回调安全）。
+ */
+function activeMarkdownTab(): MarkdownTabState | null {
+  const tab = manager?.activeTab ?? null;
+  return tab !== null && isMarkdownTab(tab) ? tab : null;
+}
+
+/**
+ * 只读阅读视图挂载占位（T1 仅保证 reader 标签可创建/销毁；T3 reader-view
+ * 接入真实格式渲染后替换本实现）。reader 标签不挂 Milkdown 编辑器。
+ */
+async function mountReaderPlaceholder(container: HTMLElement): Promise<ReaderInstance> {
+  return {
+    destroy: async () => {
+      container.replaceChildren();
+    },
+  };
+}
+
 function saveActiveAs(): void {
   const id = manager.activeTabId;
   if (id !== null) {
@@ -157,7 +179,7 @@ function saveActiveAs(): void {
  *   - WYSIWYG：结构化解析后在光标处插入。
  */
 function insertElement(id: InsertElementId): void {
-  const tab = manager.activeTab;
+  const tab = activeMarkdownTab();
   if (tab === null) {
     return;
   }
@@ -191,7 +213,7 @@ function insertElement(id: InsertElementId): void {
 
 /** Insert → Link / shortcut: themed dialog for display text + URL. */
 async function insertLinkViaDialog(): Promise<void> {
-  const tab = manager.activeTab;
+  const tab = activeMarkdownTab();
   if (tab === null) return;
 
   const sourceView = sourceViews.get(tab.id);
@@ -232,7 +254,7 @@ async function insertLinkViaDialog(): Promise<void> {
  * 调用方：插入菜单的文件选择器、OS 文件拖入。
  */
 async function importAndInsertImage(sourcePath: string): Promise<void> {
-  const tab = manager.activeTab;
+  const tab = activeMarkdownTab();
   if (tab === null) {
     return;
   }
@@ -311,7 +333,7 @@ async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
 
 /** Focus the active writing surface (source textarea or ProseMirror view). */
 function focusActiveEditor(): void {
-  const tab = manager?.activeTab ?? null;
+  const tab = activeMarkdownTab();
   if (tab === null) {
     return;
   }
@@ -337,7 +359,7 @@ function afterMenuFocus(run: () => void): void {
 /** Menu undo: ProseMirror history in WYSIWYG; native undo in source mode. */
 function undoActiveEditor(): void {
   afterMenuFocus(() => {
-    const tab = manager?.activeTab ?? null;
+    const tab = activeMarkdownTab();
     if (tab === null) {
       return;
     }
@@ -357,7 +379,7 @@ function undoActiveEditor(): void {
 /** Menu redo: ProseMirror history in WYSIWYG; native redo in source mode. */
 function redoActiveEditor(): void {
   afterMenuFocus(() => {
-    const tab = manager?.activeTab ?? null;
+    const tab = activeMarkdownTab();
     if (tab === null) {
       return;
     }
@@ -432,8 +454,8 @@ function runClipboardCommand(command: 'cut' | 'copy' | 'paste'): void {
 // src/export/ 下（可 headless 测试）。
 function activeExportSnapshot(): ExportTabSnapshot | null {
   const tab = manager.activeTab;
-  if (tab === null) {
-    return null;
+  if (tab === null || !isMarkdownTab(tab)) {
+    return null; // reader 标签不可导出为 Markdown HTML
   }
   return {
     title: tab.title,
@@ -504,7 +526,7 @@ shell = createAppShell(
     // refreshItemEnabled），此时 manager 尚未赋值（于下方 new TabManager 处赋值）。
     // 用 ?. 短路避免构造期抛错；构造期返回 false（无活动文件）也正确，菜单打开时
     // 会经 refreshMenu 重算。
-    hasActiveFile: () => manager?.activeTab?.filePath != null,
+    hasActiveFile: () => activeMarkdownTab()?.filePath != null,
     onSave: () => {
       commitActiveSourceMode();
       void manager.saveActiveTab();
@@ -535,7 +557,7 @@ shell = createAppShell(
     onFind: () => openFindPanel(),
     // T6/R10：全选（双模式）；含未保存新标签在内的任意活动文档均可用。
     onSelectAll: () => selectAllActive(),
-    hasActiveDocument: () => manager?.activeTab != null,
+    hasActiveDocument: () => activeMarkdownTab() != null,
     onInsertElement: insertElement,
     onToggleTheme: () => {
       themeService.toggle();
@@ -714,6 +736,7 @@ manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
   mountEditor,
+  mountReader: mountReaderPlaceholder,
   createHostElement: (tabId) => {
     const el = document.createElement('div');
     el.className = 'lightink-tab-host';
@@ -844,7 +867,7 @@ setSlashImageHandler(() => insertImageFromFile());
 outline = createOutlineView({
   getActiveHost: () => manager.activeTab?.hostElement ?? null,
   getActiveMarkdown: () => {
-    const tab = manager.activeTab;
+    const tab = activeMarkdownTab();
     if (tab === null) {
       return null;
     }
@@ -871,7 +894,7 @@ statusBar = createStatusBar(document, shell.statusBarHost, {
 
 /** 活动标签的 markdown（状态栏统计来源；与大纲同一事实源 editor.getMarkdown）。 */
 function getActiveMarkdownForStatus(): string | null {
-  const tab = manager?.activeTab ?? null;
+  const tab = activeMarkdownTab();
   if (tab === null) {
     return null;
   }
@@ -898,7 +921,7 @@ autosave = createAutosave({
 
 /** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
 function showVersionsForActive(): void {
-  const tab = manager.activeTab;
+  const tab = activeMarkdownTab();
   const filePath = tab?.filePath ?? null;
   if (filePath === null) {
     return;
@@ -982,7 +1005,7 @@ async function openLocalMdLink(path: string): Promise<void> {
 // T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。
 const sourceViews = new Map<string, SourceView>();
 function toggleActiveSourceMode(): void {
-  const tab = manager.activeTab;
+  const tab = activeMarkdownTab();
   if (tab === null) return;
   let view = sourceViews.get(tab.id);
   if (view === undefined) {
@@ -1010,7 +1033,7 @@ function commitSourceMode(tabId: string): void {
  * 源码模式选源码 textarea 全文。无活动文档时空操作。
  */
 function selectAllActive(): void {
-  const tab = manager.activeTab;
+  const tab = activeMarkdownTab();
   if (tab === null) return;
   const sourceView = sourceViews.get(tab.id);
   if (sourceView !== undefined && sourceView.isSourceMode) {
@@ -1512,8 +1535,8 @@ shortcuts.attach(document);
 
 // T8/R3：右键上下文菜单（编辑区 + 标签页）。
 function showEditorContextMenu(x: number, y: number): void {
-  const tab = manager.activeTab;
-  if (tab === null) return;
+  const tab = activeMarkdownTab();
+  if (tab === null) return; // reader 标签不弹编辑器右键菜单（T3 阅读视图自理）
   const sourceView = sourceViews.get(tab.id);
   const inSource = sourceView !== undefined && sourceView.isSourceMode;
   // 源码态下选区/链接以源码 textarea 为准（WYSIWYG 编辑器被覆盖层遮住）。

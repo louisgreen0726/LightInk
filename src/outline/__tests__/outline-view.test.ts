@@ -487,7 +487,10 @@ describe('createOutlineView + TabManager', () => {
       doc: fakeDocument(),
       debounceMs: 0,
       getActiveHost: () => manager.activeTab?.hostElement ?? null,
-      getActiveMarkdown: () => manager.activeTab?.editor.getMarkdown() ?? null,
+      getActiveMarkdown: () => {
+        const tab = manager.activeTab;
+        return tab !== null && tab.kind === 'markdown' ? tab.editor.getMarkdown() : null;
+      },
     });
     return { manager, view, editors };
   }

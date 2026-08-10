@@ -2,14 +2,19 @@
  * 标签页状态类型（T3）。
  *
  * 多标签状态的唯一 owner 是前端 TabManager：标签列表、活动标签、
- * 每个标签各自的编辑器会话（ProseMirror doc + 脏标记 + 文件路径）。
+ * 每个标签各自的会话。标签按 `kind` 区分两类：
+ *   - `markdown`：可写的 Milkdown 编辑标签（既有行为），独占一个
+ *     EditorInstance，dirty = 当前内容与 lastSavedMarkdown 不一致；
+ *   - `reader`：只读阅读标签（PDF/EPUB/...），不挂编辑器，dirty 恒为
+ *     false，永不进入保存/快照/外部变更检测等可写路径。
  */
 
 import type { EditorInstance } from '../editor/types.js';
 import type { FileStat } from '../file/file-service.js';
+import type { ReaderInstance } from '../reader/types.js';
 
-/** 单个标签页的完整会话状态。 */
-export interface TabState {
+/** markdown 与 reader 标签共享的基础会话状态。 */
+interface TabBase {
   /** 稳定 id（`tab-<n>`），用于切换/关闭与快照调度。 */
   readonly id: string;
   /** 已保存到磁盘的文件路径；未命名标签为 null。 */
@@ -21,20 +26,40 @@ export interface TabState {
   readonly syntheticId: string;
   /** 标签标题（文件名或「未命名-n」）。 */
   title: string;
-  /** 脏标记：当前内容与 lastSavedMarkdown 不一致即为 true。 */
+  /** 脏标记：当前内容与 lastSavedMarkdown 不一致即为 true（reader 恒 false）。 */
   dirty: boolean;
-  /** 该标签独占的编辑器实例。 */
-  readonly editor: EditorInstance;
   /** 该标签的宿主 DOM 元素（切换时 show/hide）。 */
   readonly hostElement: HTMLElement;
   /** 最近一次已保存（或初始加载）的内容，用于比较得出脏标记。 */
   lastSavedMarkdown: string;
   /**
    * R13：最近一次加载/保存成功时记录的磁盘 `FileStat`（mtime+size），作为
-   * 外部变更检测基线。未命名标签或 stat 失败时为 null（不参与检测）。
+   * 外部变更检测基线。未命名标签、stat 失败或 reader 标签为 null（不参与检测）。
    */
   lastSavedMtime: FileStat | null;
 }
+
+/** 可写 Markdown 编辑标签（既有行为）。独占一个编辑器实例。 */
+export interface MarkdownTabState extends TabBase {
+  readonly kind: 'markdown';
+  /** 该标签独占的编辑器实例。 */
+  readonly editor: EditorInstance;
+}
+
+/**
+ * 只读阅读标签（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）。不挂编辑器，
+ * dirty 恒为 false，永不进入保存/快照/外部变更检测等可写路径
+ * （见 tab-manager 各方法的 kind 守卫）。持有一个 ReaderInstance，
+ * 生命周期由 TabManager 管理。
+ */
+export interface ReaderTabState extends TabBase {
+  readonly kind: 'reader';
+  /** 该标签独占的阅读视图实例。 */
+  readonly reader: ReaderInstance;
+}
+
+/** 单个标签页的完整会话状态（markdown 编辑标签或只读 reader 标签）。 */
+export type TabState = MarkdownTabState | ReaderTabState;
 
 /** 关闭未保存标签时用户的三选一。 */
 export type CloseChoice = 'save' | 'discard' | 'cancel';

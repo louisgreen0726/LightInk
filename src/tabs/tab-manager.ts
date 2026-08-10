@@ -31,6 +31,7 @@ import { createAssetSaver, createImageSrcResolver } from '../asset/asset-service
 import * as assetService from '../asset/asset-service.js';
 import type { EditorInstance, MountOptions } from '../editor/types.js';
 import type { ImageAssetMountOptions } from '../editor/plugins/image.js';
+import type { ReaderInstance } from '../reader/types.js';
 import {
   defaultRoundtripDeps,
   openFileFlow,
@@ -46,7 +47,12 @@ import {
   type ExternalConflictChoice,
   type ExternalReloadChoice,
 } from '../file/external-change.js';
-import type { CloseChoice, TabState } from './types.js';
+import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './types.js';
+
+/** reader 标签判别：reader 标签豁免全部可写编辑器路径。 */
+export function isMarkdownTab(tab: TabState): tab is MarkdownTabState {
+  return tab.kind === 'markdown';
+}
 
 /** 跨会话唯一的未命名快照键片段：crypto.randomUUID 优先，缺失时退化。 */
 function newUntitledToken(): string {
@@ -63,6 +69,12 @@ export interface TabManagerDeps {
     container: HTMLElement,
     options: MountOptions & ImageAssetMountOptions,
   ) => Promise<EditorInstance>;
+  /**
+   * 挂载只读阅读视图（reader 标签；生产为 src/reader 的 reader-view，T3 接入）。
+   * 仅 openReader 使用；纯 markdown 用法可不提供。返回的 ReaderInstance 由
+   * TabManager 在 closeTab 时 destroy。
+   */
+  mountReader?: (container: HTMLElement) => Promise<ReaderInstance>;
   /** 为标签创建宿主元素（生产为 document.createElement('div')）。 */
   createHostElement: (tabId: string) => HTMLElement;
   /** 把宿主元素挂到界面上。 */
@@ -172,7 +184,8 @@ type TabManagerOptionalUi =
   | 'confirmExternalConflict'
   | 'notifyExternalUnreadable'
   | 'formatUntitledTitle'
-  | 'formatUntitledRestoredTitle';
+  | 'formatUntitledRestoredTitle'
+  | 'mountReader';
 
 export class TabManager {
   private readonly deps: Required<Omit<TabManagerDeps, TabManagerOptionalUi>> &
@@ -226,6 +239,7 @@ export class TabManager {
       confirmExternalReload: deps.confirmExternalReload,
       confirmExternalConflict: deps.confirmExternalConflict,
       notifyExternalUnreadable: deps.notifyExternalUnreadable,
+      mountReader: deps.mountReader,
     };
   }
 
@@ -242,7 +256,7 @@ export class TabManager {
   }
 
   /** 新建未命名标签。快照键含跨会话唯一 token，避免复用覆盖崩溃草稿。 */
-  async newTab(initialMarkdown = ''): Promise<TabState> {
+  async newTab(initialMarkdown = ''): Promise<MarkdownTabState> {
     this.untitledCounter += 1;
     const format =
       this.deps.formatUntitledTitle ?? ((n: number) => `未命名-${n}`);
@@ -261,7 +275,7 @@ export class TabManager {
    * 放弃则删除该快照。正常保存/关闭的快照不会出现在索引中，故现存条目
    * 即崩溃遗留。
    */
-  async recoverUntitledDrafts(): Promise<TabState[]> {
+  async recoverUntitledDrafts(): Promise<MarkdownTabState[]> {
     let drafts: fileService.UntitledDraft[];
     try {
       drafts = await this.deps.listUntitledDrafts();
@@ -269,7 +283,7 @@ export class TabManager {
       this.deps.reportError('枚举未命名崩溃草稿失败', error);
       return [];
     }
-    const restored: TabState[] = [];
+    const restored: MarkdownTabState[] = [];
     for (const draft of drafts) {
       const restore = await this.deps.promptRestore(draft.key);
       if (restore) {
@@ -297,7 +311,7 @@ export class TabManager {
    * 打开前检测崩溃快照：比磁盘新则询问是否恢复（恢复内容载入编辑器
    * 且保持脏标记，直到用户保存）。
    */
-  async openFile(path?: string): Promise<TabState | null> {
+  async openFile(path?: string): Promise<MarkdownTabState | null> {
     const opened =
       path !== undefined
         ? await openPathFlow(this.deps.roundtrip, path)
@@ -305,7 +319,10 @@ export class TabManager {
     if (opened === null) {
       return null;
     }
-    const existing = this.tabs.find((t) => t.filePath === opened.path);
+    // markdown 标签按路径去重：reader 标签（即便同路径）是独立只读标签，不在此复用。
+    const existing = this.tabs.find(
+      (t): t is MarkdownTabState => t.kind === 'markdown' && t.filePath === opened.path,
+    );
     if (existing !== undefined) {
       this.switchTab(existing.id);
       this.deps.onFileOpened?.(opened.path);
@@ -342,6 +359,48 @@ export class TabManager {
     return tab;
   }
 
+  /**
+   * 打开只读阅读标签（PDF/EPUB/...）。不挂编辑器、不记录 dirty / 快照 / 外部
+   * 变更基线；同路径已打开的 reader 标签直接切换。文件字节读取与格式渲染由
+   * 后续任务经 mountReader 注入；本方法只负责 reader 标签的生命周期与可写
+   * 路径豁免。
+   */
+  async openReader(path: string): Promise<ReaderTabState> {
+    const existing = this.tabs.find(
+      (t): t is ReaderTabState => t.kind === 'reader' && t.filePath === path,
+    );
+    if (existing !== undefined) {
+      this.switchTab(existing.id);
+      this.deps.onFileOpened?.(path);
+      return existing;
+    }
+    const mountReader = this.deps.mountReader;
+    if (mountReader === undefined) {
+      throw new Error('TabManager.openReader requires the mountReader dependency');
+    }
+    this.counter += 1;
+    const id = `tab-${this.counter}`;
+    const host = this.deps.createHostElement(id);
+    this.deps.attachHost(host);
+    const reader = await mountReader(host);
+    const tab: ReaderTabState = {
+      kind: 'reader',
+      id,
+      filePath: path,
+      syntheticId: `reader-${newUntitledToken()}`,
+      title: fileNameOf(path),
+      dirty: false,
+      reader,
+      hostElement: host,
+      lastSavedMarkdown: '',
+      lastSavedMtime: null,
+    };
+    this.tabs.push(tab);
+    this.switchTab(id);
+    this.deps.onFileOpened?.(path);
+    return tab;
+  }
+
   /** 保存活动标签（无路径时转另存为）。 */
   async saveActiveTab(): Promise<boolean> {
     const tab = this.activeTab;
@@ -351,6 +410,9 @@ export class TabManager {
   /** 保存：原子写成功 → 清脏标记 + 清对应崩溃快照。失败保持脏标记。 */
   async saveTab(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
+    if (tab.kind !== 'markdown') {
+      return false; // reader 标签只读，永不保存
+    }
     if (tab.filePath === null) {
       return this.saveTabAs(id);
     }
@@ -385,6 +447,9 @@ export class TabManager {
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
   async saveTabAs(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
+    if (tab.kind !== 'markdown') {
+      return false; // reader 标签只读，永不另存为
+    }
     this.cancelPendingSnapshot(id);
     await this.snapshotWrites.get(id)?.catch(() => undefined);
     const content = tab.editor.getMarkdown();
@@ -445,9 +510,17 @@ export class TabManager {
     await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
       this.deps.reportError('清除快照失败', error);
     });
-    await tab.editor.destroy().catch((error: unknown) => {
-      this.deps.reportError('销毁编辑器失败', error);
-    });
+    // reader 标签销毁阅读视图；markdown 标签销毁编辑器。reader 永不写快照，
+    // 上面的 clearSnapshot 对其为 no-op。
+    if (tab.kind === 'markdown') {
+      await tab.editor.destroy().catch((error: unknown) => {
+        this.deps.reportError('销毁编辑器失败', error);
+      });
+    } else {
+      await tab.reader.destroy().catch((error: unknown) => {
+        this.deps.reportError('销毁阅读视图失败', error);
+      });
+    }
     this.deps.detachHost(tab.hostElement);
 
     const index = this.tabs.indexOf(tab);
@@ -483,8 +556,8 @@ export class TabManager {
    */
   handleContentChanged(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
-    if (tab === undefined) {
-      return;
+    if (tab === undefined || tab.kind !== 'markdown') {
+      return; // reader 标签无编辑器输入，永不进入脏标记/快照路径
     }
     let current: string;
     try {
@@ -521,7 +594,7 @@ export class TabManager {
     syntheticId: string;
     initialMarkdown: string;
     lastSavedMarkdown: string;
-  }): Promise<TabState> {
+  }): Promise<MarkdownTabState> {
     this.counter += 1;
     const id = `tab-${this.counter}`;
     const host = this.deps.createHostElement(id);
@@ -547,7 +620,8 @@ export class TabManager {
       onLinkNavigate: this.deps.onLinkNavigate,
       confirmLinkOpen: this.deps.confirmLinkOpen,
     });
-    const tab: TabState = {
+    const tab: MarkdownTabState = {
+      kind: 'markdown',
       id,
       filePath: args.filePath,
       syntheticId: args.syntheticId,
@@ -582,6 +656,9 @@ export class TabManager {
   }
 
   private writeSnapshotNow(tab: TabState): void {
+    if (tab.kind !== 'markdown') {
+      return; // reader 标签永不写崩溃快照
+    }
     let content: string;
     try {
       content = tab.editor.getMarkdown();
@@ -630,7 +707,7 @@ export class TabManager {
    * 不改动当前内容；成功则更新 lastSavedMarkdown、清脏、刷新基线。
    */
   private async reloadFromDisk(tab: TabState): Promise<void> {
-    if (tab.filePath === null) return;
+    if (tab.filePath === null || tab.kind !== 'markdown') return;
     let content: string;
     try {
       content = await this.deps.roundtrip.readFile(tab.filePath);

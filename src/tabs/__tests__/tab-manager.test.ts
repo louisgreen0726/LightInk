@@ -681,3 +681,108 @@ describe('R13 外部文件变更检测', () => {
     expect(notify).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('reader 标签（只读，豁免可写路径）', () => {
+  /** 假阅读视图：记录 destroy 调用以便断言生命周期。 */
+  function makeReaderDeps(destroy?: () => Promise<void>) {
+    const readerDestroy = vi.fn(destroy ?? (async () => undefined));
+    return {
+      readerDestroy,
+      mountReader: vi.fn(async () => ({ destroy: readerDestroy })),
+    };
+  }
+
+  it('openReader 创建只读标签且不挂编辑器', async () => {
+    const rd = makeReaderDeps();
+    const { manager, deps, editors } = makeHarness(rd);
+    const tab = await manager.openReader('C:\\docs\\book.pdf');
+    expect(tab.kind).toBe('reader');
+    expect(tab.filePath).toBe('C:\\docs\\book.pdf');
+    expect(tab.title).toBe('book.pdf');
+    expect(tab.dirty).toBe(false);
+    expect(tab.lastSavedMtime).toBeNull();
+    expect(editors).toHaveLength(0); // 未挂 Milkdown 编辑器
+    expect(deps.mountReader).toHaveBeenCalledTimes(1);
+    expect(manager.activeTabId).toBe(tab.id);
+  });
+
+  it('重复打开同一路径 reader 标签切换而非新建', async () => {
+    const rd = makeReaderDeps();
+    const { manager, deps } = makeHarness(rd);
+    const a = await manager.openReader('C:\\docs\\book.pdf');
+    const b = await manager.openReader('C:\\docs\\book.pdf');
+    expect(b.id).toBe(a.id);
+    expect(manager.tabList).toHaveLength(1);
+    expect(deps.mountReader).toHaveBeenCalledTimes(1);
+  });
+
+  it('reader 标签与 markdown 标签可互相切换（宿主 show/hide）', async () => {
+    const rd = makeReaderDeps();
+    const { manager } = makeHarness(rd);
+    const md = await manager.newTab('正文');
+    const reader = await manager.openReader('C:\\docs\\book.epub');
+    expect(manager.activeTabId).toBe(reader.id);
+    manager.switchTab(md.id);
+    expect(manager.activeTabId).toBe(md.id);
+    expect((md.hostElement as { style: { display: string } }).style.display).toBe('');
+    expect((reader.hostElement as { style: { display: string } }).style.display).toBe('none');
+    manager.switchTab(reader.id);
+    expect(manager.activeTabId).toBe(reader.id);
+  });
+
+  it('closeTab 关闭 reader 标签：销毁阅读视图、不弹未保存确认、不写快照', async () => {
+    const rd = makeReaderDeps();
+    const { manager, deps, snapshots, confirmClose } = makeHarness(rd);
+    const tab = await manager.openReader('C:\\docs\\book.pdf');
+    await manager.closeTab(tab.id);
+    expect(rd.readerDestroy).toHaveBeenCalledTimes(1);
+    expect(deps.detachHost).toHaveBeenCalledWith(tab.hostElement);
+    expect(confirmClose).not.toHaveBeenCalled(); // dirty=false，不弹三选一
+    expect([...snapshots.keys()]).toHaveLength(0);
+    expect(manager.tabList).toHaveLength(0);
+  });
+
+  it('handleContentChanged 对 reader 标签是 no-op（不抛异常、不置脏、不写快照）', async () => {
+    const rd = makeReaderDeps();
+    const { manager, deps } = makeHarness(rd);
+    const tab = await manager.openReader('C:\\docs\\book.pdf');
+    expect(() => manager.handleContentChanged(tab.id)).not.toThrow();
+    expect(tab.dirty).toBe(false);
+    expect(deps.writeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('saveTab / saveTabAs 对 reader 标签返回 false（永不保存）', async () => {
+    const rd = makeReaderDeps();
+    const { manager, roundtrip } = makeHarness(rd);
+    const tab = await manager.openReader('C:\\docs\\book.pdf');
+    await expect(manager.saveTab(tab.id)).resolves.toBe(false);
+    await expect(manager.saveTabAs(tab.id)).resolves.toBe(false);
+    expect(roundtrip.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('autosaveDirtyTabs 跳过 reader 标签（不触发保存）', async () => {
+    const rd = makeReaderDeps();
+    const { manager, roundtrip } = makeHarness(rd);
+    await manager.openReader('C:\\docs\\book.pdf');
+    await manager.autosaveDirtyTabs();
+    expect(roundtrip.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('checkActiveExternalChange 跳过 reader 标签（无基线，不弹外部变更对话框）', async () => {
+    const rd = makeReaderDeps();
+    const confirmReload = vi.fn(async () => 'reload' as ExternalReloadChoice);
+    const { manager } = makeHarness({
+      ...rd,
+      confirmExternalReload: confirmReload,
+      statFile: vi.fn(async () => ({ mtime_ms: 9999, size: 100 })),
+    });
+    await manager.openReader('C:\\docs\\book.pdf');
+    await manager.checkActiveExternalChange();
+    expect(confirmReload).not.toHaveBeenCalled();
+  });
+
+  it('openReader 缺少 mountReader 依赖时抛出明确错误', async () => {
+    const { manager } = makeHarness(); // 不注入 mountReader
+    await expect(manager.openReader('C:\\docs\\book.pdf')).rejects.toThrow(/mountReader/);
+  });
+});
