@@ -29,6 +29,8 @@
 
   /* 阅读视图流式栏宽（可读行长，主题无关；仅在 :root 定义，各主题继承）。 */
   --lightink-reader-content-width: 42rem;
+  /* 标注高亮色（引用各主题 --lightink-accent 自动适配亮/暗）。 */
+  --lightink-annotation: color-mix(in srgb, var(--lightink-accent) 35%, var(--lightink-bg-elevated));
 
   /* Paper stack: cream page, slightly cooler elevated surfaces for chrome/code. */
   --lightink-bg: #f4efe6;

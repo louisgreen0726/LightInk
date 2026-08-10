@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+mod annotations;
 mod asset;
 mod cli;
 mod export;
@@ -54,6 +55,9 @@ pub fn run() {
             recents::add_recent,
             recents::remove_recent,
             recents::clear_recents,
+            annotations::read_annotations,
+            annotations::write_annotations,
+            annotations::content_hash,
             snapshot::create_version,
             snapshot::list_versions,
             snapshot::read_version,

@@ -100,6 +100,8 @@ export function createPdfPageController(totalPages: number): PdfPageController {
 export interface PdfRenderHandle {
   readonly controller: PdfPageController;
   rerender(): Promise<void>;
+  /** 释放 pdfjs 文档资源（关闭/重开 PDF 时调用，避免内存泄漏）。 */
+  destroy(): Promise<void>;
 }
 
 /**
@@ -115,8 +117,10 @@ export async function renderPdfInto(
   pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
 
   let doc;
+  let loadingTask;
   try {
-    doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+    loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+    doc = await loadingTask.promise;
   } catch {
     throw new ParseError('PDF 文件损坏或无法解析');
   }
@@ -140,5 +144,9 @@ export async function renderPdfInto(
   };
 
   await render();
-  return { controller, rerender: render };
+  return {
+    controller,
+    rerender: render,
+    destroy: async () => loadingTask.destroy(),
+  };
 }

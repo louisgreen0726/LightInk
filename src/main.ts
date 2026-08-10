@@ -803,6 +803,10 @@ manager = new TabManager({
     createReaderView(host, {
       readBytes: readReaderBytes,
       t: (key, vars) => i18n.t(key, vars),
+      getContentHash: (path) => invoke<string>('content_hash', { path }),
+      readAnnotations: (contentHash) => invoke<string>('read_annotations', { contentHash }),
+      writeAnnotations: (contentHash, json) =>
+        invoke('write_annotations', { contentHash, json }),
     }),
   createHostElement: (tabId) => {
     const el = document.createElement('div');

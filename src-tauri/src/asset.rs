@@ -114,13 +114,19 @@ fn validate_ext(ext: &str) -> Result<String, String> {
 }
 
 /// FNV-1a 64-bit（与 snapshot.rs 同一哈希，跨运行稳定）。
-fn fnv64(bytes: &[u8]) -> u64 {
+pub fn fnv64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// 文件内容的稳定标识（FNV-1a 64-bit → 16 位 hex）。供标注按内容特征关联
+/// （R4：降低文件移动/重命名后标注失联）。与 asset 唯一命名同一哈希。
+pub fn content_hash_hex(bytes: &[u8]) -> String {
+    format!("{:016x}", fnv64(bytes))
 }
 
 fn now_ms() -> u128 {

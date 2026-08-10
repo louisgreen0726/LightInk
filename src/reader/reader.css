@@ -46,3 +46,91 @@
   text-align: center;
   padding: 4rem 1rem;
 }
+
+/* 页式格式：逐页图片/canvas（PDF/CBZ，T5）。 */
+.lightink-reader-page {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto 1rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* 流式章节（T4）。 */
+.lightink-reader-chapter {
+  margin-bottom: 3rem;
+}
+.lightink-reader-chapter-title {
+  font-size: 1.4em;
+  margin: 0 0 1rem;
+  color: var(--lightink-fg);
+}
+.lightink-reader-chapter-body p {
+  margin: 0 0 1em;
+}
+
+/* 标注高亮（T6）。 */
+.lightink-reader-highlight {
+  background: var(--lightink-annotation);
+  border-radius: 2px;
+  padding: 0 1px;
+  cursor: pointer;
+}
+
+/* 标注侧栏（T6，覆盖在阅读区右侧）。 */
+.lightink-reader-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 16rem;
+  overflow-y: auto;
+  background: var(--lightink-bg-elevated);
+  border-left: 1px solid color-mix(in srgb, var(--lightink-fg) 12%, transparent);
+  padding: 0.75rem;
+  font-size: 0.9em;
+}
+.lightink-reader-sidebar-header {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--lightink-fg);
+}
+.lightink-reader-sidebar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.lightink-reader-sidebar-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  background: var(--lightink-bg);
+  border-radius: 4px;
+}
+.lightink-reader-sidebar-kind {
+  font-size: 0.75em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.lightink-reader-sidebar-text {
+  color: var(--lightink-fg);
+  word-break: break-word;
+}
+.lightink-reader-sidebar-jump,
+.lightink-reader-sidebar-remove {
+  align-self: flex-start;
+  cursor: pointer;
+  background: var(--lightink-bg-elevated);
+  border: 1px solid color-mix(in srgb, var(--lightink-fg) 15%, transparent);
+  border-radius: 3px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.85em;
+  color: var(--lightink-fg);
+}
+.lightink-reader-sidebar-empty {
+  color: var(--lightink-fg);
+  opacity: 0.6;
+}
+
