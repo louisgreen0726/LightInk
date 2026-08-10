@@ -3,7 +3,7 @@
  *
  * 流式格式渲染章节化 HTML（滚动宿主）；PDF/CBZ 渲染页（页宿主）。标注按内容哈希
  * （Rust content_hash）关联：加载时读出 → 流式高亮渲染 <mark> + 侧栏列表跳转；
- * 选中正文可加高亮，侧栏可移除，变更写回 app_data_dir（write_annotations）。
+ * 选中正文可加高亮，工具栏可加书签/笔记，侧栏可移除，变更写回 app_data_dir。
  * 只消费主题令牌 var(--lightink-*) 与 --lightink-font-scale。
  */
 
@@ -18,6 +18,7 @@ import {
   serializeAnnotations,
   type Annotation,
   type AnnotationKind,
+  type Locator,
 } from './annotations.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
 import type { ReaderInstance } from './types.js';
@@ -42,6 +43,11 @@ function newAnnotationId(): string {
   return `a-${Date.now().toString(36)}`;
 }
 
+/** CSS 标识符转义（标注 id 用于属性选择器时）。 */
+function cssEscape(value: string): string {
+  return value.replace(/["\\]/g, '\\$&');
+}
+
 export interface ReaderViewDeps {
   /** 读取文件原始字节（生产为 invoke read_file_bytes → base64 → Uint8Array）。 */
   readBytes?: (filePath: string) => Promise<Uint8Array>;
@@ -53,6 +59,8 @@ export interface ReaderViewDeps {
   readAnnotations?: (contentHash: string) => Promise<string>;
   /** 写标注 JSON（Rust write_annotations）。 */
   writeAnnotations?: (contentHash: string, json: string) => Promise<void>;
+  /** 非阻断提示（标注读失败/写失败时）。 */
+  notify?: (message: string) => void;
 }
 
 /**
@@ -81,11 +89,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   root.append(scrollHost, pageHost);
   host.appendChild(root);
 
+  const annotationsEnabled =
+    deps.getContentHash !== undefined && deps.readAnnotations !== undefined;
+
   let pdfHandle: PdfRenderHandle | null = null;
   let annotations: Annotation[] = [];
   let contentHash: string | null = null;
   let sidebar: AnnotationSidebar | null = null;
-  let isFlow = false;
+  let loadedExt = '';
 
   const saveAnnotations = async (): Promise<void> => {
     if (contentHash === null || deps.writeAnnotations === undefined) {
@@ -94,27 +105,97 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     try {
       await deps.writeAnnotations(contentHash, serializeAnnotations(annotations));
     } catch {
-      /* 写失败保留内存态（R4），不阻断阅读 */
+      deps.notify?.(t('annotation.saveFailed'));
     }
   };
 
+  /** 当前阅读位置的定位器（书签/笔记用）。 */
+  const currentPositionLocator = (): Locator => {
+    if (pdfHandle !== null) {
+      return { format: 'pdf', page: pdfHandle.controller.page, quote: '' };
+    }
+    if (PAGE_EXTS.has(loadedExt)) {
+      return { format: 'cbz', page: 1 };
+    }
+    if (loadedExt === 'txt') {
+      return { format: 'text', start: 0, end: 0 };
+    }
+    return { format: 'flow', chapter: firstVisibleChapter(), domPath: '', start: 0, end: 0 };
+  };
+
+  /** 流式：视口顶部最近的章节索引。 */
+  const firstVisibleChapter = (): number => {
+    const chapters = Array.from(scrollHost.querySelectorAll('.lightink-reader-chapter'));
+    if (chapters.length === 0) {
+      return 0;
+    }
+    const hostTop = scrollHost.getBoundingClientRect().top;
+    let best = 0;
+    let bestDist = Number.POSITIVE_INFINITY;
+    chapters.forEach((c, i) => {
+      const dist = Math.abs((c as HTMLElement).getBoundingClientRect().top - hostTop);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    });
+    return best;
+  };
+
+  /** 添加书签或笔记（笔记经 window.prompt 取文本）。 */
+  const addAnnotation = (kind: AnnotationKind): void => {
+    let note: string | undefined;
+    if (kind === 'note') {
+      const input =
+        typeof window !== 'undefined' && typeof window.prompt === 'function'
+          ? window.prompt(t('annotation.notePrompt'))
+          : null;
+      if (input === null) {
+        return;
+      }
+      note = input;
+    }
+    annotations = [
+      ...annotations,
+      {
+        id: newAnnotationId(),
+        kind,
+        locator: currentPositionLocator(),
+        note,
+        createdAt: Date.now(),
+      },
+    ];
+    sidebar?.render(annotations);
+    void saveAnnotations();
+  };
+
   const ensureSidebar = (): void => {
-    if (sidebar !== null || root === null) {
+    if (sidebar !== null) {
       return;
     }
     sidebar = createAnnotationSidebar({
       t,
       onJump: (annotation) => {
-        const target = root.querySelector<HTMLElement>(
-          `[data-annotation-id="${cssEscape(annotation.id)}"]`,
-        );
-        if (target !== null) {
-          target.scrollIntoView({ block: 'center' });
-        } else if (annotation.locator.format === 'pdf' && pdfHandle !== null) {
-          if (pdfHandle.controller.setPage(annotation.locator.page)) {
+        const loc = annotation.locator;
+        if (loc.format === 'pdf' && pdfHandle !== null) {
+          if (pdfHandle.controller.setPage(loc.page)) {
             void pdfHandle.rerender();
           }
+          return;
         }
+        if (loc.format === 'cbz') {
+          const pages = pageHost.querySelectorAll('.lightink-reader-page');
+          (pages[loc.page - 1] as HTMLElement | undefined)?.scrollIntoView({ block: 'start' });
+          return;
+        }
+        // flow / text：优先定位到该条高亮的 <mark>，否则到章节。
+        const mark = root.querySelector<HTMLElement>(
+          `[data-annotation-id="${cssEscape(annotation.id)}"]`,
+        );
+        const target =
+          mark ??
+          scrollHost.querySelector<HTMLElement>(`[data-chapter-index="${loc.format === 'flow' ? loc.chapter : 0}"]`);
+        target?.scrollIntoView({ block: 'center' });
       },
       onRemove: (annotation) => {
         annotations = annotations.filter((a) => a.id !== annotation.id);
@@ -126,19 +207,26 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     sidebar.render(annotations);
   };
 
-  /** 在容器文本节点中包裹高亮 quote（best-effort：单个文本节点内命中）。 */
+  /** 在容器文本节点中包裹高亮 quote（幂等：已存在的标注跳过；单文本节点命中）。 */
   const renderHighlights = (): void => {
-    if (!isFlow) {
+    if (PAGE_EXTS.has(loadedExt)) {
       return;
     }
     const highlights = annotations.filter((a) => a.kind === 'highlight' && a.quote !== undefined);
     for (const hl of highlights) {
+      // 幂等：该标注的 <mark> 已存在则跳过，避免重复嵌套包裹。
+      if (root.querySelector(`[data-annotation-id="${cssEscape(hl.id)}"]`) !== null) {
+        continue;
+      }
       const quote = hl.quote ?? '';
+      if (quote.length === 0) {
+        continue;
+      }
       const walker = document.createTreeWalker(scrollHost, NodeFilter.SHOW_TEXT);
       let node: Text | null;
       while ((node = walker.nextNode() as Text | null) !== null) {
         const idx = node.nodeValue?.indexOf(quote) ?? -1;
-        if (idx >= 0 && node.nodeValue !== null && quote.length > 0) {
+        if (idx >= 0 && node.nodeValue !== null) {
           const range = document.createRange();
           range.setStart(node, idx);
           range.setEnd(node, idx + quote.length);
@@ -147,14 +235,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           mark.dataset.annotationId = hl.id;
           mark.appendChild(range.extractContents());
           range.insertNode(mark);
-          break; // 每条高亮只包裹首个命中
+          break;
         }
       }
     }
   };
 
   const renderChapters = (chapters: ReaderChapter[]): void => {
-    isFlow = true;
     scrollHost.hidden = false;
     pageHost.hidden = true;
     delete pageHost.dataset.readerActive;
@@ -177,7 +264,6 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const renderPages = async (filePath: string, bytes: Uint8Array): Promise<void> => {
-    isFlow = false;
     const ext = extOfPath(filePath);
     if (ext !== 'pdf' && ext !== 'cbz') {
       throw new ParseError(`暂不支持的页格式：.${ext || '?'}`);
@@ -196,16 +282,18 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const loadAnnotations = async (filePath: string): Promise<void> => {
-    if (deps.getContentHash === undefined || deps.readAnnotations === undefined) {
+    if (!annotationsEnabled) {
       return;
     }
     try {
-      contentHash = await deps.getContentHash(filePath);
-      annotations = parseAnnotations(await deps.readAnnotations(contentHash));
+      contentHash = await deps.getContentHash!(filePath);
+      annotations = parseAnnotations(await deps.readAnnotations!(contentHash));
     } catch {
       annotations = [];
+      deps.notify?.(t('annotation.loadFailed'));
+      return;
     }
-    if (isFlow) {
+    if (!PAGE_EXTS.has(loadedExt)) {
       renderHighlights();
     }
     ensureSidebar();
@@ -235,9 +323,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   });
 
-  // 流式正文选中 → 添加高亮（best-effort 定位器：章节 + quote）。
+  // 流式正文选中 → 添加高亮。
   root.addEventListener('mouseup', () => {
-    if (!isFlow || deps.writeAnnotations === undefined) {
+    if (PAGE_EXTS.has(loadedExt) || deps.writeAnnotations === undefined) {
       return;
     }
     const selection = document.getSelection();
@@ -245,18 +333,19 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (text.length === 0) {
       return;
     }
-    const anchor = selection?.anchorNode;
-    const chapterEl =
-      anchor !== null && anchor !== undefined
-        ? (anchor as HTMLElement).closest?.('.lightink-reader-chapter')
-        : null;
-    const chapter = chapterEl !== null && chapterEl !== undefined
-      ? Number(chapterEl.getAttribute('data-chapter-index') ?? '0')
-      : 0;
+    const anchorEl = (selection?.anchorNode as Element | null | undefined)?.parentElement ?? null;
+    const chapterEl = anchorEl?.closest('.lightink-reader-chapter') ?? null;
+    const chapter =
+      chapterEl !== null && chapterEl !== undefined
+        ? Number(chapterEl.getAttribute('data-chapter-index') ?? '0')
+        : firstVisibleChapter();
     const annotation: Annotation = {
       id: newAnnotationId(),
-      kind: 'highlight' as AnnotationKind,
-      locator: { format: 'flow', chapter, domPath: '', start: 0, end: 0 },
+      kind: 'highlight',
+      locator:
+        loadedExt === 'txt'
+          ? { format: 'text', start: 0, end: text.length }
+          : { format: 'flow', chapter, domPath: '', start: 0, end: 0 },
       quote: text,
       createdAt: Date.now(),
     };
@@ -267,14 +356,33 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     selection?.removeAllRanges();
   });
 
+  // 标注工具栏：书签 / 笔记（标注启用时挂载）。
+  if (annotationsEnabled) {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'lightink-reader-toolbar';
+    const bookmarkBtn = document.createElement('button');
+    bookmarkBtn.type = 'button';
+    bookmarkBtn.className = 'lightink-reader-toolbar-btn';
+    bookmarkBtn.textContent = t('annotation.kind.bookmark');
+    bookmarkBtn.addEventListener('click', () => addAnnotation('bookmark'));
+    const noteBtn = document.createElement('button');
+    noteBtn.type = 'button';
+    noteBtn.className = 'lightink-reader-toolbar-btn';
+    noteBtn.textContent = t('annotation.kind.note');
+    noteBtn.addEventListener('click', () => addAnnotation('note'));
+    toolbar.append(bookmarkBtn, noteBtn);
+    root.appendChild(toolbar);
+  }
+
   return {
     async load(filePath: string): Promise<void> {
       const readBytes = deps.readBytes;
       if (readBytes === undefined) {
         throw new Error('reader-view load requires the readBytes dependency');
       }
+      loadedExt = extOfPath(filePath);
       const bytes = await readBytes(filePath);
-      if (PAGE_EXTS.has(extOfPath(filePath))) {
+      if (PAGE_EXTS.has(loadedExt)) {
         await renderPages(filePath, bytes);
       } else {
         const content = await parseReaderContent(filePath, bytes);
@@ -292,9 +400,4 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       root.remove();
     },
   };
-}
-
-/** CSS 标识符转义（标注 id 用于属性选择器时）。 */
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, '\\$&');
 }

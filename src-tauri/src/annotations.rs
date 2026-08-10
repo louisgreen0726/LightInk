@@ -4,8 +4,9 @@
 //! 原子写（复用 [`crate::file::write_file_impl`]）。缺失或不可读视为空标注
 //! （R4：损坏/缺失不阻断阅读）；标注读写永不触碰源电子书文件。
 //!
-//! 哈希由前端在读字节时计算（FNV-1a 64-bit，与 [`crate::asset::content_hash_hex]`
-//! 同一算法）后传入；本模块只负责按 key 读写 JSON。
+//! 内容哈希由本模块的 [`content_hash`] 命令在 Rust 侧计算（读字节 +
+//! [`crate::asset::content_hash_hex`]，FNV-1a 64-bit）；`read_annotations` /
+//! `write_annotations` 接收该哈希作为存储 key，只负责按 key 读写 JSON。
 
 use std::fs;
 use std::path::Path;
@@ -120,5 +121,22 @@ mod tests {
         // read_to_string 对非 UTF-8 失败 → unwrap_or_default 返回 ""。
         let got = read_annotations_impl(dir.path(), "bad").unwrap();
         assert_eq!(got, "");
+    }
+
+    #[test]
+    fn write_annotations_does_not_touch_source_file() {
+        // R4：标注全程不写源文件。用源内容的哈希作 key 写标注，断言源内容/mtime 不变。
+        let dir = temp_dir();
+        let src = dir.path().join("book.epub");
+        let content = b"SOURCE-BYTES";
+        fs::write(&src, content).unwrap();
+        let mtime_before = fs::metadata(&src).unwrap().modified().unwrap();
+        let hash = crate::asset::content_hash_hex(content);
+        write_annotations_impl(dir.path(), &hash, r#"{"version":1,"annotations":[]}"#).unwrap();
+        assert_eq!(fs::read(&src).unwrap(), content, "source content must not change");
+        let mtime_after = fs::metadata(&src).unwrap().modified().unwrap();
+        assert_eq!(mtime_before, mtime_after, "source mtime must not change");
+        // 标注确实写到了 annotations/<hash>.json，而非源文件。
+        assert!(dir.path().join(ANNOTATIONS_DIR).join(format!("{hash}.json")).exists());
     }
 }

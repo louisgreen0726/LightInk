@@ -807,6 +807,9 @@ manager = new TabManager({
       readAnnotations: (contentHash) => invoke<string>('read_annotations', { contentHash }),
       writeAnnotations: (contentHash, json) =>
         invoke('write_annotations', { contentHash, json }),
+      notify: (message) => {
+        void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
+      },
     }),
   createHostElement: (tabId) => {
     const el = document.createElement('div');
