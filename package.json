@@ -27,6 +27,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "emojilib": "^4.0.3",
     "highlight.js": "^11.11.1",
+    "jszip": "^3.10.1",
     "katex": "^0.18.1",
     "mermaid": "^11.16.1",
     "remark-frontmatter": "^5.0.0",

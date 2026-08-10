@@ -66,7 +66,7 @@ import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
-import type { CloseChoice, MarkdownTabState, TabState } from './tabs/types.js';
+import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
 import { createReaderView } from './reader/reader-view.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
@@ -153,11 +153,50 @@ function activeMarkdownTab(): MarkdownTabState | null {
 }
 
 /**
- * 按扩展名把路径路由到 markdown 编辑标签或只读 reader 标签。
- * 菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
+ * base64 → Uint8Array（read_file_bytes 返回 base64，前端 atob 解码为字节供解析器）。
+ */
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = typeof atob === 'function' ? atob(b64) : '';
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/** 读取阅读文件原始字节（read_file_bytes base64 → Uint8Array），供 reader-view.load。 */
+async function readReaderBytes(filePath: string): Promise<Uint8Array> {
+  const b64 = await invoke<string>('read_file_bytes', { path: filePath });
+  return base64ToBytes(b64);
+}
+
+/**
+ * 按扩展名把路径路由到 markdown 编辑标签或只读 reader 标签，并加载/解析内容。
+ * reader 标签：openReader 后调用 reader.load；解析失败（DRM/损坏）弹 i18n 错误提示，
+ * 标签仍保留。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
  */
 async function openPathByKind(path: string): Promise<TabState | null> {
-  return isReaderPath(path) ? manager.openReader(path) : manager.openFile(path);
+  if (!isReaderPath(path)) {
+    return manager.openFile(path);
+  }
+  let tab: ReaderTabState;
+  try {
+    tab = await manager.openReader(path);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error(`[lightink] 打开阅读文件失败: ${path}`, error);
+    return null;
+  }
+  try {
+    await tab.reader.load(path);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error ?? '');
+    void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
+      title: i18n.t('app.name'),
+      kind: 'error',
+    });
+  }
+  return tab;
 }
 
 /**
@@ -340,12 +379,7 @@ async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
     }
   }
   for (const path of plan.reader) {
-    try {
-      await manager.openReader(path);
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error(`[lightink] 打开阅读文件失败: ${path}`, error);
-    }
+    await openPathByKind(path);
   }
   for (const path of plan.images) {
     await importAndInsertImage(path);
@@ -765,7 +799,11 @@ manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
   mountEditor,
-  mountReader: async (host) => createReaderView(host, { t: (key, vars) => i18n.t(key, vars) }),
+  mountReader: async (host) =>
+    createReaderView(host, {
+      readBytes: readReaderBytes,
+      t: (key, vars) => i18n.t(key, vars),
+    }),
   createHostElement: (tabId) => {
     const el = document.createElement('div');
     el.className = 'lightink-tab-host';

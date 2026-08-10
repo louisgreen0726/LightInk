@@ -533,6 +533,9 @@ body.lightink-outline-resizing * {
 #lightink-editor-area {
   flex: 1;
   overflow-y: auto;
+  /* reader 视图 .lightink-reader 以 absolute inset:0 填充本槽位（T4），
+     需要建立定位上下文，否则它会解析到 #lightink-main 覆盖大纲。 */
+  position: relative;
 }
 
 /*

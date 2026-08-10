@@ -102,6 +102,8 @@ const en: Dict = {
   'error.unsupportedType':
     'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
   'reader.empty': 'Open an eBook to start reading.',
+  'reader.chapter': 'Chapter {n}',
+  'reader.loadFailed': 'Could not open this eBook:\n{detail}',
   'slash.noMatch': 'No matches',
   'math.editTitle': 'Double-click to edit formula source',
   'mermaid.editTitle': 'Double-click to edit flowchart source',
@@ -306,6 +308,8 @@ const zhCN: Dict = {
   'error.unsupportedType':
     '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
   'reader.empty': '打开一本电子书开始阅读。',
+  'reader.chapter': '第 {n} 章',
+  'reader.loadFailed': '无法打开此电子书：\n{detail}',
   'slash.noMatch': '无匹配项',
   'math.editTitle': '双击编辑公式源码',
   'mermaid.editTitle': '双击编辑流程图源码',

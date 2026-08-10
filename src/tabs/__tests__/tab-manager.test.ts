@@ -683,12 +683,14 @@ describe('R13 外部文件变更检测', () => {
 });
 
 describe('reader 标签（只读，豁免可写路径）', () => {
-  /** 假阅读视图：记录 destroy 调用以便断言生命周期。 */
+  /** 假阅读视图：记录 load/destroy 调用以便断言生命周期。 */
   function makeReaderDeps(destroy?: () => Promise<void>) {
     const readerDestroy = vi.fn(destroy ?? (async () => undefined));
+    const readerLoad = vi.fn(async () => undefined);
     return {
       readerDestroy,
-      mountReader: vi.fn(async () => ({ destroy: readerDestroy })),
+      readerLoad,
+      mountReader: vi.fn(async () => ({ load: readerLoad, destroy: readerDestroy })),
     };
   }
 
