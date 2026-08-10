@@ -8,17 +8,36 @@ import { describe, expect, it } from 'vitest';
 import { planDroppedFiles } from '../file-drop.js';
 
 describe('planDroppedFiles', () => {
-  it('Markdown 开标签、图片插入、其他不支持', () => {
+  it('Markdown 标签、电子书 reader 标签、图片插入、其他不支持 四分组', () => {
     const plan = planDroppedFiles([
       'C:\\docs\\笔记.md',
       'D:\\img\\photo.png',
       'C:\\readme.txt',
       '/home/u/paper.markdown',
       '/home/u/pic.JPG',
+      '/home/u/book.epub',
+      'E:\\novel.pdf',
     ]);
     expect(plan.markdown).toEqual(['C:\\docs\\笔记.md', '/home/u/paper.markdown']);
+    expect(plan.reader).toEqual(['C:\\readme.txt', '/home/u/book.epub', 'E:\\novel.pdf']);
     expect(plan.images).toEqual(['D:\\img\\photo.png', '/home/u/pic.JPG']);
-    expect(plan.unsupported).toEqual(['C:\\readme.txt']);
+    expect(plan.unsupported).toEqual([]);
+  });
+
+  it('全部电子书扩展名进 reader 组（大小写不敏感）', () => {
+    const plan = planDroppedFiles([
+      'a.pdf',
+      'b.epub',
+      'c.mobi',
+      'd.azw3',
+      'e.fb2',
+      'f.cbz',
+      'g.txt',
+      'h.PDF',
+      'i.EPUB',
+    ]);
+    expect(plan.reader).toHaveLength(9);
+    expect(plan.unsupported).toEqual([]);
   });
 
   it('扩展名大小写不敏感；无扩展名与末尾点归入不支持', () => {
@@ -38,6 +57,7 @@ describe('planDroppedFiles', () => {
   it('空输入返回空计划', () => {
     const plan = planDroppedFiles([]);
     expect(plan.markdown).toEqual([]);
+    expect(plan.reader).toEqual([]);
     expect(plan.images).toEqual([]);
     expect(plan.unsupported).toEqual([]);
   });

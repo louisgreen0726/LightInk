@@ -36,12 +36,13 @@ pub fn enqueue_pending_file(app: &AppHandle, path: String) {
     let _ = app.emit("open-file", ());
 }
 
-/// 扫描 argv（含程序路径，索引 0 跳过），返回首个 `.md`/`.markdown` 文件参数。
+/// 扫描 argv（含程序路径，索引 0 跳过），返回首个可打开文件参数
+/// （`.md`/`.markdown` 开 markdown 标签，或电子书扩展名开 reader 标签）。
 /// 大小写不敏感；无匹配返回 `None`。返回的是原始参数（可能相对 / `file://`）。
 pub fn extract_file_arg(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
-        .find(|a| has_markdown_extension(a))
+        .find(|a| has_supported_extension(a))
         .cloned()
 }
 
@@ -86,7 +87,8 @@ fn file_url_to_path(raw: &str) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// 从 `RunEvent::Opened` 的 URL 列表中取首个本地 markdown 文件路径。
+/// 从 `RunEvent::Opened` 的 URL 列表中取首个本地可打开文件路径
+/// （Markdown 或电子书）。
 ///
 /// 生产调用点仅在 macOS/iOS/Android 的 `RunEvent::Opened` 分支；其它目标
 /// 仍保留实现与单测（file URL 解析与扩展名判断与 argv 路径共用）。
@@ -94,11 +96,11 @@ fn file_url_to_path(raw: &str) -> Option<String> {
     not(any(target_os = "macos", target_os = "ios", target_os = "android")),
     allow(dead_code)
 )]
-pub fn first_markdown_from_urls(urls: impl IntoIterator<Item = url::Url>) -> Option<String> {
+pub fn first_supported_from_urls(urls: impl IntoIterator<Item = url::Url>) -> Option<String> {
     for url in urls {
         if let Ok(path) = url.to_file_path() {
             let s = path.to_string_lossy().into_owned();
-            if has_markdown_extension(&s) {
+            if has_supported_extension(&s) {
                 return Some(s);
             }
         }
@@ -106,20 +108,47 @@ pub fn first_markdown_from_urls(urls: impl IntoIterator<Item = url::Url>) -> Opt
     None
 }
 
-/// 大小写不敏感的 `.md` / `.markdown` 扩展名判断（不访问文件系统）。
-/// 对 `file://.../note.md` 也能匹配（扩展名在查询串之前）。
-fn has_markdown_extension(path: &str) -> bool {
-    // file URL：只看 path 段，避免 query/fragment 干扰。
-    let candidate = if path.to_ascii_lowercase().starts_with("file:") {
+/// 以只读 reader 标签打开的电子书扩展名（小写，与前端 file-drop.ts READER_EXTS 一致）。
+const READER_EXTS: &[&str] = &["pdf", "epub", "mobi", "azw3", "fb2", "cbz", "txt"];
+
+/// 把路径参数规范化为用于扩展名判断的候选字符串：`file://` URL 取 path 段
+/// （避免 query/fragment 干扰），其余原样返回。不访问文件系统。
+fn path_candidate(path: &str) -> String {
+    if path.to_ascii_lowercase().starts_with("file:") {
         url::Url::parse(path)
             .ok()
             .map(|u| u.path().to_string())
             .unwrap_or_else(|| path.to_string())
     } else {
         path.to_string()
-    };
+    }
+}
+
+/// 取路径的小写扩展名（最后一个 `.` 之后；无点 / 末尾点 / 开头点返回空串）。
+fn extension_lower(path: &str) -> String {
+    let candidate = path_candidate(path);
     let lower = candidate.to_ascii_lowercase();
-    lower.ends_with(".md") || lower.ends_with(".markdown")
+    match lower.rfind('.') {
+        Some(i) if i > 0 && i < lower.len() - 1 => lower[i + 1..].to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 大小写不敏感的 `.md` / `.markdown` 扩展名判断（不访问文件系统）。
+/// 对 `file://.../note.md` 也能匹配（扩展名在查询串之前）。
+fn has_markdown_extension(path: &str) -> bool {
+    matches!(extension_lower(path).as_str(), "md" | "markdown")
+}
+
+/// 是否为以只读 reader 标签打开的电子书扩展名（大小写不敏感，不访问文件系统）。
+fn has_reader_extension(path: &str) -> bool {
+    let ext = extension_lower(path);
+    READER_EXTS.iter().any(|e| *e == ext)
+}
+
+/// 是否为应用可打开的文件（Markdown 编辑标签或电子书 reader 标签）。
+fn has_supported_extension(path: &str) -> bool {
+    has_markdown_extension(path) || has_reader_extension(path)
 }
 
 /// 取出并清空待打开文件槽（前端就绪或收到 `open-file` 事件时调用）。
@@ -150,10 +179,28 @@ mod tests {
     }
 
     #[test]
-    fn skips_non_markdown_args() {
+    fn skips_unsupported_picks_supported() {
+        // .zip 不被支持故跳过；.md 被选为首个可打开文件（电子书扩展名同理）。
         assert_eq!(
-            extract_file_arg(&argv(&["lightink", "--flag", "a.txt", "b.md"])),
+            extract_file_arg(&argv(&["lightink", "--flag", "a.zip", "b.md"])),
             Some("b.md".to_string())
+        );
+    }
+
+    #[test]
+    fn picks_reader_extension_arg() {
+        // 电子书扩展名以 reader 标签打开，CLI/关联入口同样应取到。
+        assert_eq!(
+            extract_file_arg(&argv(&["lightink", "book.pdf"])),
+            Some("book.pdf".to_string())
+        );
+        assert_eq!(
+            extract_file_arg(&argv(&["lightink", "novel.epub", "pic.png"])),
+            Some("novel.epub".to_string())
+        );
+        assert_eq!(
+            extract_file_arg(&argv(&["lightink", "readme.md.txt"])),
+            Some("readme.md.txt".to_string())
         );
     }
 
@@ -167,6 +214,10 @@ mod tests {
             extract_file_arg(&argv(&["lightink", "ReadMe.MD"])),
             Some("ReadMe.MD".to_string())
         );
+        assert_eq!(
+            extract_file_arg(&argv(&["lightink", "BOOK.PDF"])),
+            Some("BOOK.PDF".to_string())
+        );
     }
 
     #[test]
@@ -178,9 +229,9 @@ mod tests {
     }
 
     #[test]
-    fn bare_markdown_without_dot_is_not_matched() {
+    fn bare_without_dot_or_unsupported_ext_is_not_matched() {
         assert!(extract_file_arg(&argv(&["lightink", "markdown"])).is_none());
-        assert!(extract_file_arg(&argv(&["lightink", "readme.md.txt"])).is_none());
+        assert!(extract_file_arg(&argv(&["lightink", "readme.md.zip"])).is_none());
     }
 
     #[test]
@@ -265,9 +316,9 @@ mod tests {
     #[test]
     fn extract_recognizes_file_url_markdown() {
         let (skip, pick) = if cfg!(windows) {
-            ("file:///C:/tmp/a.txt", "file:///C:/tmp/b.md")
+            ("file:///C:/tmp/a.zip", "file:///C:/tmp/b.md")
         } else {
-            ("file:///tmp/a.txt", "file:///tmp/b.md")
+            ("file:///tmp/a.zip", "file:///tmp/b.md")
         };
         assert_eq!(
             extract_file_arg(&argv(&["lightink", skip, pick])),
@@ -276,23 +327,35 @@ mod tests {
     }
 
     #[test]
-    fn first_markdown_from_urls_picks_md() {
+    fn first_supported_from_urls_picks_markdown() {
         let (skip, pick) = if cfg!(windows) {
-            ("file:///C:/tmp/a.txt", "file:///C:/tmp/note.md")
+            ("file:///C:/tmp/a.zip", "file:///C:/tmp/note.md")
         } else {
-            ("file:///tmp/a.txt", "file:///tmp/note.md")
+            ("file:///tmp/a.zip", "file:///tmp/note.md")
         };
         let urls = vec![
             url::Url::parse(skip).unwrap(),
             url::Url::parse(pick).unwrap(),
         ];
-        let path = first_markdown_from_urls(urls).unwrap();
+        let path = first_supported_from_urls(urls).unwrap();
         assert!(path.ends_with("note.md"), "unexpected: {path}");
     }
 
     #[test]
-    fn first_markdown_from_urls_skips_non_file() {
+    fn first_supported_from_urls_picks_reader() {
+        let pick = if cfg!(windows) {
+            "file:///C:/tmp/book.epub"
+        } else {
+            "file:///tmp/book.epub"
+        };
+        let urls = vec![url::Url::parse(pick).unwrap()];
+        let path = first_supported_from_urls(urls).unwrap();
+        assert!(path.ends_with("book.epub"), "unexpected: {path}");
+    }
+
+    #[test]
+    fn first_supported_from_urls_skips_non_file() {
         let urls = vec![url::Url::parse("https://example.com/x.md").unwrap()];
-        assert!(first_markdown_from_urls(urls).is_none());
+        assert!(first_supported_from_urls(urls).is_none());
     }
 }

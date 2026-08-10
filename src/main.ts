@@ -51,7 +51,8 @@ import {
   type InsertElementId,
 } from './editor/insert-commands.js';
 import { fileNameStem, importImageAsset } from './asset/asset-service.js';
-import { planDroppedFiles } from './file/file-drop.js';
+import { isReaderPath, planDroppedFiles } from './file/file-drop.js';
+import { OPEN_FILTERS } from './file/file-dialog.js';
 import { buildExportCss } from './export/export-css.js';
 import {
   exportActiveTabHtml,
@@ -65,7 +66,7 @@ import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
-import type { CloseChoice, MarkdownTabState } from './tabs/types.js';
+import type { CloseChoice, MarkdownTabState, TabState } from './tabs/types.js';
 import type { ReaderInstance } from './reader/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
@@ -161,6 +162,37 @@ async function mountReaderPlaceholder(container: HTMLElement): Promise<ReaderIns
       container.replaceChildren();
     },
   };
+}
+
+/**
+ * 按扩展名把路径路由到 markdown 编辑标签或只读 reader 标签。
+ * 菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
+ */
+async function openPathByKind(path: string): Promise<TabState | null> {
+  return isReaderPath(path) ? manager.openReader(path) : manager.openFile(path);
+}
+
+/**
+ * 菜单「打开」/ Ctrl+O：弹出对话框（Markdown + 电子书），按所选扩展名路由到
+ * markdown 或 reader 标签。
+ */
+async function openViaDialog(): Promise<void> {
+  let picked: string | null;
+  try {
+    const result = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: OPEN_FILTERS,
+    });
+    picked = typeof result === 'string' ? result : null;
+  } catch {
+    // 非 Tauri 环境（纯前端 dev）：无原生对话框，静默取消。
+    return;
+  }
+  if (picked === null) {
+    return;
+  }
+  await openPathByKind(picked);
 }
 
 function saveActiveAs(): void {
@@ -319,12 +351,21 @@ async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
       });
     }
   }
+  for (const path of plan.reader) {
+    try {
+      await manager.openReader(path);
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(`[lightink] 打开阅读文件失败: ${path}`, error);
+    }
+  }
   for (const path of plan.images) {
     await importAndInsertImage(path);
   }
   if (plan.unsupported.length > 0) {
-    const names = plan.unsupported.map((p) => p.split(/[\\/]/).pop() ?? p).join('、');
-    void dialogMessage(`不支持的文件类型：${names}\n可拖入 Markdown 文件（.md）或图片。`, {
+    const sep = i18n.locale === 'en' ? ', ' : '、';
+    const names = plan.unsupported.map((p) => p.split(/[\\/]/).pop() ?? p).join(sep);
+    void dialogMessage(i18n.t('error.unsupportedType', { names }), {
       title: i18n.t('app.name'),
       kind: 'warning',
     });
@@ -505,10 +546,10 @@ shell = createAppShell(
   app,
   {
     onNew: () => void manager.newTab(),
-    onOpen: () => void manager.openFile(),
+    onOpen: () => void openViaDialog(),
     listRecents: () => invoke<string[]>('list_recents'),
     openRecent: async (path) => {
-      const tab = await manager.openFile(path);
+      const tab = await openPathByKind(path);
       if (tab === null) {
         // 文件缺失/不可读：移除该最近条目并提示。
         void invoke('remove_recent', { path }).catch(() => undefined);
@@ -1724,7 +1765,7 @@ async function bootstrap(): Promise<void> {
     await listen('open-file', () => {
       void invoke<string | null>('take_pending_file')
         .then((path) => {
-          if (path !== null) void manager.openFile(path);
+          if (path !== null) void openPathByKind(path);
         })
         .catch(() => undefined);
     });
@@ -1739,7 +1780,7 @@ async function bootstrap(): Promise<void> {
   // R1：取出启动/关联文件（首实例 argv 经后端 take_pending_file；命令未就绪时静默）。
   const pendingFile = await invoke<string | null>('take_pending_file').catch(() => null);
   if (pendingFile !== null) {
-    await manager.openFile(pendingFile);
+    await openPathByKind(pendingFile);
   }
   // 无标签（无恢复草稿、无启动文件）则新建欢迎标签。
   if (manager.tabList.length === 0) {

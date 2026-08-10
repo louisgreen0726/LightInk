@@ -41,6 +41,21 @@
         "mimeType": "text/markdown",
         "role": "Editor",
         "rank": "Default"
+      },
+      {
+        "ext": [
+          "pdf",
+          "epub",
+          "mobi",
+          "azw3",
+          "fb2",
+          "cbz",
+          "txt"
+        ],
+        "name": "eBook",
+        "description": "eBook document (read-only)",
+        "role": "Viewer",
+        "rank": "Default"
       }
     ],
     "windows": {

@@ -38,6 +38,7 @@ pub fn run() {
         .manage(cli::PendingFile(std::sync::Mutex::new(first_file)))
         .invoke_handler(tauri::generate_handler![
             file::read_file,
+            file::read_file_bytes,
             file::write_file,
             file::stat_file,
             snapshot::write_snapshot,
@@ -70,7 +71,7 @@ pub fn run() {
             // 路径写入 PendingFile 槽 + emit open-file（与 single-instance 同口径）。
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
             if let tauri::RunEvent::Opened { urls } = event {
-                if let Some(path) = cli::first_markdown_from_urls(urls) {
+                if let Some(path) = cli::first_supported_from_urls(urls) {
                     cli::enqueue_pending_file(app, path);
                 }
             }

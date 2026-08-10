@@ -99,6 +99,8 @@ const en: Dict = {
   'error.openFileMissing': 'Could not open “{path}”: file not found or unreadable.',
   'error.exportFailed': 'Export failed',
   'error.recentRemoved': 'Removed from recent files.',
+  'error.unsupportedType':
+    'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
   'slash.noMatch': 'No matches',
   'math.editTitle': 'Double-click to edit formula source',
   'mermaid.editTitle': 'Double-click to edit flowchart source',
@@ -300,6 +302,8 @@ const zhCN: Dict = {
   'error.openFileMissing': '无法打开「{path}」：文件不存在或无法读取。',
   'error.exportFailed': '导出失败',
   'error.recentRemoved': '已从最近打开中移除。',
+  'error.unsupportedType':
+    '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
   'slash.noMatch': '无匹配项',
   'math.editTitle': '双击编辑公式源码',
   'mermaid.editTitle': '双击编辑流程图源码',
