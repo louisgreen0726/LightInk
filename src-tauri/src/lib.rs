@@ -7,13 +7,15 @@ mod file;
 mod recents;
 mod snapshot;
 
-use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 首实例启动时的命令行/关联文件参数（如 `lightink note.md` 或双击 .md）。
     // 相对路径按首实例进程 cwd 解析（首实例 cwd 即 shell cwd）。
+    //
+    // 注意：macOS 上 Finder 双击/「打开」走 Apple Event → RunEvent::Opened，
+    // 不会可靠地出现在 argv；argv 解析主要服务 Windows / Linux 与 CLI。
     let first_file = cli::resolve_file_arg(&std::env::args().collect::<Vec<_>>(), None);
 
     let builder = tauri::Builder::default();
@@ -25,13 +27,9 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
         // 相对路径必须按第二实例转发的 cwd 解析（首/第二实例 cwd 通常不同），
         // 否则 read_file 取错目录静默失败、文件被丢。
+        // Linux 桌面可能传 file:// URL（MimeType + %U），resolve_file_arg 会归一。
         if let Some(path) = cli::resolve_file_arg(&args, Some(&cwd)) {
-            if let Some(state) = app.try_state::<cli::PendingFile>() {
-                if let Ok(mut guard) = state.0.lock() {
-                    *guard = Some(path.clone());
-                }
-            }
-            let _ = app.emit("open-file", ());
+            cli::enqueue_pending_file(app, path);
         }
     }));
     builder
@@ -63,8 +61,25 @@ pub fn run() {
             open_path_default,
             reveal_path_in_files,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // 用 build + run 才能接 RunEvent::Opened（macOS/iOS/Android 文件关联）。
+        // Builder::run 会消费 builder 且不暴露事件循环钩子。
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS：Finder 打开关联文件 → Opened；冷启动与已运行时都可能触发。
+            // 路径写入 PendingFile 槽 + emit open-file（与 single-instance 同口径）。
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+            if let tauri::RunEvent::Opened { urls } = event {
+                if let Some(path) = cli::first_markdown_from_urls(urls) {
+                    cli::enqueue_pending_file(app, path);
+                }
+            }
+            // 非 Apple/Android 目标：事件循环钩子仍需接住参数，避免 unused 警告。
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            {
+                let _ = (app, event);
+            }
+        });
 }
 
 // ── R14 链接跳转 / R3 在文件管理器中显示 ──────────────────────────────

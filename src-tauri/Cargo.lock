@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "lightink"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1907,6 +1907,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tempfile",
+ "url",
 ]
 
 [[package]]

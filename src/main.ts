@@ -60,7 +60,7 @@ import {
   type ExportServiceDeps,
   type ExportTabSnapshot,
 } from './export/export-service.js';
-import { printViaHiddenIframe } from './export/pdf-export.js';
+import { printViaMainWindow } from './export/pdf-export.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager } from './tabs/tab-manager.js';
@@ -465,7 +465,8 @@ const exportDeps: ExportServiceDeps = {
     return typeof selected === 'string' ? selected : null;
   },
   writeFile,
-  printHtml: (html) => printViaHiddenIframe(document, html),
+  // 主窗口 print：macOS/Linux WebKit 上 iframe.print 会静默失败（见 pdf-export）。
+    printHtml: (html) => printViaMainWindow(document, html),
   reportError: (message, error) => {
     // eslint-disable-next-line no-console
     console.error(`[lightink/export] ${message}`, error);

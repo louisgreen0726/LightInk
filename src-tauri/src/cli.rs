@@ -4,18 +4,40 @@
 //! 文件参数，供首实例启动（`env::args`）与第二实例转发（single-instance
 //! 回调的 argv）两条路径共用。无文件系统访问，可移植、可单测。
 //!
+//! 平台差异（文件关联打开）：
+//! - Windows / Linux：路径（或 `file://` URL）出现在 argv；第二实例经
+//!   single-instance 把 argv + cwd 转发给首实例。
+//! - macOS：Finder「打开」/ 双击关联文件走 Apple Event，对应 Tauri
+//!   `RunEvent::Opened { urls }`，**不会**可靠地出现在 argv。冷启动与
+//!   已运行时都必须处理 Opened，否则只会启动应用、文件不打开。
+//!
 //! [`PendingFile`] 是经 Tauri 状态托管的「待打开文件」槽：首实例 argv
-//! 解析结果在 `run()` 注入，第二实例回调覆盖写入；前端就绪后经
+//! 解析结果在 `run()` 注入，第二实例回调 / Opened 覆盖写入；前端就绪后经
 //! [`take_pending_file`] 命令取出并清空（仅消费一次），保证「单实例转发
 //! 失败/前端未就绪时回退为正常打开、不丢文件」——文件始终先落入此槽。
 
 use std::sync::Mutex;
 
+use tauri::{AppHandle, Emitter, Manager};
+
 /// 待打开文件槽（单值，取出即清空）。
 pub struct PendingFile(pub Mutex<Option<String>>);
 
+/// 把路径写入待打开槽并发出 `open-file`。
+///
+/// 冷启动（前端尚未 listen）时只靠槽 + 启动后 `take_pending_file`；
+/// 已运行时 `open-file` 让前端立刻 `take` 打开。两条路径都先写槽，避免丢文件。
+pub fn enqueue_pending_file(app: &AppHandle, path: String) {
+    if let Some(state) = app.try_state::<PendingFile>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = Some(path);
+        }
+    }
+    let _ = app.emit("open-file", ());
+}
+
 /// 扫描 argv（含程序路径，索引 0 跳过），返回首个 `.md`/`.markdown` 文件参数。
-/// 大小写不敏感；无匹配返回 `None`。返回的是原始参数（可能相对）。
+/// 大小写不敏感；无匹配返回 `None`。返回的是原始参数（可能相对 / `file://`）。
 pub fn extract_file_arg(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
@@ -24,26 +46,79 @@ pub fn extract_file_arg(args: &[String]) -> Option<String> {
 }
 
 /// 解析首个 markdown 文件参数为可被首实例进程直接读取的路径：
-/// 绝对路径原样返回；相对路径按 `cwd`（第二实例转发的 shell 工作目录，或
-/// 首实例进程 cwd）拼接为绝对路径。第二实例 cwd 与首实例 cwd 通常不同，
-/// 故相对路径必须按其来源 cwd 解析，否则 `read_file` 会取错目录静默失败。
-/// 不做 canonicalize（避免 Windows UNC 前缀与文件必须存在的前置），`..` 等
-/// 由 OS 在打开时解析。
+/// - `file://` URL 转为本地路径；
+/// - 绝对路径原样返回；
+/// - 相对路径按 `cwd`（第二实例转发的 shell 工作目录，或首实例进程 cwd）
+///   拼接为绝对路径。
+///
+/// 第二实例 cwd 与首实例 cwd 通常不同，故相对路径必须按其来源 cwd 解析，
+/// 否则 `read_file` 会取错目录静默失败。不做 canonicalize（避免 Windows UNC
+/// 前缀与文件必须存在的前置），`..` 等由 OS 在打开时解析。
 pub fn resolve_file_arg(args: &[String], cwd: Option<&str>) -> Option<String> {
     let raw = extract_file_arg(args)?;
-    if std::path::Path::new(&raw).is_absolute() {
-        return Some(raw);
+    let path = normalize_path_arg(&raw);
+    if std::path::Path::new(&path).is_absolute() {
+        return Some(path);
     }
     let base = match cwd {
         Some(c) => std::path::PathBuf::from(c),
         None => std::env::current_dir().unwrap_or_default(),
     };
-    Some(base.join(&raw).to_string_lossy().into_owned())
+    Some(base.join(&path).to_string_lossy().into_owned())
+}
+
+/// 规范化打开路径：`file://` → 本地路径；其余 trim 后原样返回。
+pub fn normalize_path_arg(raw: &str) -> String {
+    let raw = raw.trim();
+    if let Some(path) = file_url_to_path(raw) {
+        return path;
+    }
+    raw.to_string()
+}
+
+/// 将 `file://` URL 转为本地路径；非 file URL 或解析失败返回 `None`。
+fn file_url_to_path(raw: &str) -> Option<String> {
+    if !raw.to_ascii_lowercase().starts_with("file:") {
+        return None;
+    }
+    let url = url::Url::parse(raw).ok()?;
+    let path = url.to_file_path().ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// 从 `RunEvent::Opened` 的 URL 列表中取首个本地 markdown 文件路径。
+///
+/// 生产调用点仅在 macOS/iOS/Android 的 `RunEvent::Opened` 分支；其它目标
+/// 仍保留实现与单测（file URL 解析与扩展名判断与 argv 路径共用）。
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+    allow(dead_code)
+)]
+pub fn first_markdown_from_urls(urls: impl IntoIterator<Item = url::Url>) -> Option<String> {
+    for url in urls {
+        if let Ok(path) = url.to_file_path() {
+            let s = path.to_string_lossy().into_owned();
+            if has_markdown_extension(&s) {
+                return Some(s);
+            }
+        }
+    }
+    None
 }
 
 /// 大小写不敏感的 `.md` / `.markdown` 扩展名判断（不访问文件系统）。
+/// 对 `file://.../note.md` 也能匹配（扩展名在查询串之前）。
 fn has_markdown_extension(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
+    // file URL：只看 path 段，避免 query/fragment 干扰。
+    let candidate = if path.to_ascii_lowercase().starts_with("file:") {
+        url::Url::parse(path)
+            .ok()
+            .map(|u| u.path().to_string())
+            .unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+    let lower = candidate.to_ascii_lowercase();
     lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
@@ -150,5 +225,74 @@ mod tests {
     #[test]
     fn resolve_no_arg_is_none() {
         assert!(resolve_file_arg(&argv(&["lightink"]), Some("/home/user")).is_none());
+    }
+
+    #[test]
+    fn resolve_file_url_to_local_path() {
+        // 桌面 %U / xdg-open / 部分 shell 会传 file:// URL。
+        let (file_url, expected) = if cfg!(windows) {
+            (
+                "file:///C:/Users/docs/hello.md",
+                std::path::PathBuf::from("C:\\Users\\docs\\hello.md"),
+            )
+        } else {
+            (
+                "file:///home/user/notes/hello.md",
+                std::path::PathBuf::from("/home/user/notes/hello.md"),
+            )
+        };
+        let resolved = resolve_file_arg(&argv(&["lightink", file_url]), Some("/other")).unwrap();
+        assert_eq!(resolved, expected.to_string_lossy().into_owned());
+    }
+
+    #[test]
+    fn resolve_file_url_with_percent_encoding() {
+        let (file_url, expected) = if cfg!(windows) {
+            (
+                "file:///C:/Users/docs/my%20note.md",
+                std::path::PathBuf::from("C:\\Users\\docs\\my note.md"),
+            )
+        } else {
+            (
+                "file:///home/user/my%20note.md",
+                std::path::PathBuf::from("/home/user/my note.md"),
+            )
+        };
+        let resolved = resolve_file_arg(&argv(&["lightink", file_url]), None).unwrap();
+        assert_eq!(resolved, expected.to_string_lossy().into_owned());
+    }
+
+    #[test]
+    fn extract_recognizes_file_url_markdown() {
+        let (skip, pick) = if cfg!(windows) {
+            ("file:///C:/tmp/a.txt", "file:///C:/tmp/b.md")
+        } else {
+            ("file:///tmp/a.txt", "file:///tmp/b.md")
+        };
+        assert_eq!(
+            extract_file_arg(&argv(&["lightink", skip, pick])),
+            Some(pick.to_string())
+        );
+    }
+
+    #[test]
+    fn first_markdown_from_urls_picks_md() {
+        let (skip, pick) = if cfg!(windows) {
+            ("file:///C:/tmp/a.txt", "file:///C:/tmp/note.md")
+        } else {
+            ("file:///tmp/a.txt", "file:///tmp/note.md")
+        };
+        let urls = vec![
+            url::Url::parse(skip).unwrap(),
+            url::Url::parse(pick).unwrap(),
+        ];
+        let path = first_markdown_from_urls(urls).unwrap();
+        assert!(path.ends_with("note.md"), "unexpected: {path}");
+    }
+
+    #[test]
+    fn first_markdown_from_urls_skips_non_file() {
+        let urls = vec![url::Url::parse("https://example.com/x.md").unwrap()];
+        assert!(first_markdown_from_urls(urls).is_none());
     }
 }
