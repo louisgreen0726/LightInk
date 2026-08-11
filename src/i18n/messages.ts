@@ -99,6 +99,8 @@ const en: Dict = {
   'error.openFileMissing': 'Could not open “{path}”: file not found or unreadable.',
   'error.exportFailed': 'Export failed',
   'error.recentRemoved': 'Removed from recent files.',
+  'error.recentsPersistFailed':
+    'Could not update recent files. Your documents are unaffected.',
   'error.unsupportedType':
     'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
   'reader.empty': 'Open an eBook to start reading.',
@@ -320,6 +322,7 @@ const zhCN: Dict = {
   'error.openFileMissing': '无法打开「{path}」：文件不存在或无法读取。',
   'error.exportFailed': '导出失败',
   'error.recentRemoved': '已从最近打开中移除。',
+  'error.recentsPersistFailed': '无法更新最近打开列表，文档内容不受影响。',
   'error.unsupportedType':
     '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
   'reader.empty': '打开一本电子书开始阅读。',

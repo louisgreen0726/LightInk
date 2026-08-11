@@ -104,6 +104,41 @@ const fontScale = installFontScale(document.documentElement, window.localStorage
 const i18n = createI18n(window.localStorage);
 const isMac = isMacPlatform();
 
+type RecentMutationCommand = 'add_recent' | 'remove_recent' | 'clear_recents';
+let recentPersistenceNotice: Promise<void> | null = null;
+
+function reportRecentPersistenceError(error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.error('[lightink/recents] persistence failed', error);
+  if (recentPersistenceNotice !== null) return;
+  const pending = dialogMessage(i18n.t('error.recentsPersistFailed'), {
+    title: i18n.t('app.name'),
+    kind: 'error',
+  })
+    .then(() => undefined)
+    .catch((dialogError: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error('[lightink/recents] error dialog failed', dialogError);
+    })
+    .finally(() => {
+      recentPersistenceNotice = null;
+    });
+  recentPersistenceNotice = pending;
+}
+
+async function persistRecentMutation(
+  command: RecentMutationCommand,
+  payload?: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    await invoke<void>(command, payload);
+    return true;
+  } catch (error) {
+    reportRecentPersistenceError(error);
+    return false;
+  }
+}
+
 /** Apply locale-dependent chrome labels (window title, format bar, code blocks). */
 function applyLocaleChrome(): void {
   setAppDisplayName(i18n.t('app.name'));
@@ -585,16 +620,20 @@ shell = createAppShell(
       const tab = await openPathByKind(path);
       if (tab === null) {
         // 文件缺失/不可读：移除该最近条目并提示。
-        void invoke('remove_recent', { path }).catch(() => undefined);
+        const removed = await persistRecentMutation('remove_recent', { path });
         void dialogMessage(
-          `${i18n.t('error.openFile', { path })} ${i18n.t('error.recentRemoved')}`,
+          `${i18n.t('error.openFile', { path })}${
+            removed ? ` ${i18n.t('error.recentRemoved')}` : ''
+          }`,
           { title: i18n.t('app.name'), kind: 'warning' },
         );
         return false;
       }
       return true;
     },
-    clearRecents: () => invoke('clear_recents'),
+    clearRecents: async () => {
+      await persistRecentMutation('clear_recents');
+    },
     onShowVersions: () => showVersionsForActive(),
     // 注意：菜单 enabled 回调在 createAppShell 构造期就被同步调用（见 menus.ts 的
     // refreshItemEnabled），此时 manager 尚未赋值（于下方 new TabManager 处赋值）。
@@ -905,7 +944,7 @@ manager = new TabManager({
     refreshFindOnContentChange();
   },
   onFileOpened: (filePath) => {
-    void invoke('add_recent', { path: filePath }).catch(() => undefined);
+    void persistRecentMutation('add_recent', { path: filePath });
   },
   onFileSaved: (filePath, content) => {
     // R13：每次成功保存自动生成一份版本快照。
