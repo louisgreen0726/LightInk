@@ -45,3 +45,13 @@ export class ReaderLimitError extends ParseError {
     this.name = 'ReaderLimitError';
   }
 }
+
+export type ReaderCapabilityKind = 'mobiDrm' | 'mobiKf8' | 'mobiHuff';
+
+/** Known format variant that LightInk intentionally does not claim to support. */
+export class ReaderCapabilityError extends ParseError {
+  constructor(readonly kind: ReaderCapabilityKind) {
+    super(`READER_CAPABILITY:${kind}`);
+    this.name = 'ReaderCapabilityError';
+  }
+}

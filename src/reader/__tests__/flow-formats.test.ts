@@ -14,7 +14,7 @@ import { parseEpub } from '../formats/epub.js';
 import { parseFb2 } from '../formats/fb2.js';
 import { parseMobi } from '../formats/mobi.js';
 import { parseTxt } from '../formats/txt.js';
-import { ParseError } from '../formats/types.js';
+import { ParseError, ReaderCapabilityError } from '../formats/types.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -232,7 +232,13 @@ describe('parseMobi', () => {
   /** 合成最小 PalmDOC MOBI。record 默认为 html 的 UTF-8（compression=1）；可传压缩记录（compression=2）。 */
   function buildMobi(
     html: string,
-    opts: { encryption?: number; compression?: number; record?: number[]; textLength?: number } = {},
+    opts: {
+      encryption?: number;
+      compression?: number;
+      record?: number[];
+      textLength?: number;
+      fileVersion?: number;
+    } = {},
   ): Uint8Array {
     const encryption = opts.encryption ?? 0;
     const compression = opts.compression ?? 1;
@@ -244,7 +250,14 @@ describe('parseMobi', () => {
     const index = new Array(18).fill(0); // 2 条记录索引（各 8 字节）+ 2 填充
     const rec0Offset = 78 + 18; // 96
     // PalmDOC 头(16) + MOBI 头标识(MOBI)+headerLength+type+codepage(=65001 UTF-8)。
-    const mobi = [...asciiCodes('MOBI'), ...u32(232), ...u32(2), ...u32(65001)];
+    const mobi = [
+      ...asciiCodes('MOBI'),
+      ...u32(232),
+      ...u32(2),
+      ...u32(65001),
+      ...u32(0),
+      ...u32(opts.fileVersion ?? 6),
+    ];
     const rec0 = [
       ...u16(compression), ...u16(0), ...u32(textLength), ...u16(1), ...u16(4096), ...u16(encryption), ...u16(0),
       ...mobi,
@@ -283,7 +296,18 @@ describe('parseMobi', () => {
   });
 
   it('DRM 文件抛 ParseError', () => {
-    expect(() => parseMobi(buildMobi('<p>x</p>', { encryption: 1 }))).toThrow(ParseError);
+    expect(() => parseMobi(buildMobi('<p>x</p>', { encryption: 1 }))).toThrow(
+      expect.objectContaining<Partial<ReaderCapabilityError>>({ kind: 'mobiDrm' }),
+    );
+  });
+
+  it('KF8/MOBI8 与 HUFF/CDIC 返回针对性的能力错误', () => {
+    expect(() => parseMobi(buildMobi('<p>x</p>', { fileVersion: 8 }))).toThrow(
+      expect.objectContaining<Partial<ReaderCapabilityError>>({ kind: 'mobiKf8' }),
+    );
+    expect(() => parseMobi(buildMobi('<p>x</p>', { compression: 17480 }))).toThrow(
+      expect.objectContaining<Partial<ReaderCapabilityError>>({ kind: 'mobiHuff' }),
+    );
   });
 
   it('损坏记录索引（numRecords 越界）抛 ParseError', () => {

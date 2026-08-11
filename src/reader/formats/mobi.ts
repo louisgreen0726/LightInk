@@ -11,7 +11,11 @@
  */
 
 import { sanitizeHtml } from '../sanitize.js';
-import { ParseError, type ReaderContent } from './types.js';
+import {
+  ParseError,
+  ReaderCapabilityError,
+  type ReaderContent,
+} from './types.js';
 
 function be16(dv: DataView, off: number): number {
   return dv.getUint16(off, false);
@@ -106,11 +110,11 @@ export function parseMobi(bytes: Uint8Array): ReaderContent {
   const encryption = be16(r0, 12);
 
   if (encryption !== 0) {
-    throw new ParseError('MOBI 文件受 DRM 保护，仅支持无 DRM 文件');
+    throw new ReaderCapabilityError('mobiDrm');
   }
   if (compression !== 1 && compression !== 2) {
     // 17480 = HUFF/CDIC（复杂字典压缩），本任务不支持。
-    throw new ParseError('MOBI 使用了不支持的压缩方式（HUFF/CDIC），暂不支持');
+    throw new ReaderCapabilityError('mobiHuff');
   }
 
   // 编码：MOBI header（若有）的 codepage，否则 cp1252。
@@ -125,6 +129,10 @@ export function parseMobi(bytes: Uint8Array): ReaderContent {
     const cp = be32(r0, 28);
     if (cp === 65001) {
       codepage = 65001;
+    }
+    // MOBI header fileVersion >= 8 denotes KF8/MOBI8, which this PalmDOC parser cannot decode.
+    if (rec0.length >= 40 && be32(r0, 36) >= 8) {
+      throw new ReaderCapabilityError('mobiKf8');
     }
   }
 
