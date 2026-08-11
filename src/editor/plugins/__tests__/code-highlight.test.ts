@@ -16,6 +16,7 @@ import {
   codeHighlightPlugin,
   copyButtonClassName,
   copyButtonLabel,
+  createCodeBlockNodeView,
   createLanguagePicker,
   escapeHtml,
   filterLanguages,
@@ -552,5 +553,55 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
       .map((d) => decoAttrs(d)['data-language'])
       .filter((v): v is string => v !== undefined);
     expect(languages).toEqual(['javascript', 'python']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R4 code block wheel (T1)
+// ---------------------------------------------------------------------------
+
+describe('R4 code block wheel (T1)', () => {
+  it('does not register a wheel listener (vertical wheel must bubble to scroll the page)', () => {
+    // SpyEl records any element that registers a 'wheel' listener.
+    const wheelTargets: string[] = [];
+    class SpyEl extends FakeEl {
+      addEventListener(type: string, fn: (...args: unknown[]) => void): void {
+        if (type === 'wheel') wheelTargets.push(this.tagName);
+        super.addEventListener(type, fn);
+      }
+    }
+    const spyDoc = {
+      body: new SpyEl('body'),
+      createElement: (tag: string) => new SpyEl(tag),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    } as unknown as Document;
+    const g = globalThis as { document?: Document };
+    const saved = g.document;
+    g.document = spyDoc;
+    try {
+      // Wide code block content so the old behavior would have engaged.
+      const node = testSchema.nodes['code_block']!.create(
+        { language: 'js' },
+        testSchema.text('const x = 1; '.repeat(50)),
+      );
+      const view = {
+        state: { doc: testSchema.nodes['doc']!.create(null, node) },
+        dispatch: () => {},
+      } as never;
+      const nv = createCodeBlockNodeView(node, view, () => 0);
+      expect(nv.dom).toBeDefined();
+      expect(nv.contentDOM).toBeDefined();
+      // R4: a vertical wheel over a wide code block must NOT be hijacked into
+      // horizontal scrolling of the block — no wheel listener may be registered,
+      // so the event bubbles to the editor scroll area.
+      expect(wheelTargets).toEqual([]);
+    } finally {
+      if (saved === undefined) {
+        delete (g as { document?: Document }).document;
+      } else {
+        g.document = saved;
+      }
+    }
   });
 });

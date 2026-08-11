@@ -755,7 +755,7 @@ export function setCodeBlockLanguage(
  * ProseMirror swallows mousedown/click inside the nodeView and the language
  * picker / copy button appear dead.
  */
-function createCodeBlockNodeView(
+export function createCodeBlockNodeView(
   initialNode: PMNode,
   view: EditorView,
   getPos: () => number | undefined,
@@ -825,19 +825,8 @@ function createCodeBlockNodeView(
     event.preventDefault();
     event.stopPropagation();
   };
-  const onWheel = (event: WheelEvent): void => {
-    if (event.deltaY === 0) return;
-    if (pre.scrollWidth <= pre.clientWidth) return;
-    const before = pre.scrollLeft;
-    pre.scrollLeft += event.deltaY;
-    if (pre.scrollLeft !== before) {
-      event.preventDefault();
-    }
-  };
-
   btn.addEventListener('mousedown', onBtnMouseDown);
   btn.addEventListener('click', onCopy);
-  pre.addEventListener('wheel', onWheel, { passive: false });
 
   return {
     dom,
@@ -877,7 +866,6 @@ function createCodeBlockNodeView(
       langPicker.destroy();
       btn.removeEventListener('mousedown', onBtnMouseDown);
       btn.removeEventListener('click', onCopy);
-      pre.removeEventListener('wheel', onWheel);
     },
   };
 }
