@@ -50,6 +50,7 @@ pub fn run() {
             asset::migrate_staging_assets,
             asset::import_image_asset,
             export::read_image_base64,
+            export::print_webview_to_pdf,
             cli::take_pending_file,
             recents::list_recents,
             recents::add_recent,

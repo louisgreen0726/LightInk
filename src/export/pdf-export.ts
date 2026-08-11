@@ -39,19 +39,22 @@ export const PRINT_STYLE_ID = 'lightink-export-print-style';
  */
 export const MAIN_WINDOW_PRINT_CSS = `/* LightInk 主窗口导出打印 */
 @media print {
-  body * { visibility: hidden !important; }
-  #${EXPORT_ROOT_ID},
-  #${EXPORT_ROOT_ID} * {
-    visibility: visible !important;
-  }
+  /* 隐藏应用外壳：用 display:none（不占布局），而非 visibility:hidden（仍占位，
+     会导致导出 PDF 尾部出现大量空白页）。只保留导出根参与分页。 */
+  body > *:not(#${EXPORT_ROOT_ID}) { display: none !important; }
   #${EXPORT_ROOT_ID} {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
     width: 100% !important;
+    height: auto !important;
     margin: 0 !important;
     padding: 0 !important;
     background: #fff !important;
+    /* 屏幕隐藏用内联 style（opacity:0 / height:0 / overflow:hidden），
+       优先级高于普通规则，必须在此逐条 !important 复位，否则打印空白。 */
+    opacity: 1 !important;
+    overflow: visible !important;
   }
 }
 `;
@@ -81,16 +84,17 @@ export function runPrint(html: string, print: (html: string) => void): void {
   print(html);
 }
 
+/** 导出根强制使用的浅色主题：PDF 以深字白底输出，与活动（可能为暗色）主题无关，
+ *  保证「不打印背景」默认下文字仍清晰，且为矢量原生文字。tokens.css 的
+ *  `[data-theme]` 规则匹配任意元素，故挂在导出根上即让子树改用浅色令牌。 */
+export const PRINT_THEME = 'warm-light';
+
 /**
- * 生产打印实现：把导出 HTML 挂到主文档隐藏根节点，主窗口 `window.print()`。
- *
- * 为何不用隐藏 iframe：
- *   macOS WKWebView / Linux WebKitGTK 上 `iframe.contentWindow.print()` 静默
- *   无对话框（tauri#13451）；主窗口 print 三端可用。
- *
- * 清理：afterprint + 超时兜底，避免导出根常驻 DOM；下次调用先移除旧节点。
+ * 把导出 HTML 装配到主文档隐藏根节点（data-theme=浅色），返回清理函数。
+ * 屏幕不可见（opacity:0），打印/PrintToPdf 时由 MAIN_WINDOW_PRINT_CSS 可见化。
+ * 导出样式裹进 @media print，避免污染应用外壳（屏幕缩窄，见回归测试）。
  */
-export function printViaMainWindow(doc: Document, html: string, win: Window = window): void {
+export function mountPrintRoot(doc: Document, html: string): () => void {
   // 清理上次残留。
   doc.getElementById(EXPORT_ROOT_ID)?.remove();
   doc.getElementById(PRINT_STYLE_ID)?.remove();
@@ -99,10 +103,15 @@ export function printViaMainWindow(doc: Document, html: string, win: Window = wi
 
   const styleEl = doc.createElement('style');
   styleEl.id = PRINT_STYLE_ID;
-  styleEl.textContent = `${styleText}\n${MAIN_WINDOW_PRINT_CSS}`;
+  // 导出样式整体裹进 @media print：否则其中全局 `body { max-width:860px;
+  // font-size:14px; margin:0 auto; ... }` 会覆盖应用外壳，点导出 PDF 时界面
+  // 被缩窄/字号变小（屏幕污染）。屏幕上导出根本就不可见（opacity:0），无需
+  // 屏幕样式；这些规则只在打印渲染 PDF 时才需要。
+  styleEl.textContent = `@media print {\n${styleText}\n}\n${MAIN_WINDOW_PRINT_CSS}`;
 
   const root = doc.createElement('div');
   root.id = EXPORT_ROOT_ID;
+  root.setAttribute('data-theme', PRINT_THEME);
   // 屏幕上不可见，打印时由 MAIN_WINDOW_PRINT_CSS 改为可见。
   root.setAttribute(
     'style',
@@ -110,16 +119,54 @@ export function printViaMainWindow(doc: Document, html: string, win: Window = wi
   );
   root.innerHTML = bodyHtml;
 
+  doc.head.appendChild(styleEl);
+  doc.body.appendChild(root);
+
   let cleaned = false;
-  const cleanup = (): void => {
+  return (): void => {
     if (cleaned) return;
     cleaned = true;
     root.remove();
     styleEl.remove();
   };
+}
 
-  doc.head.appendChild(styleEl);
-  doc.body.appendChild(root);
+/**
+ * 原生矢量 PDF 导出（Windows WebView2 PrintToPdf）：挂载导出根（浅色 + @media
+ * print）后调用注入的 `invokeNative`（生产为 `invoke('print_webview_to_pdf')`），
+ * 打印当前 webview（仅导出根在打印态可见）为含**原生可选文字**的 PDF；完成后立即清理。
+ */
+export async function printToPdfFile(
+  doc: Document,
+  html: string,
+  invokeNative: () => Promise<void>,
+  win: Window = window,
+): Promise<void> {
+  const cleanup = mountPrintRoot(doc, html);
+  try {
+    // 等一帧让 @media print 样式应用后再触发原生打印。
+    await new Promise<void>((resolve) =>
+      typeof win.requestAnimationFrame === 'function'
+        ? win.requestAnimationFrame(() => resolve())
+        : setTimeout(resolve, 0),
+    );
+    await invokeNative();
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * 生产打印实现（`window.print()` 系统对话框回退路径）：挂载导出根，主窗口 print。
+ *
+ * 为何不用隐藏 iframe：
+ *   macOS WKWebView / Linux WebKitGTK 上 `iframe.contentWindow.print()` 静默
+ *   无对话框（tauri#13451）；主窗口 print 三端可用。
+ *
+ * 清理：afterprint + 超时兜底，避免导出根常驻 DOM。
+ */
+export function printViaMainWindow(doc: Document, html: string, win: Window = window): void {
+  const cleanup = mountPrintRoot(doc, html);
 
   // 等布局/样式应用后再 print（双 rAF：style 插入后一帧再触发）。
   const schedulePrint = (): void => {

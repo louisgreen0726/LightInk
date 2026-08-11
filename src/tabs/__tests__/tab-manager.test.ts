@@ -690,7 +690,16 @@ describe('reader 标签（只读，豁免可写路径）', () => {
     return {
       readerDestroy,
       readerLoad,
-      mountReader: vi.fn(async () => ({ load: readerLoad, destroy: readerDestroy })),
+      mountReader: vi.fn(async () => ({
+        load: readerLoad,
+        destroy: readerDestroy,
+        // ReaderInstance 扩展的标注/侧栏方法（reader-view 实现；此处仅需满足类型）。
+        addBookmark: vi.fn(() => undefined),
+        addNote: vi.fn(() => undefined),
+        toggleSidebar: vi.fn(() => undefined),
+        isSidebarVisible: vi.fn(() => false),
+        isAnnotationEnabled: vi.fn(() => false),
+      })),
     };
   }
 

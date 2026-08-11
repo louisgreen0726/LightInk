@@ -76,6 +76,19 @@ export interface AppShellActions {
   onFind?(): void;
   // 插入（元素 id）
   onInsertElement(id: InsertElementId): void;
+  // ---- 只读阅读标签（reader）专用：阅读态菜单据此装配「标注」菜单 ----
+  /** 活动标签类型；reader 时菜单隐藏「插入」、改挂「标注」菜单。 */
+  activeTabKind?(): 'markdown' | 'reader' | null;
+  /** reader：当前文档是否启用标注（决定书签/笔记是否可用）。 */
+  isReaderAnnotationEnabled?(): boolean;
+  /** reader：标注侧栏当前是否可见（菜单勾选标记）。 */
+  isReaderSidebarVisible?(): boolean;
+  /** reader：在当前阅读位置添加书签。 */
+  onReaderAddBookmark?(): void;
+  /** reader：在当前阅读位置添加笔记（弹 prompt）。 */
+  onReaderAddNote?(): void;
+  /** reader：切换标注侧栏显隐（默认隐藏）。 */
+  onReaderToggleSidebar?(): void;
   // 视图
   onToggleTheme(): void;
   /** 应用某个内置预设主题（视图菜单逐项列出全部预设）。 */
@@ -314,7 +327,42 @@ export function buildMenus(actions: AppShellActions): Menu[] {
     ),
   ];
 
-  return [
+  const isReader = actions.activeTabKind?.() === 'reader';
+  // 内联双语（同既有「查找…」「字数统计」先例：i18n 目录不在本改动 scope）。
+  const ll = (en: string, zh: string): string => (actions.getLocale() === 'en' ? en : zh);
+
+  /** reader 态「标注」菜单：书签 / 笔记 / 侧栏开关（侧栏默认隐藏，勾选标记当前态）。 */
+  const annotationMenu: Menu = {
+    id: 'annotation',
+    label: () => ll('Annotate', '标注'),
+    items: [
+      menuItem(
+        'ann-bookmark',
+        () => ll('Add Bookmark', '添加书签'),
+        () => actions.onReaderAddBookmark?.(),
+        '',
+        () => actions.isReaderAnnotationEnabled?.() !== false,
+      ),
+      menuItem(
+        'ann-note',
+        () => ll('Add Note', '添加笔记'),
+        () => actions.onReaderAddNote?.(),
+        '',
+        () => actions.isReaderAnnotationEnabled?.() !== false,
+      ),
+      separator('ann-sep'),
+      menuItem(
+        'ann-sidebar',
+        () => {
+          const base = ll('Annotation Panel', '标注侧栏');
+          return actions.isReaderSidebarVisible?.() ? `✓ ${base}` : base;
+        },
+        () => actions.onReaderToggleSidebar?.(),
+      ),
+    ],
+  };
+
+  const menus: Menu[] = [
     {
       id: 'file',
       label: () => t('menu.file'),
@@ -398,7 +446,8 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         ),
       ],
     },
-    { id: 'insert', label: () => t('menu.insert'), items: insertItems },
+    // reader 标签：以「标注」菜单取代「插入」（只读，无插入元素）。
+    ...(isReader ? [annotationMenu] : [{ id: 'insert', label: () => t('menu.insert'), items: insertItems }]),
     {
       id: 'view',
       label: () => t('menu.view'),
@@ -481,6 +530,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       ],
     },
   ];
+  return menus;
 }
 
 function resolveStorage(options: AppShellOptions): StorageLike | null {

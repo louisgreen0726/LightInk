@@ -38,6 +38,17 @@ describe('buildPrintHtml', () => {
   });
 });
 
+describe('MAIN_WINDOW_PRINT_CSS', () => {
+  it('打印时复位屏幕隐藏的内联属性，避免导出空白', () => {
+    // 屏幕隐藏根节点用内联 style 写死 opacity:0 / height:0 / overflow:hidden，
+    // 优先级高于普通 CSS；@media print 必须逐条 !important 复位，
+    // 否则 window.print() 渲染出空白页（回归：Windows 导出 PDF 空白）。
+    expect(MAIN_WINDOW_PRINT_CSS).toMatch(/#lightink-export-print-root[^}]*height:\s*auto\s*!important/s);
+    expect(MAIN_WINDOW_PRINT_CSS).toMatch(/#lightink-export-print-root[^}]*opacity:\s*1\s*!important/s);
+    expect(MAIN_WINDOW_PRINT_CSS).toMatch(/#lightink-export-print-root[^}]*overflow:\s*visible\s*!important/s);
+  });
+});
+
 describe('runPrint', () => {
   it('装配好的 HTML 交给注入的 print 实现', () => {
     const print = vi.fn();
@@ -187,5 +198,39 @@ describe('printViaMainWindow', () => {
     vi.advanceTimersByTime(60_000);
     expect(byId.get(EXPORT_ROOT_ID)?.parent).toBeNull();
     expect(byId.get(PRINT_STYLE_ID)?.parent).toBeNull();
+  });
+
+  it('导出样式裹进 @media print，避免屏幕上污染应用外壳', () => {
+    // 回归：导出 CSS 含全局 `body { max-width:860px; font-size:14px; ... }`，
+    // 若原样注入主文档，点导出 PDF 时应用界面被缩窄/字号变小。
+    // 断言这类 body 规则只出现在 @media print 块内（屏幕不生效）。
+    vi.useFakeTimers();
+    const win = {
+      print: vi.fn(),
+      focus: vi.fn(),
+      addEventListener: vi.fn(),
+      requestAnimationFrame: (cb: FrameRequestCallback): number => {
+        cb(0);
+        return 0;
+      },
+    } as unknown as Window;
+    const { doc } = makeFakeDocument();
+    const html = buildPrintHtml({
+      title: 't',
+      theme: 'warm-light',
+      bodyHtml: '<p>x</p>',
+      cssText: 'body { max-width: 860px; font-size: 14px; }',
+    });
+    printViaMainWindow(doc, html, win);
+
+    const style = doc.getElementById(PRINT_STYLE_ID);
+    const text = style?.textContent ?? '';
+    // 该 body 规则必须位于 @media print { ... } 之内。
+    expect(text).toMatch(/@media print\s*\{[\s\S]*\bbody\s*\{[^}]*max-width:\s*860px[^}]*\}/);
+    // 且不能在 @media print 块之外裸露（粗校验：去掉所有 @media print{...} 后无 body 规则）。
+    const outsidePrint = text.replace(/@media print\s*\{[\s\S]*?\n\}/g, '');
+    expect(outsidePrint).not.toMatch(/\bbody\s*\{/);
+
+    vi.useRealTimers();
   });
 });

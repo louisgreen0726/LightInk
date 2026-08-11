@@ -187,6 +187,76 @@ pub fn read_image_base64(
     )
 }
 
+// ---------------------------------------------------------------------------
+// 原生矢量文字 PDF 导出（Windows：WebView2 PrintToPdf）
+// ---------------------------------------------------------------------------
+//
+// `window.print()` → 系统打印对话框的路径依赖打印驱动，可能把内容栅格化成
+// 图片（无可选文字）。WebView2 的 `ICoreWebView2_7::PrintToPdf` 用 Chromium
+// PDF 引擎生成**含原生可选文字**的矢量 PDF，保真度与编辑器渲染一致。
+//
+// 流程：前端把导出文档装进 #lightink-export-print-root（@media print 仅它可见），
+// 弹保存对话框取 .pdf 路径，调本命令；本命令取主窗口 WebView2 控制器 →
+// CoreWebView2 → cast ICoreWebView2_7 → PrintToPdf 写入路径。回调经
+// webview2-com 的 wait_for_async_operation（带消息泵）同步等待，避免主线程
+// 阻塞死锁（COM 回调需消息循环派发）。
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::mpsc;
+
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows::core::Interface;
+
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+
+    window
+        .with_webview(move |wv: tauri::webview::PlatformWebview| {
+            let outcome = (|| -> Result<(), String> {
+                let controller = wv.controller();
+                let core = unsafe { controller.CoreWebView2() }
+                    .map_err(|e| format!("取 CoreWebView2 失败: {e}"))?;
+                let core7: ICoreWebView2_7 = core
+                    .cast()
+                    .map_err(|e| format!("当前 WebView2 运行时不支持 PrintToPdf: {e}"))?;
+
+                // 路径 → UTF-16 + NUL（PCWSTR 要求）。
+                let mut wide: Vec<u16> = std::ffi::OsStr::new(&path).encode_wide().collect();
+                wide.push(0);
+
+                PrintToPdfCompletedHandler::wait_for_async_operation(
+                    Box::new(move |handler| {
+                        let pcws = windows::core::PCWSTR::from_raw(wide.as_ptr());
+                        // 默认打印设置（背景由前端 @media print 强制浅色：深字白底，
+                        // 不依赖「打印背景」即清晰且为矢量文字）。
+                        unsafe { core7.PrintToPdf(pcws, None, &handler) }
+                            .map_err(webview2_com::Error::WindowsError)
+                    }),
+                    // 直接透传 COM 调用的 HRESULT 结果（成功/失败）。
+                    Box::new(|hr: windows::core::Result<()>, _success: bool| hr),
+                )
+                .map_err(|e| format!("PrintToPdf 失败: {e}"))
+            })();
+            let _ = tx.send(outcome);
+        })
+        .map_err(|e| format!("with_webview 失败: {e}"))?;
+
+    rx.recv()
+        .map_err(|_| "打印通道关闭（主线程未返回结果）".to_string())?
+}
+
+/// 非 Windows：原生 PrintToPdf 仅 WebView2（Windows）有；Linux/macOS 走
+/// `window.print()` 系统对话框（WebKitGTK/WKWebView 的「打印为 PDF」本就输出
+/// 矢量文字）。返回错误，由前端回退到打印对话框路径。
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn print_webview_to_pdf(_window: tauri::WebviewWindow, _path: String) -> Result<(), String> {
+    Err("当前平台不支持原生 PrintToPdf，请使用打印对话框".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

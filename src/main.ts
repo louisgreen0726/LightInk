@@ -61,7 +61,7 @@ import {
   type ExportServiceDeps,
   type ExportTabSnapshot,
 } from './export/export-service.js';
-import { printViaMainWindow } from './export/pdf-export.js';
+import { printToPdfFile, printViaMainWindow } from './export/pdf-export.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
@@ -142,6 +142,8 @@ let outline: OutlineView;
 let statusBar: StatusBar;
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
+/** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
+let lastActiveMenuKind: 'markdown' | 'reader' | null = null;
 
 /**
  * 活动 markdown 标签：reader 标签活动时返回 null，编辑器动作据此系统性空转。
@@ -150,6 +152,18 @@ let autosave: AutosaveController;
 function activeMarkdownTab(): MarkdownTabState | null {
   const tab = manager?.activeTab ?? null;
   return tab !== null && isMarkdownTab(tab) ? tab : null;
+}
+
+/**
+ * 活动 reader 标签：阅读态菜单动作据此取 reader 实例；markdown 标签活动或构造期
+ * 返回 null（菜单 enabled 回调安全空转）。
+ */
+function activeReaderTab(): ReaderTabState | null {
+  const tab = manager?.activeTab ?? null;
+  if (tab === null) {
+    return null;
+  }
+  return tab.kind === 'reader' ? tab : null;
 }
 
 /**
@@ -552,6 +566,19 @@ const exportDeps: ExportServiceDeps = {
   writeFile,
   // 主窗口 print：macOS/Linux WebKit 上 iframe.print 会静默失败（见 pdf-export）。
     printHtml: (html) => printViaMainWindow(document, html),
+  showPdfSaveDialog: async (defaultPath) => {
+    const selected = await save({
+      defaultPath,
+      filters: [
+        { name: 'PDF', extensions: ['pdf'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    return typeof selected === 'string' ? selected : null;
+  },
+  // 原生矢量 PDF（Windows WebView2 PrintToPdf）：含可选文字；失败回退 printHtml。
+  printPdfNative: (html, path) =>
+    printToPdfFile(document, html, () => invoke<void>('print_webview_to_pdf', { path })),
   reportError: (message, error) => {
     // eslint-disable-next-line no-console
     console.error(`[lightink/export] ${message}`, error);
@@ -660,6 +687,21 @@ shell = createAppShell(
       fontScale.reset();
     },
     getFontScaleLabel: () => fontScale.label,
+    // ---- reader 标签专用：阅读态菜单「标注」 ----
+    activeTabKind: () => manager?.activeTab?.kind ?? null,
+    isReaderAnnotationEnabled: () => activeReaderTab()?.reader.isAnnotationEnabled() ?? false,
+    isReaderSidebarVisible: () => activeReaderTab()?.reader.isSidebarVisible() ?? false,
+    onReaderAddBookmark: () => {
+      activeReaderTab()?.reader.addBookmark();
+    },
+    onReaderAddNote: () => {
+      activeReaderTab()?.reader.addNote();
+    },
+    onReaderToggleSidebar: () => {
+      activeReaderTab()?.reader.toggleSidebar();
+      // 刷新菜单勾选标记。
+      shell?.rebuildMenus();
+    },
     t: (key, vars) => i18n.t(key, vars),
     formatShortcut: (combo) => formatShortcutLabel(combo, isMac),
     getLocale: () => i18n.locale,
@@ -761,6 +803,12 @@ function renderTabBar(): void {
     },
   });
   syncDocumentTitle();
+  // markdown ↔ reader 切换时重建菜单（隐藏/显示「插入」与「标注」）。
+  const kind = manager.activeTab?.kind ?? null;
+  if (kind !== lastActiveMenuKind) {
+    lastActiveMenuKind = kind;
+    shell?.rebuildMenus();
+  }
 }
 
 /** Window identity for immersive shell: active title + dirty without a permanent tab strip. */

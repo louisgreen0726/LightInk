@@ -28,4 +28,14 @@ export interface ReaderInstance {
    * 标签时调用；失败由调用方上报，不阻断关闭流程。
    */
   destroy(): Promise<void>;
+  /** 在当前阅读位置添加书签（标注未启用时空操作）。 */
+  addBookmark(): void;
+  /** 在当前阅读位置添加笔记（经 prompt 取文本；标注未启用时空操作）。 */
+  addNote(): void;
+  /** 切换标注侧栏显隐（默认隐藏）。 */
+  toggleSidebar(): void;
+  /** 标注侧栏当前是否可见。 */
+  isSidebarVisible(): boolean;
+  /** 当前文档是否启用了标注（取决于 content_hash / 标注存储是否可用）。 */
+  isAnnotationEnabled(): boolean;
 }

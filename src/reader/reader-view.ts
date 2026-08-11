@@ -96,6 +96,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let annotations: Annotation[] = [];
   let contentHash: string | null = null;
   let sidebar: AnnotationSidebar | null = null;
+  /** 标注侧栏默认隐藏（用户显式打开才显示，且作为 flex 子项不再覆盖内容）。 */
+  let sidebarVisible = false;
   let loadedExt = '';
 
   const saveAnnotations = async (): Promise<void> => {
@@ -178,9 +180,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       onJump: (annotation) => {
         const loc = annotation.locator;
         if (loc.format === 'pdf' && pdfHandle !== null) {
-          if (pdfHandle.controller.setPage(loc.page)) {
-            void pdfHandle.rerender();
-          }
+          pdfHandle.scrollToPage(loc.page);
           return;
         }
         if (loc.format === 'cbz') {
@@ -205,6 +205,15 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     });
     root.appendChild(sidebar.element);
     sidebar.render(annotations);
+  };
+
+  /** 切换侧栏显隐：可见时确保已创建，并用 root class 驱动 CSS 布局（不再覆盖内容）。 */
+  const setSidebarVisible = (visible: boolean): void => {
+    sidebarVisible = visible;
+    if (visible) {
+      ensureSidebar();
+    }
+    root.classList.toggle('lightink-reader--sidebar', sidebarVisible);
   };
 
   /** 在容器文本节点中包裹高亮 quote（幂等：已存在的标注跳过；单文本节点命中）。 */
@@ -299,27 +308,33 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     ensureSidebar();
   };
 
-  // PDF 翻页/缩放：←/→ 翻页，+/- 缩放，0 还原。
+  // PDF 连续滚动：←/→ 滚到上/下一页，+/- 缩放，0 还原。
   root.addEventListener('keydown', (event) => {
     const handle = pdfHandle;
     if (handle === null) {
       return;
     }
-    let changed = false;
     if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
-      changed = handle.controller.prev();
-    } else if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
-      changed = handle.controller.next();
-    } else if (event.key === '+' || event.key === '=') {
-      changed = handle.controller.zoomIn();
-    } else if (event.key === '-' || event.key === '_') {
-      changed = handle.controller.zoomOut();
-    } else if (event.key === '0') {
-      changed = handle.controller.resetScale();
-    }
-    if (changed) {
+      handle.scrollToPage(handle.controller.page - 1);
       event.preventDefault();
-      void handle.rerender();
+    } else if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+      handle.scrollToPage(handle.controller.page + 1);
+      event.preventDefault();
+    } else if (event.key === '+' || event.key === '=') {
+      if (handle.controller.zoomIn()) {
+        event.preventDefault();
+        void handle.rerender();
+      }
+    } else if (event.key === '-' || event.key === '_') {
+      if (handle.controller.zoomOut()) {
+        event.preventDefault();
+        void handle.rerender();
+      }
+    } else if (event.key === '0') {
+      if (handle.controller.resetScale()) {
+        event.preventDefault();
+        void handle.rerender();
+      }
     }
   });
 
@@ -356,23 +371,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     selection?.removeAllRanges();
   });
 
-  // 标注工具栏：书签 / 笔记（标注启用时挂载）。
-  if (annotationsEnabled) {
-    const toolbar = document.createElement('div');
-    toolbar.className = 'lightink-reader-toolbar';
-    const bookmarkBtn = document.createElement('button');
-    bookmarkBtn.type = 'button';
-    bookmarkBtn.className = 'lightink-reader-toolbar-btn';
-    bookmarkBtn.textContent = t('annotation.kind.bookmark');
-    bookmarkBtn.addEventListener('click', () => addAnnotation('bookmark'));
-    const noteBtn = document.createElement('button');
-    noteBtn.type = 'button';
-    noteBtn.className = 'lightink-reader-toolbar-btn';
-    noteBtn.textContent = t('annotation.kind.note');
-    noteBtn.addEventListener('click', () => addAnnotation('note'));
-    toolbar.append(bookmarkBtn, noteBtn);
-    root.appendChild(toolbar);
-  }
+  // 书签 / 笔记改由菜单触发（见 ReaderInstance.addBookmark/addNote），不再挂浮动工具栏。
 
   return {
     async load(filePath: string): Promise<void> {
@@ -399,5 +398,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       sidebar = null;
       root.remove();
     },
+    addBookmark: () => {
+      if (annotationsEnabled) addAnnotation('bookmark');
+    },
+    addNote: () => {
+      if (annotationsEnabled) addAnnotation('note');
+    },
+    toggleSidebar: () => setSidebarVisible(!sidebarVisible),
+    isSidebarVisible: () => sidebarVisible,
+    isAnnotationEnabled: () => annotationsEnabled,
   };
 }

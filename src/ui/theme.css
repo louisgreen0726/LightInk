@@ -960,6 +960,9 @@ body.lightink-outline-resizing * {
   max-width: 100%;
   height: auto;
   pointer-events: none; /* dblclick lands on the container */
+  /* mermaid 输出固定 px 尺寸的 SVG，不随字号缩放；用 zoom 让其与正文/公式
+     按 Ctrl+/- 同比例放大缩小（超出容器宽度由 .lightink-mermaid 的 overflow-x 滚动）。 */
+  zoom: var(--lightink-font-scale, 1);
 }
 
 /* Diagram language chip accent while editing source. */

@@ -24,6 +24,14 @@ serde_json = "1"
 tempfile = "3"
 url = "2"
 
+# 仅 Windows：原生矢量文字 PDF 导出（WebView2 PrintToPdf）。
+# webview2-com 提供 ICoreWebView2_7 / PrintToPdf 与异步回调（wait_with_pump）；
+# tauri-runtime-wry 暴露 Webview（含 controller）；windows 提供 core 类型（Interface/PCWSTR/HRESULT）。
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+tauri-runtime-wry = "2.11"
+windows = "0.61"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)', 'cfg(desktop)'] }
 

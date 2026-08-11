@@ -151,4 +151,39 @@ describe('exportActiveTabPdf', () => {
     await expect(exportActiveTabPdf(deps)).resolves.toBe(false);
     expect(deps.printHtml).not.toHaveBeenCalled();
   });
+
+  it('提供原生 PDF 路径时优先走原生（含可选文字），不触发 printHtml', async () => {
+    const printPdfNative = vi.fn(async () => undefined);
+    const showPdfSaveDialog = vi.fn(async () => 'C:\\out\\笔记.pdf');
+    const deps = makeDeps({ printPdfNative, showPdfSaveDialog });
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(true);
+    expect(showPdfSaveDialog).toHaveBeenCalledWith('笔记.pdf');
+    expect(printPdfNative).toHaveBeenCalledTimes(1);
+    expect(deps.printHtml).not.toHaveBeenCalled();
+  });
+
+  it('原生保存对话框取消 → false 且不打印', async () => {
+    const printPdfNative = vi.fn(async () => undefined);
+    const deps = makeDeps({
+      printPdfNative,
+      showPdfSaveDialog: vi.fn(async () => null),
+    });
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(false);
+    expect(printPdfNative).not.toHaveBeenCalled();
+    expect(deps.printHtml).not.toHaveBeenCalled();
+  });
+
+  it('原生失败 → 回退到 printHtml（打印对话框）', async () => {
+    const printPdfNative = vi.fn(async () => {
+      throw new Error('unsupported');
+    });
+    const deps = makeDeps({
+      printPdfNative,
+      showPdfSaveDialog: vi.fn(async () => 'C:\\out\\笔记.pdf'),
+    });
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(true);
+    expect(printPdfNative).toHaveBeenCalled();
+    expect(deps.printHtml).toHaveBeenCalledTimes(1); // 回退
+    expect(deps.reportError).toHaveBeenCalled();
+  });
 });

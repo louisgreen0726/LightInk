@@ -49,6 +49,13 @@ export interface ExportServiceDeps {
   readonly writeFile: (path: string, content: string) => Promise<void>;
   /** 触发打印（生产为 printViaHiddenIframe）。 */
   readonly printHtml: (html: string) => void;
+  /** 「导出 PDF」原生保存对话框（生产为 .pdf 过滤）；用户取消返回 null。可选。 */
+  readonly showPdfSaveDialog?: (defaultPath?: string) => Promise<string | null>;
+  /**
+   * 原生矢量 PDF 导出（生产为挂导出根 + invoke('print_webview_to_pdf')）。
+   * 可选：提供时优先走原生路径（含可选文字）；失败/缺省回退到 printHtml。
+   */
+  readonly printPdfNative?: (html: string, path: string) => Promise<void>;
   readonly reportError: (message: string, error: unknown) => void;
 }
 
@@ -150,6 +157,26 @@ export async function exportActiveTabPdf(deps: ExportServiceDeps): Promise<boole
     deps.reportError('没有可导出的活动标签', null);
     return false;
   }
-  runPrint(buildPrintHtml(assembled.options), deps.printHtml);
+  const html = buildPrintHtml(assembled.options);
+
+  // 优先原生矢量 PDF（Windows WebView2 PrintToPdf）：含可选文字、保真度最高。
+  if (deps.showPdfSaveDialog !== undefined && deps.printPdfNative !== undefined) {
+    const target = await deps.showPdfSaveDialog(
+      defaultExportFileName(assembled.options.title).replace(/\.html$/i, '.pdf'),
+    );
+    if (target === null) {
+      return false; // 用户取消
+    }
+    try {
+      await deps.printPdfNative(html, target);
+      return true;
+    } catch (error) {
+      // 原生失败（平台不支持 / 运行时缺接口）→ 回退到打印对话框。
+      deps.reportError('原生 PDF 导出失败，改用打印对话框', error);
+    }
+  }
+
+  // 回退：window.print() 系统对话框（Linux/macOS 主路径；Windows 兜底）。
+  runPrint(html, deps.printHtml);
   return true;
 }

@@ -13,13 +13,15 @@
   background: var(--lightink-bg);
   color: var(--lightink-fg);
   font-family: var(--lightink-font-body);
-  /* 字号缩放：复用编辑器同一因子，Ctrl + / - 在阅读视图内同样生效。 */
-  font-size: calc(var(--lightink-font-size) * var(--lightink-font-scale));
+  /* 基础字号；整体缩放交给各内容宿主的 `zoom`（见下），避免与字号乘子叠加。 */
+  font-size: var(--lightink-font-size);
   line-height: 1.7;
   overflow: hidden;
 }
 
-/* 流式格式：居中栏宽 + 垂直滚动阅读（EPUB/MOBI/FB2/TXT）。 */
+/* 流式格式：居中栏宽 + 垂直滚动阅读（EPUB/MOBI/FB2/TXT）。
+   zoom 让 Ctrl+/- 整体放大缩小「整个阅读区」（文字/图片/公式/SVG 一同比例），
+   而非只放大文字。 */
 .lightink-reader-scroll {
   flex: 1;
   overflow-y: auto;
@@ -27,15 +29,25 @@
   max-width: var(--lightink-reader-content-width);
   margin: 0 auto;
   padding: 2rem 1.25rem 4rem;
+  zoom: var(--lightink-font-scale, 1);
 }
 
-/* 页式格式：逐页浏览（PDF/CBZ）。默认隐藏，T5 激活页模式时显示。 */
+/* 页式格式：连续垂直滚动（PDF/CBZ）。默认隐藏，T5 激活页模式时显示。
+   zoom 让 Ctrl+/- 整体放大缩小整个 PDF/CBZ 页面（与流式同一缩放因子）。 */
 .lightink-reader-pages {
   display: none;
   flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  zoom: var(--lightink-font-scale, 1);
 }
 .lightink-reader-pages[data-reader-active='true'] {
-  display: flex;
+  display: block;
+}
+
+/* PDF 连续滚动：每页一个 slot 占位，懒栅格化 canvas。 */
+.lightink-reader-page-slot {
+  margin: 0 auto 1rem;
 }
 
 /* 空态占位：T4/T5 填充内容前的默认显示。 */
@@ -47,12 +59,9 @@
   padding: 4rem 1rem;
 }
 
-/* 页式格式：逐页图片/canvas（PDF/CBZ，T5）。 */
+/* 页式格式：canvas（PDF 连续滚动 slot 内 / CBZ 逐页）。 */
 .lightink-reader-page {
   display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 0 auto 1rem;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
 }
 
@@ -77,37 +86,19 @@
   cursor: pointer;
 }
 
-/* 标注工具栏：书签 / 笔记（T6，覆盖在阅读区左上）。 */
-.lightink-reader-toolbar {
-  position: absolute;
-  top: 0.5rem;
-  left: 0.5rem;
-  display: flex;
-  gap: 0.4rem;
-  z-index: 2;
-}
-.lightink-reader-toolbar-btn {
-  cursor: pointer;
-  background: var(--lightink-bg-elevated);
-  border: 1px solid color-mix(in srgb, var(--lightink-fg) 15%, transparent);
-  border-radius: 4px;
-  padding: 0.2rem 0.6rem;
-  font-size: 0.85em;
-  color: var(--lightink-fg);
-}
-
-/* 标注侧栏（T6，覆盖在阅读区右侧）。 */
+/* 标注侧栏（T6）：默认隐藏，开启时作为 flex 子项占位（不再覆盖正文右侧）。
+   .lightink-reader--sidebar 由 reader-view 在 toggleSidebar 时加到根节点。 */
 .lightink-reader-sidebar {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  flex: 0 0 16rem;
   width: 16rem;
   overflow-y: auto;
   background: var(--lightink-bg-elevated);
   border-left: 1px solid color-mix(in srgb, var(--lightink-fg) 12%, transparent);
   padding: 0.75rem;
   font-size: 0.9em;
+}
+.lightink-reader:not(.lightink-reader--sidebar) .lightink-reader-sidebar {
+  display: none;
 }
 .lightink-reader-sidebar-header {
   font-weight: 600;
