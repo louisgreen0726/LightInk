@@ -14,12 +14,19 @@ import { ParseError } from './formats/types.js';
 import { renderCbzInto, type CbzRenderHandle } from './formats/cbz.js';
 import { renderPdfInto, type PdfRenderHandle } from './formats/pdf.js';
 import {
+  AnnotationWriteQueue,
   parseAnnotations,
   serializeAnnotations,
   type Annotation,
   type AnnotationKind,
   type Locator,
 } from './annotations.js';
+import {
+  flowLocatorFromRange,
+  markTextRange,
+  removeTextRangeMarks,
+  resolveTextQuoteRange,
+} from './annotation-locator.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
 import type { ReaderInstance, ReaderLoadOptions } from './types.js';
 import {
@@ -164,6 +171,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let destroyed = false;
   let flowRenderGeneration = 0;
   let flowContentDispose: (() => void) | null = null;
+  const annotationWriteQueue = new AnnotationWriteQueue();
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
 
@@ -194,11 +202,18 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (contentHash === null || deps.writeAnnotations === undefined) {
       return;
     }
-    try {
-      await deps.writeAnnotations(contentHash, serializeAnnotations(annotations));
-    } catch {
-      deps.notify?.(t('annotation.saveFailed'));
-    }
+    const saveHash = contentHash;
+    const json = serializeAnnotations(annotations);
+    await annotationWriteQueue.enqueue(
+      saveHash,
+      json,
+      deps.writeAnnotations,
+      () => {
+        if (!destroyed && contentHash === saveHash) {
+          deps.notify?.(t('annotation.saveFailed'));
+        }
+      },
+    );
   };
 
   /** 当前阅读位置的定位器（书签/笔记用）。 */
@@ -209,10 +224,30 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (cbzHandle !== null) {
       return { format: 'cbz', page: cbzHandle.currentPage };
     }
+    const chapter = firstVisibleChapter();
+    const article = scrollHost.querySelector<HTMLElement>(
+      `.lightink-reader-chapter[data-chapter-index="${chapter}"]`,
+    );
+    const body = article?.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')
+      ?.contentDocument?.body;
+    const text = body?.textContent ?? '';
+    const visibleOffset = Math.max(0, scrollHost.scrollTop - (article?.offsetTop ?? 0));
+    const progress =
+      article === null || article === undefined || article.offsetHeight <= 0
+        ? 0
+        : Math.min(1, visibleOffset / article.offsetHeight);
+    const start = Math.floor(text.length * progress);
+    const anchor = {
+      start,
+      end: start,
+      quote: '',
+      prefix: text.slice(Math.max(0, start - 32), start),
+      suffix: text.slice(start, start + 32),
+    };
     if (loadedExt === 'txt') {
-      return { format: 'text', start: 0, end: 0 };
+      return { format: 'text', ...anchor };
     }
-    return { format: 'flow', chapter: firstVisibleChapter(), domPath: '', start: 0, end: 0 };
+    return { format: 'flow', chapter, ...anchor };
   };
 
   /** 流式：视口顶部最近的章节索引。 */
@@ -287,15 +322,40 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
             ) ?? null,
           )
           .find((candidate): candidate is HTMLElement => candidate !== null);
-        const target =
-          mark ??
-          scrollHost.querySelector<HTMLElement>(
-            `[data-chapter-index="${loc.format === 'flow' ? loc.chapter : 0}"]`,
+        if (mark !== undefined) {
+          mark.scrollIntoView({ block: 'center' });
+          return;
+        }
+        if (loc.format === 'flow' || loc.format === 'text') {
+          const chapter = loc.format === 'flow' ? loc.chapter : 0;
+          const frame = scrollHost.querySelector<HTMLIFrameElement>(
+            `.lightink-reader-chapter-frame[data-chapter-index="${chapter}"]`,
           );
-        target?.scrollIntoView({ block: 'center' });
+          const range =
+            frame?.contentDocument === null || frame?.contentDocument === undefined
+              ? null
+              : resolveTextQuoteRange(frame.contentDocument.body, loc);
+          const boundary = range?.startContainer;
+          const target =
+            boundary?.nodeType === Node.ELEMENT_NODE
+              ? (boundary as Element)
+              : boundary?.parentElement;
+          if (target !== undefined && target !== null) {
+            target.scrollIntoView({ block: 'center' });
+            return;
+          }
+        }
+        scrollHost
+          .querySelector<HTMLElement>(
+            `[data-chapter-index="${loc.format === 'flow' ? loc.chapter : 0}"]`,
+          )
+          ?.scrollIntoView({ block: 'center' });
       },
       onRemove: (annotation) => {
         annotations = annotations.filter((a) => a.id !== annotation.id);
+        for (const doc of flowDocuments()) {
+          removeTextRangeMarks(doc.body, annotation.id);
+        }
         sidebar?.render(annotations);
         void saveAnnotations();
       },
@@ -337,43 +397,30 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       ) {
         continue;
       }
-      const quote = hl.quote ?? '';
-      if (quote.length === 0) {
+      const locator = hl.locator;
+      if (locator.format !== 'flow' && locator.format !== 'text') {
         continue;
       }
-      const preferredChapter =
-        hl.locator.format === 'flow' ? documents[hl.locator.chapter] : documents[0];
-      const candidates =
-        preferredChapter === undefined
-          ? documents
-          : [preferredChapter, ...documents.filter((doc) => doc !== preferredChapter)];
-      let rendered = false;
-      for (const doc of candidates) {
-        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
-        let node: Text | null;
-        while ((node = walker.nextNode() as Text | null) !== null) {
-          const idx = node.nodeValue?.indexOf(quote) ?? -1;
-          if (idx >= 0 && node.nodeValue !== null) {
-            const range = doc.createRange();
-            range.setStart(node, idx);
-            range.setEnd(node, idx + quote.length);
-            const mark = doc.createElement('mark');
-            mark.className = 'lightink-reader-highlight';
-            mark.dataset.annotationId = hl.id;
-            mark.appendChild(range.extractContents());
-            range.insertNode(mark);
-            rendered = true;
-            break;
-          }
-        }
-        if (rendered) {
-          break;
-        }
+      const chapter = locator.format === 'flow' ? locator.chapter : 0;
+      const frame = scrollHost.querySelector<HTMLIFrameElement>(
+        `.lightink-reader-chapter-frame[data-chapter-index="${chapter}"]`,
+      );
+      const doc = frame?.contentDocument;
+      if (doc === null || doc === undefined) {
+        continue;
+      }
+      const range = resolveTextQuoteRange(doc.body, locator);
+      if (range !== null && !range.collapsed) {
+        markTextRange(doc.body, range, hl.id);
       }
     }
   };
 
-  const captureFlowSelection = (selection: Selection | null, chapter: number): void => {
+  const captureFlowSelection = (
+    selection: Selection | null,
+    chapter: number,
+    body: HTMLElement,
+  ): void => {
     if (deps.writeAnnotations === undefined) {
       return;
     }
@@ -381,13 +428,22 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (text.length === 0) {
       return;
     }
+    if (selection === null || selection.rangeCount === 0) {
+      return;
+    }
+    const locator = flowLocatorFromRange(
+      body,
+      selection.getRangeAt(0),
+      chapter,
+      loadedExt === 'txt' ? 'text' : 'flow',
+    );
+    if (locator === null) {
+      return;
+    }
     const annotation: Annotation = {
       id: newAnnotationId(),
       kind: 'highlight',
-      locator:
-        loadedExt === 'txt'
-          ? { format: 'text', start: 0, end: text.length }
-          : { format: 'flow', chapter, domPath: '', start: 0, end: 0 },
+      locator,
       quote: text,
       createdAt: Date.now(),
     };
@@ -476,7 +532,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
         };
         const onMouseUp = (): void => {
-          captureFlowSelection(frameWindow.getSelection(), frameChapter);
+          captureFlowSelection(frameWindow.getSelection(), frameChapter, frameDocument.body);
         };
         frameDocument.addEventListener('click', onClick);
         frameDocument.addEventListener('mouseup', onMouseUp);
@@ -633,6 +689,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       }
 
       activeLoadController?.abort();
+      annotationWriteQueue.invalidate();
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
@@ -744,6 +801,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       loadGeneration += 1;
       activeLoadController?.abort();
       activeLoadController = null;
+      annotationWriteQueue.invalidate();
       clearFlowBindings();
       const handle = pdfHandle;
       const cbz = cbzHandle;
