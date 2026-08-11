@@ -1,0 +1,21 @@
+import { readFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
+
+const themeCss = readFileSync(new URL('../theme.css', import.meta.url), 'utf8');
+const readerCss = readFileSync(new URL('../../reader/reader.css', import.meta.url), 'utf8');
+
+describe('accessibility media preferences', () => {
+  it('disables application motion when reduced motion is requested', () => {
+    expect(themeCss).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(themeCss).toContain('animation-duration: 0.01ms !important');
+    expect(themeCss).toContain('transition-duration: 0.01ms !important');
+  });
+
+  it('keeps focus and selected content visible in forced colors', () => {
+    expect(themeCss).toContain('@media (forced-colors: active)');
+    expect(themeCss).toContain('outline-color: Highlight');
+    expect(readerCss).toContain('@media (forced-colors: active)');
+    expect(readerCss).toContain('color: HighlightText');
+  });
+});
