@@ -1000,7 +1000,11 @@ autosave = createAutosave({
   storage: window.localStorage,
   tick: () => {
     commitActiveSourceMode();
-    void manager.autosaveDirtyTabs();
+    return manager.autosaveDirtyTabs();
+  },
+  onError: (error) => {
+    // eslint-disable-next-line no-console
+    console.error('[lightink/autosave] tick failed', error);
   },
 });
 

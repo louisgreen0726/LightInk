@@ -57,7 +57,7 @@ export interface AutosaveDeps {
   /** Optional storage (default: localStorage when available). Pass null to disable persistence. */
   storage?: StorageLike | null;
   /** 每次到点触发的保存动作（生产为 commit 源码态 + manager.autosaveDirtyTabs）。 */
-  tick: () => void;
+  tick: () => void | Promise<void>;
   /** 间隔毫秒，默认 30000（R14 固定时间制）。 */
   intervalMs?: number;
   /** 定时器注入（测试用 fake / 手动时钟）。 */
@@ -65,6 +65,8 @@ export interface AutosaveDeps {
   clearIntervalFn?: (handle: ReturnType<typeof setInterval>) => void;
   /** 初始开关覆盖（测试）；缺省从 storage 读取。 */
   initiallyEnabled?: boolean;
+  /** Optional error sink for rejected or synchronously throwing ticks. */
+  onError?: (error: unknown) => void;
 }
 
 export interface AutosaveController {
@@ -73,8 +75,8 @@ export interface AutosaveController {
   setEnabled(enabled: boolean): void;
   /** 切换开关；返回切换后的状态。 */
   toggle(): boolean;
-  /** 停止定时器（应用退出/测试清理）。 */
-  dispose(): void;
+  /** 停止定时器，并等待当前 tick 收口（应用退出/测试清理）。 */
+  dispose(): Promise<void>;
 }
 
 function resolveStorage(storage: StorageLike | null | undefined): StorageLike | null {
@@ -98,6 +100,15 @@ export function createAutosave(deps: AutosaveDeps): AutosaveController {
   const clearIntervalFn = deps.clearIntervalFn ?? ((handle) => clearInterval(handle));
   let enabled = deps.initiallyEnabled ?? loadAutosaveEnabled(storage);
   let timer: ReturnType<typeof setInterval> | null = null;
+  let running: Promise<void> | null = null;
+
+  function reportError(error: unknown): void {
+    try {
+      deps.onError?.(error);
+    } catch {
+      // Error reporting must not create a rejected timer task.
+    }
+  }
 
   function stopTimer(): void {
     if (timer !== null) {
@@ -109,8 +120,30 @@ export function createAutosave(deps: AutosaveDeps): AutosaveController {
   function syncTimer(): void {
     stopTimer();
     if (enabled) {
-      timer = setIntervalFn(() => deps.tick(), intervalMs);
+      timer = setIntervalFn(runTick, intervalMs);
     }
+  }
+
+  function runTick(): void {
+    if (running !== null) {
+      return;
+    }
+    let result: void | Promise<void>;
+    try {
+      result = deps.tick();
+    } catch (error) {
+      reportError(error);
+      return;
+    }
+    const pending = Promise.resolve(result).catch((error: unknown) => {
+      reportError(error);
+    });
+    running = pending;
+    void pending.then(() => {
+      if (running === pending) {
+        running = null;
+      }
+    });
   }
 
   syncTimer();
@@ -129,8 +162,9 @@ export function createAutosave(deps: AutosaveDeps): AutosaveController {
       syncTimer();
       return next;
     },
-    dispose() {
+    async dispose() {
       stopTimer();
+      await running;
     },
   };
 }

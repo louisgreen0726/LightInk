@@ -82,7 +82,7 @@ describe('自动保存偏好（localStorage）', () => {
 });
 
 describe('createAutosave 调度', () => {
-  it('默认关闭时不启动定时器；开启后到点触发 tick 并持久化', () => {
+  it('默认关闭时不启动定时器；开启后到点触发 tick 并持久化', async () => {
     const storage = makeStorage();
     const timer = makeManualTimer();
     const tick = vi.fn();
@@ -102,6 +102,8 @@ describe('createAutosave 调度', () => {
     expect(loadAutosaveEnabled(storage)).toBe(true);
 
     timer.fire();
+    await Promise.resolve();
+    await Promise.resolve();
     timer.fire();
     expect(tick).toHaveBeenCalledTimes(2);
 
@@ -145,6 +147,62 @@ describe('createAutosave 调度', () => {
     expect(timer.hasTimer()).toBe(false);
     timer.fire();
     expect(tick).not.toHaveBeenCalled();
+  });
+
+  it('skips overlapping ticks and resumes after the active tick settles', async () => {
+    const timer = makeManualTimer();
+    let finishTick: (() => void) | undefined;
+    const tick = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishTick = resolve;
+        }),
+    );
+    const controller = createAutosave({
+      storage: makeStorage(),
+      tick,
+      initiallyEnabled: true,
+      setIntervalFn: timer.setIntervalFn,
+      clearIntervalFn: timer.clearIntervalFn,
+    });
+
+    timer.fire();
+    timer.fire();
+    expect(tick).toHaveBeenCalledOnce();
+    finishTick!();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    timer.fire();
+    expect(tick).toHaveBeenCalledTimes(2);
+    finishTick!();
+    await controller.dispose();
+  });
+
+  it('dispose waits for the active tick and prevents later ticks', async () => {
+    const timer = makeManualTimer();
+    let finishTick: (() => void) | undefined;
+    const tick = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishTick = resolve;
+        }),
+    );
+    const controller = createAutosave({
+      storage: makeStorage(),
+      tick,
+      initiallyEnabled: true,
+      setIntervalFn: timer.setIntervalFn,
+      clearIntervalFn: timer.clearIntervalFn,
+    });
+    timer.fire();
+    const disposed = controller.dispose();
+    expect(timer.hasTimer()).toBe(false);
+    timer.fire();
+    expect(tick).toHaveBeenCalledOnce();
+
+    finishTick!();
+    await disposed;
   });
 });
 

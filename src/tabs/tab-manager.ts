@@ -431,7 +431,7 @@ export class TabManager {
 
   /** 保存：原子写成功 → 清脏标记 + 清对应崩溃快照。失败保持脏标记。 */
   async saveTab(id: string): Promise<boolean> {
-    if (this.closingTabs.has(id)) {
+    if (this.closingAll !== null || this.closingTabs.has(id)) {
       return false;
     }
     return this.enqueueSave(id, () => this.performSaveTab(id));
@@ -468,7 +468,7 @@ export class TabManager {
 
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
   async saveTabAs(id: string): Promise<boolean> {
-    if (this.closingTabs.has(id)) {
+    if (this.closingAll !== null || this.closingTabs.has(id)) {
       return false;
     }
     return this.enqueueSave(id, () => this.performSaveTabAs(id));
@@ -627,6 +627,7 @@ export class TabManager {
         }
       }
     }
+    await Promise.all(targets.map((tab) => this.saveQueues.get(tab.id)));
 
     // A tab created or individually removed while native dialogs were open
     // invalidates the preflight. Keep the current workspace instead of
@@ -1114,7 +1115,7 @@ export class TabManager {
    * 否则后续手动保存的保存前闸门会被绕过（R13 核心禁令）。
    */
   async autosaveDirtyTabs(): Promise<void> {
-    if (this.externalDialogOpen || this.externalCheckRunning) {
+    if (this.closingAll !== null || this.externalDialogOpen || this.externalCheckRunning) {
       return;
     }
     for (const tab of [...this.tabs]) {
