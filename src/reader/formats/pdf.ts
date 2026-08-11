@@ -7,6 +7,7 @@
  */
 
 import { ParseError } from './types.js';
+import { enforcePageCount } from './page-limits.js';
 
 /** 缩放档位（与字号缩放独立，PDF 像素级）。 */
 export const PDF_SCALE_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -135,6 +136,12 @@ export async function renderPdfInto(
     doc = await loadingTask.promise;
   } catch {
     throw new ParseError('PDF 文件损坏或无法解析');
+  }
+  try {
+    enforcePageCount('pdf', doc.numPages);
+  } catch (error) {
+    await loadingTask.destroy().catch(() => undefined);
+    throw error;
   }
   const controller = createPdfPageController(doc.numPages);
   const total = controller.totalPages;

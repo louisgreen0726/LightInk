@@ -117,6 +117,8 @@ const en: Dict = {
     'An archive entry is too large ({actual} bytes; limit {limit} bytes).',
   'reader.limit.archiveCompressionRatio':
     'An archive entry has an unsafe compression ratio ({actual}:1; limit {limit}:1).',
+  'reader.limit.pdfPages': 'PDF has too many pages ({actual}; limit {limit}).',
+  'reader.limit.cbzPages': 'CBZ has too many image pages ({actual}; limit {limit}).',
   'reader.remoteImageLoad': 'Load remote image',
   'annotation.sidebar': 'Annotations',
   'annotation.empty': 'No annotations yet. Select text to highlight.',
@@ -349,6 +351,8 @@ const zhCN: Dict = {
     '压缩包中的单个条目过大（实际 {actual} 字节；上限 {limit} 字节）。',
   'reader.limit.archiveCompressionRatio':
     '压缩包中的条目压缩比不安全（实际 {actual}:1；上限 {limit}:1）。',
+  'reader.limit.pdfPages': 'PDF 页数过多（实际 {actual}；上限 {limit}）。',
+  'reader.limit.cbzPages': 'CBZ 图片页数过多（实际 {actual}；上限 {limit}）。',
   'reader.remoteImageLoad': '加载远程图片',
   'annotation.sidebar': '标注',
   'annotation.empty': '暂无标注。选中正文即可添加高亮。',

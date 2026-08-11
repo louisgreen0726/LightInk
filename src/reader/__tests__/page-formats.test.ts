@@ -8,7 +8,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { listImageEntries, naturalCompare } from '../formats/cbz.js';
+import {
+  enforcePageCount,
+  MAX_CBZ_PAGES,
+  MAX_PDF_PAGES,
+} from '../formats/page-limits.js';
 import { createPdfPageController, PDF_SCALE_STEPS } from '../formats/pdf.js';
+import { ReaderLimitError } from '../formats/types.js';
 
 describe('CBZ listImageEntries', () => {
   it('只保留图片扩展名，过滤目录项与非图片', () => {
@@ -91,5 +97,27 @@ describe('createPdfPageController', () => {
   it('totalPages 至少为 1', () => {
     expect(createPdfPageController(0).totalPages).toBe(1);
     expect(createPdfPageController(-3).totalPages).toBe(1);
+  });
+});
+
+describe('reader page limits', () => {
+  it('accepts PDF and CBZ counts exactly at their limits', () => {
+    expect(() => enforcePageCount('pdf', MAX_PDF_PAGES)).not.toThrow();
+    expect(() => enforcePageCount('cbz', MAX_CBZ_PAGES)).not.toThrow();
+  });
+
+  it('rejects one page over each limit with structured details', () => {
+    for (const [format, limit, kind] of [
+      ['pdf', MAX_PDF_PAGES, 'pdfPages'],
+      ['cbz', MAX_CBZ_PAGES, 'cbzPages'],
+    ] as const) {
+      try {
+        enforcePageCount(format, limit + 1);
+        throw new Error('expected page validation to fail');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ReaderLimitError);
+        expect(error).toMatchObject({ kind, actual: limit + 1, limit });
+      }
+    }
   });
 });

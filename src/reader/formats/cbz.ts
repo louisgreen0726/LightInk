@@ -8,6 +8,7 @@
 
 import { ParseError } from './types.js';
 import { openSafeArchive } from './safe-archive.js';
+import { enforcePageCount } from './page-limits.js';
 
 const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 
@@ -77,6 +78,7 @@ export async function renderCbzInto(bytes: Uint8Array, container: HTMLElement): 
     if (images.length === 0) {
       throw new ParseError('CBZ 未找到图片页');
     }
+    enforcePageCount('cbz', images.length);
     container.replaceChildren();
     for (const name of images) {
       const file = archive.file(name);
