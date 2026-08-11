@@ -141,6 +141,52 @@ describe('parseFb2', () => {
     expect(content.chapters[0]!.html).toContain('<em>世界</em>');
     expect(content.chapters[1]!.html).toContain('<strong>加粗</strong>');
   });
+
+  it('恢复允许的 embedded image，并在 dispose 时释放 URL', () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    const revoked: string[] = [];
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:fb2-cover',
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: (url: string) => revoked.push(url),
+    });
+    try {
+      const content = parseFb2(
+        enc(`<?xml version="1.0"?>
+<FictionBook xmlns:l="http://www.w3.org/1999/xlink">
+  <body><section><title><p>图章</p></title><p>正文</p><image l:href="#cover"/></section></body>
+  <binary id="cover" content-type="image/png">aGVsbG8=</binary>
+</FictionBook>`),
+      );
+      const body = document.createElement('div');
+      body.innerHTML = content.chapters[0]!.html;
+      expect(body.querySelector('img')?.getAttribute('src')).toBe('blob:fb2-cover');
+      content.dispose?.();
+      content.dispose?.();
+      expect(revoked).toEqual(['blob:fb2-cover']);
+    } finally {
+      if (originalCreate === undefined) Reflect.deleteProperty(URL, 'createObjectURL');
+      else Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      if (originalRevoke === undefined) Reflect.deleteProperty(URL, 'revokeObjectURL');
+      else Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+    }
+  });
+
+  it('拒绝损坏 XML，且不物化不允许的图片 MIME', () => {
+    expect(() => parseFb2(enc('<FictionBook><body>'))).toThrow(ParseError);
+    const content = parseFb2(
+      enc(`<?xml version="1.0"?>
+<FictionBook xmlns:l="http://www.w3.org/1999/xlink">
+  <body><section><image l:href="#vector"/></section></body>
+  <binary id="vector" content-type="image/svg+xml">PHN2Zy8+</binary>
+</FictionBook>`),
+    );
+    expect(content.chapters[0]!.html).not.toContain('<img');
+  });
 });
 
 describe('parseEpub', () => {

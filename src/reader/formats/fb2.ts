@@ -1,127 +1,243 @@
-/**
- * `fb2` — FictionBook 2 解析（ebook-reader T4）。
- *
- * FB2 是结构化 XML：把 <section> 映射为章节，把 FB2 语义标签转换为 HTML
- * （emphasis→em、strikethrough→s、poem/stanza/v、cite→blockquote 等），剥离
- * 包裹标签（section/body/FictionBook/annotation 等，保留内部文本），结果经
- * sanitizeHtml 消毒。纯字符串实现（无 DOMParser），node 可测；FB2 文本应为 UTF-8。
- */
+/** Structured FictionBook 2 parser with bounded embedded-image support. */
 
 import { sanitizeHtml } from '../sanitize.js';
-import type { ReaderContent } from './types.js';
+import {
+  MAX_READER_IMAGE_BYTES,
+  SAFE_READER_IMAGE_MIME_TYPES,
+} from './resource-limits.js';
+import { ParseError, ReaderLimitError, type ReaderContent } from './types.js';
 
-/** FB2 标签 → HTML 标签的成对改名（开/闭一并）。 */
-const RENAMES: ReadonlyArray<readonly [RegExp, string]> = [
-  [/<(\/?)emphasis\b[^>]*>/gi, '<$1em>'],
-  [/<(\/?)strikethrough\b[^>]*>/gi, '<$1s>'],
-  [/<(\/?)strong\b[^>]*>/gi, '<$1strong>'],
-  [/<(\/?)code\b[^>]*>/gi, '<$1code>'],
-  [/<(\/?)sub\b[^>]*>/gi, '<$1sub>'],
-  [/<(\/?)sup\b[^>]*>/gi, '<$1sup>'],
-  [/<(\/?)poem\b[^>]*>/gi, '<$1div>'],
-  [/<(\/?)stanza\b[^>]*>/gi, '<$1p>'],
-  [/<(\/?)epigraph\b[^>]*>/gi, '<$1blockquote>'],
-  [/<(\/?)cite\b[^>]*>/gi, '<$1blockquote>'],
-  [/<(\/?)text-author\b[^>]*>/gi, '<$1p>'],
-  [/<(\/?)subtitle\b[^>]*>/gi, '<$1p>'],
-];
-
-/** 保留的 HTML 容器标签（其余标签剥离但保留内部文本）。 */
-const KEEP_TAGS = new Set([
-  'p', 'em', 'strong', 's', 'code', 'sub', 'sup', 'br', 'hr',
-  'div', 'blockquote', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'td', 'th',
+const HTML_TAGS = new Set([
+  'a',
+  'blockquote',
+  'br',
+  'code',
+  'div',
+  'em',
+  'p',
+  's',
+  'strong',
+  'sub',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'th',
+  'thead',
+  'tr',
 ]);
+
+const FB2_TAG_MAP: Readonly<Record<string, string>> = {
+  emphasis: 'em',
+  strikethrough: 's',
+  poem: 'div',
+  stanza: 'div',
+  epigraph: 'blockquote',
+  cite: 'blockquote',
+  'text-author': 'p',
+  subtitle: 'p',
+  v: 'p',
+};
 
 function decodeText(bytes: Uint8Array): string {
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
-function decodeXmlEntities(s: string): string {
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_m, d) => safeFromCodePoint(Number(d)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => safeFromCodePoint(parseInt(h, 16)))
-    .replace(/&amp;/g, '&');
+function attribute(element: Element, names: readonly string[]): string | null {
+  for (const name of names) {
+    const value = element.getAttribute(name);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
 }
 
-function safeFromCodePoint(code: number): string {
-  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) {
-    return '';
+function decodeEmbeddedImage(base64: string): Uint8Array | null {
+  const compact = base64.replace(/\s+/g, '');
+  if (compact === '' || !/^[a-z0-9+/]*={0,2}$/i.test(compact)) {
+    return null;
   }
+  const padding = compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0;
+  const expectedBytes = Math.floor((compact.length * 3) / 4) - padding;
+  if (expectedBytes > MAX_READER_IMAGE_BYTES) {
+    throw new ReaderLimitError(
+      'readerImageBytes',
+      expectedBytes,
+      MAX_READER_IMAGE_BYTES,
+    );
+  }
+  let binary: string;
   try {
-    return String.fromCodePoint(code);
+    binary = atob(compact);
   } catch {
-    return '';
+    return null;
+  }
+  if (binary.length > MAX_READER_IMAGE_BYTES) {
+    throw new ReaderLimitError(
+      'readerImageBytes',
+      binary.length,
+      MAX_READER_IMAGE_BYTES,
+    );
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+interface Fb2Resources {
+  imageUrl(id: string): string | null;
+  dispose(): void;
+}
+
+function createResources(xml: XMLDocument): Fb2Resources {
+  const binaries = new Map<string, Element>();
+  for (const binary of xml.querySelectorAll('binary[id]')) {
+    const id = binary.getAttribute('id')?.trim() ?? '';
+    if (id !== '') {
+      binaries.set(id, binary);
+    }
+  }
+  const urls = new Map<string, string>();
+  return {
+    imageUrl(id) {
+      const existing = urls.get(id);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const binary = binaries.get(id);
+      if (binary === undefined) {
+        return null;
+      }
+      const mediaType = (binary.getAttribute('content-type') ?? '').trim().toLowerCase();
+      if (!SAFE_READER_IMAGE_MIME_TYPES.has(mediaType)) {
+        return null;
+      }
+      const data = decodeEmbeddedImage(binary.textContent ?? '');
+      if (data === null) {
+        return null;
+      }
+      const imageBytes = Uint8Array.from(data);
+      const url = URL.createObjectURL(new Blob([imageBytes.buffer], { type: mediaType }));
+      urls.set(id, url);
+      return url;
+    },
+    dispose() {
+      for (const url of urls.values()) {
+        URL.revokeObjectURL(url);
+      }
+      urls.clear();
+    },
+  };
+}
+
+function appendChildren(
+  source: Node,
+  target: Node,
+  html: Document,
+  resources: Fb2Resources,
+): void {
+  for (const child of source.childNodes) {
+    target.appendChild(convertNode(child, html, resources));
   }
 }
 
-function firstMatch(s: string, re: RegExp): string | null {
-  const m = s.match(re);
-  return m && m[1] !== undefined ? m[1] : null;
-}
-
-/** 把 FB2 片段（不含 <title>）转换为 HTML：语义改名、链接/换行/图片处理、剥离未知标签。 */
-function fb2ToHtml(fragment: string): string {
-  let s = fragment;
-  for (const [re, rep] of RENAMES) {
-    s = s.replace(re, rep);
+function convertNode(source: Node, html: Document, resources: Fb2Resources): Node {
+  if (source.nodeType === Node.TEXT_NODE) {
+    return html.createTextNode(source.nodeValue ?? '');
   }
-  // l:href="#id" / l:href="url" → href。
-  s = s.replace(/<a\b([^>]*)\bl:href=(["'])#?([^"']*)\2/gi, '<a$1href="#$3"');
-  s = s.replace(/<a\b([^>]*)\bl:href=(["'])([^"']*)\2/gi, '<a$1href="$3"');
-  // 空行 / 诗行 / 图片。
-  s = s.replace(/<empty-line\s*\/?\s*>/gi, '<br>');
-  s = s.replace(/<v\b[^>]*>([\s\S]*?)<\/v>/gi, '$1<br>');
-  s = s.replace(/<image\b[^>]*\/?>/gi, '');
-  // 剥离非保留标签（保留内部文本）：section/title/body/annotation/coverpage/FictionBook 等。
-  s = s.replace(/<\/?([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g, (whole, name) => {
-    return KEEP_TAGS.has(String(name).toLowerCase()) ? whole : '';
-  });
-  return s;
-}
-
-/** 提取 <title>...</title> 的纯文本（去标签）作为章节标题。 */
-function extractTitle(fragment: string): string {
-  const titleMatch = fragment.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
-  if (titleMatch === null || titleMatch[1] === undefined) {
-    return '';
+  if (!(source instanceof Element)) {
+    return html.createDocumentFragment();
   }
-  return decodeXmlEntities(titleMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')).trim();
+  const name = source.localName.toLowerCase();
+  if (name === 'empty-line') {
+    return html.createElement('br');
+  }
+  if (name === 'image') {
+    const fragment = html.createDocumentFragment();
+    const reference = attribute(source, ['l:href', 'xlink:href', 'href'])?.trim() ?? '';
+    const id = reference.startsWith('#') ? reference.slice(1) : reference;
+    const url = id === '' ? null : resources.imageUrl(id);
+    if (url !== null) {
+      const image = html.createElement('img');
+      image.src = url;
+      image.alt = source.getAttribute('alt') ?? '';
+      fragment.appendChild(image);
+    }
+    return fragment;
+  }
+
+  const mapped = FB2_TAG_MAP[name] ?? (HTML_TAGS.has(name) ? name : null);
+  if (mapped === null) {
+    const fragment = html.createDocumentFragment();
+    appendChildren(source, fragment, html, resources);
+    return fragment;
+  }
+  const element = html.createElement(mapped);
+  if (mapped === 'a') {
+    const href = attribute(source, ['l:href', 'xlink:href', 'href']);
+    if (href !== null) {
+      element.setAttribute('href', href);
+    }
+  }
+  for (const name of ['colspan', 'rowspan'] as const) {
+    const value = source.getAttribute(name);
+    if (value !== null) {
+      element.setAttribute(name, value);
+    }
+  }
+  appendChildren(source, element, html, resources);
+  return element;
 }
 
-/**
- * 解析 FB2 字节为章节化阅读内容。取主 <body>（非注释体）的顶层 <section> 为章节；
- * 无 section 时整体作为一个章节。HTML 经消毒。
- */
+function chapterHtml(section: Element, resources: Fb2Resources): string {
+  const html = document.implementation.createHTMLDocument('');
+  const container = html.createElement('div');
+  for (const child of section.childNodes) {
+    if (child instanceof Element && child.localName.toLowerCase() === 'title') {
+      continue;
+    }
+    container.appendChild(convertNode(child, html, resources));
+  }
+  return sanitizeHtml(container.innerHTML);
+}
+
+/** Parse an FB2 document into chapters and lazily owned embedded-image URLs. */
 export function parseFb2(bytes: Uint8Array): ReaderContent {
-  const xml = decodeText(bytes);
-  const bookTitle = decodeXmlEntities(firstMatch(xml, /<book-title\b[^>]*>([\s\S]*?)<\/book-title>/i) ?? '').trim();
-
-  // 主 body（无 name 属性或 name="body"）。
-  const bodies = [...xml.matchAll(/<body\b([^>]*)>([\s\S]*?)<\/body>/gi)];
-  const main = bodies.find((b) => !/name=/i.test(b[1] ?? '')) ?? bodies[0];
-  const bodyXml = main ? (main[2] ?? '') : xml;
-
-  const chapters: ReaderContent['chapters'] = [];
-  const sectionRe = /<section\b[^>]*>([\s\S]*?)<\/section>/gi;
-  let m: RegExpExecArray | null;
-  let matched = false;
-  let idx = 0;
-  while ((m = sectionRe.exec(bodyXml)) !== null) {
-    matched = true;
-    const section = m[1] ?? '';
-    const title = extractTitle(section) || (idx === 0 && bookTitle ? bookTitle : `Section ${idx + 1}`);
-    const bodyHtml = fb2ToHtml(section.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, ''));
-    chapters.push({ title, html: sanitizeHtml(bodyHtml) });
-    idx += 1;
+  const xml = new DOMParser().parseFromString(decodeText(bytes), 'application/xml');
+  if (xml.querySelector('parsererror') !== null) {
+    throw new ParseError('FB2 XML 损坏或无法解析');
   }
-  if (!matched) {
-    const title = bookTitle;
-    const bodyHtml = fb2ToHtml(bodyXml.replace(/<title\b[^>]*>[\s\S]*?<\/title>/gi, ''));
-    chapters.push({ title, html: sanitizeHtml(bodyHtml) });
+  const resources = createResources(xml);
+  let returnedContent = false;
+  try {
+    const bookTitle = xml.querySelector('book-title')?.textContent?.trim() ?? '';
+    const bodies = Array.from(xml.getElementsByTagName('body'));
+    const mainBody = bodies.find((body) => !body.hasAttribute('name')) ?? bodies[0];
+    if (mainBody === undefined) {
+      throw new ParseError('FB2 缺少正文 body');
+    }
+    const sections = Array.from(mainBody.children).filter(
+      (child) => child.localName.toLowerCase() === 'section',
+    );
+    const chapterSources = sections.length === 0 ? [mainBody] : sections;
+    const chapters = chapterSources.map((section, index) => {
+      const title =
+        Array.from(section.children)
+          .find((child) => child.localName.toLowerCase() === 'title')
+          ?.textContent?.replace(/\s+/g, ' ')
+          .trim() ||
+        (index === 0 ? bookTitle : '') ||
+        `Section ${index + 1}`;
+      return { title, html: chapterHtml(section, resources) };
+    });
+    returnedContent = true;
+    return { chapters, dispose: resources.dispose };
+  } finally {
+    if (!returnedContent) {
+      resources.dispose();
+    }
   }
-  return { chapters };
 }
