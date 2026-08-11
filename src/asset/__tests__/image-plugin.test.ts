@@ -17,6 +17,7 @@ import { EditorState, type Transaction } from '@milkdown/prose/state';
 import type { EditorView } from '@milkdown/prose/view';
 
 import {
+  createImageAssetProsePlugin,
   insertImageAt,
   isRelativeAssetSrc,
   processImageDrop,
@@ -35,7 +36,7 @@ const schema = new Schema({
       atom: true,
       attrs: { src: { default: '' }, alt: { default: '' } },
     },
-    text: {},
+    text: { group: 'inline' },
   },
 });
 
@@ -54,6 +55,20 @@ function makeFakeView(posAtCoords?: { pos: number } | null): FakeView {
     },
     posAtCoords: () => posAtCoords ?? null,
   } as unknown as EditorView;
+  return { view, dispatched };
+}
+
+function makeTrackedView(plugin: ReturnType<typeof createImageAssetProsePlugin>): FakeView {
+  const dispatched: Transaction[] = [];
+  const rawView = {
+    state: EditorState.create({ schema, plugins: [plugin] }),
+    dispatch(tr: Transaction) {
+      dispatched.push(tr);
+      rawView.state = rawView.state.apply(tr);
+    },
+    posAtCoords: () => ({ pos: 1 }),
+  };
+  const view = rawView as unknown as EditorView;
   return { view, dispatched };
 }
 
@@ -145,6 +160,66 @@ describe('processImagePaste', () => {
     expect(await processImagePaste(view, event, deps)).toBe(false);
     expect(deps.saver).not.toHaveBeenCalled();
     expect(dispatched).toHaveLength(0);
+  });
+
+  it('maps the original insertion position while an image is being saved', async () => {
+    let finishSave: ((url: string) => void) | undefined;
+    const deps: ImageAssetDeps = {
+      saver: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            finishSave = resolve;
+          }),
+      ),
+      onError: vi.fn(),
+    };
+    const plugin = createImageAssetProsePlugin(deps);
+    const { view } = makeTrackedView(plugin);
+
+    const pending = processImagePaste(view, fakePasteEvent([1]), deps);
+    await vi.waitFor(() => expect(deps.saver).toHaveBeenCalledOnce());
+    view.dispatch(view.state.tr.insertText('typed while saving', 1));
+    finishSave!('assets/mapped.png');
+
+    await expect(pending).resolves.toBe(true);
+    const paragraph = view.state.doc.firstChild;
+    expect(paragraph?.child(0).text).toBe('typed while saving');
+    expect(paragraph?.child(1).type.name).toBe('image');
+    expect(paragraph?.child(1).attrs['src']).toBe('assets/mapped.png');
+  });
+
+  it('does not dispatch after the owning editor is destroyed', async () => {
+    let finishSave: ((url: string) => void) | undefined;
+    let markSaveFinished: (() => void) | undefined;
+    const saveFinished = new Promise<void>((resolve) => {
+      markSaveFinished = resolve;
+    });
+    const deps: ImageAssetDeps = {
+      saver: vi.fn(async () => {
+        const url = await new Promise<string>((resolve) => {
+          finishSave = resolve;
+        });
+        markSaveFinished!();
+        return url;
+      }),
+      onError: vi.fn(),
+    };
+    const plugin = createImageAssetProsePlugin(deps);
+    const { view, dispatched } = makeTrackedView(plugin);
+    const pluginView = plugin.spec.view?.(view);
+    const event = Object.assign(fakePasteEvent([1]), { preventDefault: vi.fn() });
+
+    expect(plugin.props.handlePaste?.call(plugin, view, event, null as never)).toBe(true);
+    await vi.waitFor(() => expect(deps.saver).toHaveBeenCalledOnce());
+    const dispatchesBeforeDestroy = dispatched.length;
+    pluginView?.destroy?.();
+    finishSave!('assets/late.png');
+    await saveFinished;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(dispatched).toHaveLength(dispatchesBeforeDestroy);
+    expect(imageUrlsOf(view.state.tr)).toEqual([]);
   });
 });
 
