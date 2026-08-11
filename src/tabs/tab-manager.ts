@@ -396,7 +396,13 @@ export class TabManager {
     const id = `tab-${this.counter}`;
     const host = this.deps.createHostElement(id);
     this.deps.attachHost(host);
-    const reader = await mountReader(host);
+    let reader: ReaderInstance;
+    try {
+      reader = await mountReader(host);
+    } catch (error) {
+      this.deps.detachHost(host);
+      throw error;
+    }
     const tab: ReaderTabState = {
       kind: 'reader',
       id,
@@ -824,28 +830,40 @@ export class TabManager {
     const id = `tab-${this.counter}`;
     const host = this.deps.createHostElement(id);
     this.deps.attachHost(host);
-    const editor = await this.deps.mountEditor(host, {
-      initialMarkdown: args.initialMarkdown,
-      onContentChanged: () => this.handleContentChanged(id),
-      // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
-      // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
-      // （sessionId = syntheticId），保存时由 saveTabAs 迁移。
-      assetSaver: createAssetSaver({
-        saveAsset: this.deps.saveAsset,
-        sessionId: args.syntheticId,
-        getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
-      }),
-      // 图片显示：文档内 assets/… 相对引用经 Rust 解析为 data URL（按标签缓存，
-      // 另存为后文档路径变化自动换键重解析）。
-      imageSrcResolver: createImageSrcResolver({
-        readImageBase64: this.deps.readImageBase64,
-        sessionId: args.syntheticId,
-        getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
-      }),
-      onAssetError: (message, error) => this.deps.reportError(message, error),
-      onLinkNavigate: this.deps.onLinkNavigate,
-      confirmLinkOpen: this.deps.confirmLinkOpen,
-    });
+    let editor: EditorInstance | null = null;
+    try {
+      editor = await this.deps.mountEditor(host, {
+        initialMarkdown: args.initialMarkdown,
+        onContentChanged: () => this.handleContentChanged(id),
+        // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
+        // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
+        // （sessionId = syntheticId），保存时由 saveTabAs 迁移。
+        assetSaver: createAssetSaver({
+          saveAsset: this.deps.saveAsset,
+          sessionId: args.syntheticId,
+          getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
+        }),
+        // 图片显示：文档内 assets/… 相对引用经 Rust 解析为 data URL（按标签缓存，
+        // 另存为后文档路径变化自动换键重解析）。
+        imageSrcResolver: createImageSrcResolver({
+          readImageBase64: this.deps.readImageBase64,
+          sessionId: args.syntheticId,
+          getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
+        }),
+        onAssetError: (message, error) => this.deps.reportError(message, error),
+        onLinkNavigate: this.deps.onLinkNavigate,
+        confirmLinkOpen: this.deps.confirmLinkOpen,
+      });
+      await editor.ready;
+    } catch (error) {
+      if (editor !== null) {
+        await editor.destroy().catch((destroyError: unknown) => {
+          this.deps.reportError('清理挂载失败的编辑器失败', destroyError);
+        });
+      }
+      this.deps.detachHost(host);
+      throw error;
+    }
     const tab: MarkdownTabState = {
       kind: 'markdown',
       id,
@@ -861,12 +879,7 @@ export class TabManager {
     this.tabs.push(tab);
     this.switchTab(id);
     // Immersive shell R4: after mount, place caret so typing can start without a click.
-    // ready is already resolved by mountEditor before return; still await for fakes/async mounts.
-    void tab.editor.ready.then(() => {
-      if (this.activeId === id) {
-        tab.editor.focus();
-      }
-    });
+    tab.editor.focus();
     return tab;
   }
 

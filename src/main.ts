@@ -188,12 +188,16 @@ async function readReaderBytes(filePath: string): Promise<Uint8Array> {
 /**
  * 按扩展名把路径路由到 markdown 编辑标签或只读 reader 标签，并加载/解析内容。
  * reader 标签：openReader 后调用 reader.load；解析失败（DRM/损坏）弹 i18n 错误提示，
- * 标签仍保留。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
+ * 失败标签会立即清理。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
  */
 async function openPathByKind(path: string): Promise<TabState | null> {
   if (!isReaderPath(path)) {
     return manager.openFile(path);
   }
+  const existing = manager.tabList.find(
+    (candidate): candidate is ReaderTabState =>
+      candidate.kind === 'reader' && candidate.filePath === path,
+  );
   let tab: ReaderTabState;
   try {
     tab = await manager.openReader(path);
@@ -202,14 +206,19 @@ async function openPathByKind(path: string): Promise<TabState | null> {
     console.error(`[lightink] 打开阅读文件失败: ${path}`, error);
     return null;
   }
+  if (existing === tab) {
+    return tab;
+  }
   try {
     await tab.reader.load(path);
   } catch (error) {
+    await manager.closeTab(tab.id).catch(() => false);
     const detail = error instanceof Error ? error.message : String(error ?? '');
     void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
       title: i18n.t('app.name'),
       kind: 'error',
     });
+    return null;
   }
   return tab;
 }

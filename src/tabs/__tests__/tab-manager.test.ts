@@ -146,6 +146,22 @@ describe('新建与切换', () => {
     expect(second.dirty).toBe(false);
   });
 
+  it('cleans up the host and partial editor when readiness fails', async () => {
+    const partial = {
+      ...makeFakeEditor(''),
+      ready: Promise.reject(new Error('editor failed')),
+    };
+    const harness = makeHarness({
+      mountEditor: vi.fn(async () => partial),
+    });
+
+    await expect(harness.manager.newTab()).rejects.toThrow('editor failed');
+
+    expect(partial.destroy).toHaveBeenCalledOnce();
+    expect(harness.deps.detachHost).toHaveBeenCalledOnce();
+    expect(harness.manager.tabList).toHaveLength(0);
+  });
+
   it('newTab focuses the editor after ready so typing can start', async () => {
     const { manager, editors } = makeHarness();
     await manager.newTab('开始书写。');
@@ -976,6 +992,21 @@ describe('reader 标签（只读，豁免可写路径）', () => {
     expect(editors).toHaveLength(0); // 未挂 Milkdown 编辑器
     expect(deps.mountReader).toHaveBeenCalledTimes(1);
     expect(manager.activeTabId).toBe(tab.id);
+  });
+
+  it('removes the host when reader mounting fails', async () => {
+    const { manager, deps } = makeHarness({
+      mountReader: vi.fn(async () => {
+        throw new Error('reader failed');
+      }),
+    });
+
+    await expect(manager.openReader('C:\\docs\\broken.epub')).rejects.toThrow(
+      'reader failed',
+    );
+
+    expect(deps.detachHost).toHaveBeenCalledOnce();
+    expect(manager.tabList).toHaveLength(0);
   });
 
   it('重复打开同一路径 reader 标签切换而非新建', async () => {
