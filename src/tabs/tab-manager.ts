@@ -451,10 +451,12 @@ export class TabManager {
     // 也不静默覆盖（R13 核心禁令）。reload/keep 中止本次保存；overwrite 继续。
     const disposition = await this.checkBeforeSave(tab);
     if (disposition !== 'proceed') {
+      await this.flushSnapshot(id);
       return false;
     }
     const ok = await saveToPathFlow(this.deps.roundtrip, tab.filePath, content);
     if (!ok) {
+      await this.flushSnapshot(id);
       return false;
     }
     return this.finalizeSuccessfulSave(tab, tab.filePath, content, [
@@ -486,6 +488,7 @@ export class TabManager {
       tab.filePath ?? undefined,
     );
     if (newPath === null) {
+      await this.flushSnapshot(id);
       return false;
     }
     const oldKey = snapshotKeyOf(tab);
@@ -784,16 +787,16 @@ export class TabManager {
     }
   }
 
-  /** 立即写入该标签的待处理快照，并等待该标签此前的全部快照操作。 */
+  /** 立即写入该标签当前的 dirty 内容，并等待此前的全部快照操作。 */
   flushSnapshot(id: string): Promise<void> {
     const timer = this.snapshotTimers.get(id);
     if (timer !== undefined) {
       clearTimeout(timer);
       this.snapshotTimers.delete(id);
-      const tab = this.tabs.find((t) => t.id === id);
-      if (tab !== undefined && tab.kind === 'markdown' && tab.dirty) {
-        return this.writeSnapshotNow(tab);
-      }
+    }
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab !== undefined && tab.kind === 'markdown' && tab.dirty) {
+      return this.writeSnapshotNow(tab);
     }
     return this.waitForSnapshotQueue(id);
   }

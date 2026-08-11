@@ -306,6 +306,7 @@ describe('保存与脏标记', () => {
     await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(false);
     expect(tab!.dirty).toBe(true);
     expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
+    expect(harness.deps.writeSnapshot).toHaveBeenCalledWith('C:\\a.md', '改动');
   });
 
   it('未命名标签保存转另存为，成功后迁移路径与标题', async () => {
@@ -341,6 +342,10 @@ describe('保存与脏标记', () => {
     expect(tab!.lastSavedMarkdown).toBe('磁盘内容');
     expect(tab!.dirty).toBe(true);
     expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
+    expect(harness.deps.writeSnapshot).toHaveBeenCalledWith(
+      'C:\\original.md',
+      'unsaved',
+    );
   });
 
   it('同一标签的后发保存等待前一次完成并读取最新内容', async () => {
