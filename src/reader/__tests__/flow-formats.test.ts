@@ -1,8 +1,10 @@
+// @vitest-environment jsdom
+
 /**
  * 流式格式解析测试（ebook-reader T4）。
  *
  * 纯函数单测：sanitize、TXT（UTF-8/GBK 回退）、FB2（XML→HTML）、EPUB（jszip 合成
- * 最小 epub）、MOBI（合成最小 PalmDOC，含 DRM 报错）。无 DOMParser 依赖。
+ * 最小 epub）、MOBI（合成最小 PalmDOC，含 DRM 报错）。
  */
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
@@ -23,11 +25,41 @@ describe('sanitizeHtml', () => {
     expect(sanitizeHtml('a<!-- secret -->b')).toBe('ab');
   });
 
-  it('移除事件处理器属性并中和危险 URL 协议', () => {
+  it('移除事件处理器属性并拒绝危险 URL 协议', () => {
     const out = sanitizeHtml('<a onclick="evil()" href="javascript:alert(1)">x</a>');
     expect(out).not.toContain('onclick');
-    expect(out).toContain('href="#"');
+    expect(out).not.toContain('href=');
     expect(out).not.toContain('javascript');
+  });
+
+  it('按 DOM 解码后的值拒绝协议绕过和危险属性', () => {
+    const out = sanitizeHtml(
+      '<a href="jav&#x61;script:alert(1)" style="position:fixed" ping="https://track">x</a>' +
+        '<img src="data:text/html;base64,PHNjcmlwdD4=" srcset="https://remote/x 2x" onerror="x">',
+    );
+    expect(out).toBe('<a>x</a><img>');
+  });
+
+  it('removes active containers, forms, SVG, and unknown elements', () => {
+    const out = sanitizeHtml(
+      '<form><input value="secret"><p>kept</p></form>' +
+        '<svg><script>alert(1)</script><circle></circle></svg>' +
+        '<custom-element><strong>text</strong></custom-element>',
+    );
+    expect(out).not.toMatch(/form|input|svg|script|circle|custom-element/i);
+    expect(out).toContain('<p>kept</p>');
+    expect(out).toContain('<strong>text</strong>');
+  });
+
+  it('keeps safe relative, fragment, and HTTP links', () => {
+    const out = sanitizeHtml(
+      '<a href="chapter-2.xhtml#part">next</a>' +
+        '<a href="#footnote">note</a>' +
+        '<a href="https://example.com/read">web</a>',
+    );
+    expect(out).toContain('href="chapter-2.xhtml#part"');
+    expect(out).toContain('href="#footnote"');
+    expect(out).toContain('href="https://example.com/read"');
   });
 
   it('保留阅读格式标签', () => {
