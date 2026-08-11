@@ -72,6 +72,7 @@ import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
+import { showExitConfirmation } from './ui/exit-confirmation.js';
 import { createStatusBar, type StatusBar } from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
@@ -80,6 +81,7 @@ import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
+import { createWindowCloseGuard } from './ui/window-lifecycle.js';
 import { showVersionsModal, type VersionMeta } from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
@@ -1150,6 +1152,13 @@ function commitSourceMode(tabId: string): void {
   }
 }
 
+/** Commit every source textarea before application-exit dirty-state inspection. */
+function commitAllSourceModes(): void {
+  for (const tab of manager.tabList) {
+    commitSourceMode(tab.id);
+  }
+}
+
 /**
  * T6/R10：全选活动文档（双模式）。WYSIWYG 走编辑器渐进式 selectAll（与 Mod-a 一致），
  * 源码模式选源码 textarea 全文。无活动文档时空操作。
@@ -1813,6 +1822,66 @@ function getShortcutBindings(): CheatBinding[] {
     shortcut: formatShortcutLabel(combo, isMac),
   }));
 }
+
+function makeApplicationCloseGuard(closeWindow: () => Promise<void>) {
+  return createWindowCloseGuard({
+    hasUnsavedChanges: () => {
+      commitAllSourceModes();
+      return manager.tabList.some((tab) => tab.kind === 'markdown' && tab.dirty);
+    },
+    confirmExit: () => {
+      const titles = manager.tabList
+        .filter((tab) => tab.kind === 'markdown' && tab.dirty)
+        .map((tab) => tab.title);
+      return showExitConfirmation(document, titles, {
+        title: i18n.t('dialog.exit.title'),
+        message: (documents) => i18n.t('dialog.exit.message', { documents }),
+        saveAll: i18n.t('dialog.exit.saveAll'),
+        discardAll: i18n.t('dialog.exit.discardAll'),
+        cancel: i18n.t('dialog.cancel'),
+      });
+    },
+    closeAllTabs: (action) => manager.closeAllTabs(action),
+    flushDirtySnapshots: () => manager.flushDirtySnapshots(),
+    closeWindow,
+    reportError: (error) => {
+      // eslint-disable-next-line no-console
+      console.error('[lightink/window-close] close failed', error);
+    },
+  });
+}
+
+/** Protect native title-bar, system-menu, and shortcut initiated application exits. */
+function installApplicationCloseProtection(): void {
+  const installBrowserFallback = (): void => {
+    const guard = makeApplicationCloseGuard(async () => undefined);
+    window.addEventListener('beforeunload', (event) => {
+      guard.handleBeforeUnload(event);
+    });
+  };
+
+  if (!('__TAURI_INTERNALS__' in window)) {
+    installBrowserFallback();
+    return;
+  }
+  void (async () => {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const appWindow = getCurrentWindow();
+      const guard = makeApplicationCloseGuard(() => appWindow.close());
+      await appWindow.onCloseRequested((event) => {
+        guard.handleCloseRequested(event);
+      });
+    } catch (error) {
+      // Keep browser-style protection when the native event bridge is unavailable.
+      installBrowserFallback();
+      // eslint-disable-next-line no-console
+      console.error('[lightink/window-close] native close listener unavailable', error);
+    }
+  })();
+}
+
+installApplicationCloseProtection();
 
 // R13：外部文件变更检测——窗口聚焦 + 定时（秒级）轮询活动文件 mtime。
 // 检测逻辑与冲突/重载分派在 TabManager（可注入测试），这里只做时机触发。
