@@ -44,6 +44,7 @@
  */
 
 import { $prose } from '@milkdown/utils';
+import { appendPreviewEditButton } from './preview-edit-button.js';
 import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/prose/view';
@@ -596,6 +597,7 @@ export function buildMathDecorations(
             el.setAttribute('data-math-preview', '');
             el.setAttribute('data-math-lines', String(lineCount));
             el.innerHTML = html;
+            appendPreviewEditButton(el, MATH_EDIT_TITLE, () => onEditRequest?.(blockPos));
             el.addEventListener('dblclick', (event) => {
               event.preventDefault();
               event.stopPropagation();

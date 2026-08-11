@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 /**
  * Task checklist helpers: detect task items, collect positions, toggle checked.
  * (DOM/widget wiring is covered by plugin factory shape + insert snippet tests.)
@@ -8,6 +10,7 @@ import { EditorState } from '@milkdown/prose/state';
 
 import {
   collectTaskItemPositions,
+  createTaskCheckboxWidget,
   isTaskListItemNode,
   toggleTaskCheckedTr,
 } from '../plugins/task-checkbox.js';
@@ -122,6 +125,27 @@ describe('toggleTaskCheckedTr', () => {
     });
     expect(toggleTaskCheckedTr(state, plainPos)).toBeNull();
     expect(toggleTaskCheckedTr(state, 9999)).toBeNull();
+  });
+});
+
+describe('task checkbox keyboard widget', () => {
+  it('is tabbable and toggles once on Space', () => {
+    let state = makeDoc([{ text: 'open', checked: false }]);
+    const item = collectTaskItemPositions(state.doc)[0]!;
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(tr: ReturnType<typeof toggleTaskCheckedTr>) {
+        state = state.apply(tr!);
+      },
+    };
+    const button = createTaskCheckboxWidget(false, item.pos, () => view as never);
+    expect(button.tabIndex).toBe(0);
+    expect(button.getAttribute('role')).toBe('checkbox');
+
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    expect(state.doc.nodeAt(item.pos)!.attrs['checked']).toBe(true);
   });
 });
 

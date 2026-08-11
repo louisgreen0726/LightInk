@@ -961,6 +961,7 @@ body.lightink-outline-resizing * {
 
 /* Diagram preview widget (inserted after the code_block node). */
 .lightink-mermaid {
+  position: relative;
   margin: 0.35em 0 1em;
   padding: 12px 14px;
   border: 1px solid var(--lightink-border);
@@ -1043,6 +1044,7 @@ body.lightink-outline-resizing * {
 }
 
 .lightink-math-preview {
+  position: relative;
   margin: 0.35em 0 1em;
   padding: 14px 16px;
   border: 1px solid var(--lightink-border);
@@ -1055,6 +1057,36 @@ body.lightink-outline-resizing * {
   font-size: 1.1em;
   /* Multi-line aligned/gather blocks need vertical room. */
   line-height: 1.6;
+}
+
+.lightink-preview-edit {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--lightink-border);
+  border-radius: 4px;
+  background: var(--lightink-bg);
+  color: var(--lightink-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.lightink-preview-edit:hover,
+.lightink-preview-edit:focus-visible {
+  color: var(--lightink-fg);
+  border-color: var(--lightink-accent);
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-preview-edit:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
 }
 
 .lightink-math-preview .katex-display {

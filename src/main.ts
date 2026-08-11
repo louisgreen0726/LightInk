@@ -19,6 +19,7 @@ import {
 import { setCodeChromeLabels } from './editor/plugins/code-highlight.js';
 import { setMathEditTitle } from './editor/plugins/math.js';
 import { setMermaidEditTitle } from './editor/plugins/mermaid.js';
+import { setTaskCheckboxLabels } from './editor/plugins/task-checkbox.js';
 import { setSlashImageHandler, setSlashTranslate } from './editor/plugins/slash-menu.js';
 import { setAppDisplayName } from './ui/window-title.js';
 import { SourceView } from './editor/source-view.js';
@@ -166,6 +167,10 @@ function applyLocaleChrome(): void {
   });
   setMathEditTitle(i18n.t('math.editTitle'));
   setMermaidEditTitle(i18n.t('mermaid.editTitle'));
+  setTaskCheckboxLabels({
+    check: i18n.t('task.markComplete'),
+    uncheck: i18n.t('task.markIncomplete'),
+  });
   setSlashTranslate((key) => i18n.t(key));
 }
 applyLocaleChrome();
