@@ -95,9 +95,37 @@ pub fn run() {
 /// 在系统默认浏览器打开外部 URL（http(s) 等）。
 #[tauri::command]
 fn open_in_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let url = validate_external_url(&url)?;
     app.opener()
-        .open_url(url, None::<&str>)
+        .open_url(url.as_str(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+fn validate_external_url(raw: &str) -> Result<url::Url, String> {
+    if raw.chars().any(char::is_control) || contains_percent_encoded_control(raw) {
+        return Err("external URL contains control characters".to_string());
+    }
+    let parsed = url::Url::parse(raw.trim()).map_err(|_| "invalid external URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("unsupported external URL scheme".to_string());
+    }
+    Ok(parsed)
+}
+
+fn contains_percent_encoded_control(raw: &str) -> bool {
+    raw.as_bytes().windows(3).any(|part| {
+        if part[0] != b'%' {
+            return false;
+        }
+        let Some(high) = (part[1] as char).to_digit(16) else {
+            return false;
+        };
+        let Some(low) = (part[2] as char).to_digit(16) else {
+            return false;
+        };
+        let value = (high * 16 + low) as u8;
+        value <= 0x1f || value == 0x7f
+    })
 }
 
 /// 以系统默认方式打开本地文件（非 .md）。
@@ -114,4 +142,36 @@ fn reveal_path_in_files(app: tauri::AppHandle, path: String) -> Result<(), Strin
     app.opener()
         .reveal_item_in_dir(path)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn accepts_only_canonical_browser_schemes() {
+        assert_eq!(
+            validate_external_url("HTTPS://Example.COM/path")
+                .unwrap()
+                .as_str(),
+            "https://example.com/path"
+        );
+        assert!(validate_external_url("http://localhost:8080/").is_ok());
+    }
+
+    #[test]
+    fn rejects_custom_encoded_and_control_character_urls() {
+        for value in [
+            "mailto:a@example.com",
+            "javascript:alert(1)",
+            "file:///tmp/a",
+            "//example.com/path",
+            "%68%74%74%70%73%3A%2F%2Fevil.example",
+            "https://example.com/%0aheader",
+            "https://example.com/path\n",
+            "https://",
+        ] {
+            assert!(validate_external_url(value).is_err(), "accepted {value:?}");
+        }
+    }
 }
