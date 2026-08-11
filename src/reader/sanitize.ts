@@ -9,6 +9,7 @@ import createDOMPurify, {
   type UponSanitizeAttributeHookEvent,
   type WindowLike,
 } from 'dompurify';
+import { makeRemoteImagesInert } from '../media/remote-image-policy.js';
 
 const READER_TAGS = [
   'a',
@@ -143,7 +144,7 @@ function readerPurifier(): DOMPurify {
 
 /** Sanitize untrusted flow-format HTML before it reaches any rendering DOM. */
 export function sanitizeHtml(input: string): string {
-  return readerPurifier().sanitize(input, {
+  const fragment = readerPurifier().sanitize(input, {
     ALLOWED_TAGS: [...READER_TAGS],
     ALLOWED_ATTR: [...READER_ATTRIBUTES],
     ALLOW_DATA_ATTR: false,
@@ -169,6 +170,10 @@ export function sanitizeHtml(input: string): string {
       'textarea',
     ],
     FORBID_ATTR: ['style', 'srcset', 'ping', 'formaction', 'xlink:href'],
-    RETURN_TRUSTED_TYPE: false,
+    RETURN_DOM_FRAGMENT: true,
   });
+  makeRemoteImagesInert(fragment);
+  const container = document.createElement('div');
+  container.appendChild(fragment);
+  return container.innerHTML;
 }

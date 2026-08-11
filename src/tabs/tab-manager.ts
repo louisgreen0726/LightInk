@@ -155,6 +155,8 @@ export interface TabManagerDeps {
    */
   formatUntitledRestoredTitle?: (n: number) => string;
   reportError?: (message: string, error: unknown) => void;
+  /** Localized command shown in blocked remote-image placeholders. */
+  remoteImageLoadLabel?: string;
   /** T4：图片落盘（生产为 asset-service 的 saveAsset）。 */
   saveAsset?: (
     docPath: string | null,
@@ -240,6 +242,7 @@ export class TabManager {
         // eslint-disable-next-line no-console
         console.error(`[lightink/tabs] ${message}`, error);
       },
+      remoteImageLoadLabel: 'Load remote image',
       formatUntitledTitle: (n) => `未命名-${n}`,
       formatUntitledRestoredTitle: (n) => `未命名-${n}（已恢复）`,
       ...deps,
@@ -841,6 +844,7 @@ export class TabManager {
           sessionId: args.syntheticId,
           getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
         }),
+        remoteImageLoadLabel: this.deps.remoteImageLoadLabel,
         onAssetError: (message, error) => this.deps.reportError(message, error),
         onLinkNavigate: this.deps.onLinkNavigate,
         confirmLinkOpen: this.deps.confirmLinkOpen,

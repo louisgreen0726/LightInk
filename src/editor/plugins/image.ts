@@ -35,6 +35,8 @@ export interface ImageAssetMountOptions {
   readonly onAssetError?: (message: string, error: unknown) => void;
   /** 相对引用 `assets/…` → 可显示 URL 的解析器；缺省时 <img> 按原样渲染。 */
   readonly imageSrcResolver?: ImageSrcResolver;
+  /** Localized command shown while a remote image is blocked. */
+  readonly remoteImageLoadLabel?: string;
 }
 
 /** 事件处理器依赖（与 mount 选项同形，便于内部传递）。 */

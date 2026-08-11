@@ -22,6 +22,11 @@ import {
 } from './annotations.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
 import type { ReaderInstance } from './types.js';
+import {
+  bindBlockedRemoteImages,
+  sessionRemoteImagePolicy,
+  type RemoteImagePolicy,
+} from '../media/remote-image-policy.js';
 
 const PAGE_EXTS = new Set(['pdf', 'cbz']);
 
@@ -61,6 +66,8 @@ export interface ReaderViewDeps {
   writeAnnotations?: (contentHash: string, json: string) => Promise<void>;
   /** 非阻断提示（标注读失败/写失败时）。 */
   notify?: (message: string) => void;
+  /** Session-only consent for remote images; injectable for focused tests. */
+  remoteImagePolicy?: RemoteImagePolicy;
 }
 
 /**
@@ -99,6 +106,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   /** 标注侧栏默认隐藏（用户显式打开才显示，且作为 flex 子项不再覆盖内容）。 */
   let sidebarVisible = false;
   let loadedExt = '';
+  const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
+  let releaseRemoteImages: Array<() => void> = [];
 
   const saveAnnotations = async (): Promise<void> => {
     if (contentHash === null || deps.writeAnnotations === undefined) {
@@ -251,6 +260,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const renderChapters = (chapters: ReaderChapter[]): void => {
+    releaseRemoteImages.splice(0).forEach((release) => release());
     scrollHost.hidden = false;
     pageHost.hidden = true;
     delete pageHost.dataset.readerActive;
@@ -266,6 +276,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const body = document.createElement('div');
       body.className = 'lightink-reader-chapter-body';
       body.innerHTML = chapter.html;
+      releaseRemoteImages.push(
+        bindBlockedRemoteImages(body, t('reader.remoteImageLoad'), remoteImagePolicy),
+      );
       article.append(heading, body);
       scrollHost.appendChild(article);
       chapterIndex += 1;
@@ -273,6 +286,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const renderPages = async (filePath: string, bytes: Uint8Array): Promise<void> => {
+    releaseRemoteImages.splice(0).forEach((release) => release());
     const ext = extOfPath(filePath);
     if (ext !== 'pdf' && ext !== 'cbz') {
       throw new ParseError(`暂不支持的页格式：.${ext || '?'}`);
@@ -390,6 +404,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       await loadAnnotations(filePath);
     },
     async destroy(): Promise<void> {
+      releaseRemoteImages.splice(0).forEach((release) => release());
       if (pdfHandle !== null) {
         await pdfHandle.destroy().catch(() => undefined);
       }

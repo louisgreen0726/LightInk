@@ -21,6 +21,12 @@ import { Plugin, PluginKey } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
 import type { EditorView, NodeView } from '@milkdown/prose/view';
 
+import {
+  isSafeInlineImageUrl,
+  normalizeRemoteImageUrl,
+  sessionRemoteImagePolicy,
+  type RemoteImagePolicy,
+} from '../../media/remote-image-policy.js';
 import { isRelativeAssetSrc } from './image.js';
 
 export type ImageAlign = 'left' | 'center' | 'right';
@@ -235,6 +241,11 @@ interface NodeViewArgs {
   readonly getPos: () => number | undefined;
 }
 
+export interface ImageNodeViewOptions {
+  readonly remoteImagePolicy?: RemoteImagePolicy;
+  readonly remoteImageLoadLabel?: string;
+}
+
 /**
  * image nodeView：相对引用经 resolver 异步解析为 data URL；选中（NodeSelection）后
  * 显示右下拖拽柄（调宽）与浮动对齐条（左/中/右），写回经 setNodeMarkup。
@@ -243,7 +254,9 @@ function createResizableImageNodeView(
   node: PMNode,
   resolver: ImageSrcResolver,
   args: NodeViewArgs,
+  options: ImageNodeViewOptions,
 ): NodeView {
+  const remoteImagePolicy = options.remoteImagePolicy ?? sessionRemoteImagePolicy;
   const wrap = document.createElement('span');
   wrap.className = 'lightink-image-wrap';
   wrap.setAttribute('data-type', 'image');
@@ -256,6 +269,13 @@ function createResizableImageNodeView(
   img.style.display = 'block';
   img.style.maxWidth = '100%';
   wrap.appendChild(img);
+
+  const remoteLoad = document.createElement('button');
+  remoteLoad.type = 'button';
+  remoteLoad.className = 'lightink-remote-image-load';
+  remoteLoad.textContent = options.remoteImageLoadLabel ?? 'Load remote image';
+  remoteLoad.hidden = true;
+  wrap.appendChild(remoteLoad);
 
   // 浮动对齐条（选中时显示）。
   const bar = document.createElement('span');
@@ -301,6 +321,7 @@ function createResizableImageNodeView(
 
   let seq = 0;
   let current = node;
+  let currentRemoteUrl: string | null = null;
 
   const applyAttrs = (n: PMNode): void => {
     const width = typeof n.attrs.width === 'number' ? n.attrs.width : null;
@@ -323,17 +344,40 @@ function createResizableImageNodeView(
     const src = typeof n.attrs.src === 'string' ? n.attrs.src : '';
     const alt = typeof n.attrs.alt === 'string' ? n.attrs.alt : '';
     const title = typeof n.attrs.title === 'string' ? n.attrs.title : '';
+    const remoteUrl = normalizeRemoteImageUrl(src);
+    currentRemoteUrl = remoteUrl;
     img.alt = alt;
     if (title !== '') img.title = title;
     else img.removeAttribute('title');
     if (src === '') {
       img.removeAttribute('src');
+      img.hidden = false;
+      remoteLoad.hidden = true;
+      return;
+    }
+    if (remoteUrl !== null) {
+      img.removeAttribute('src');
+      if (remoteImagePolicy.isAllowed(remoteUrl)) {
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        img.hidden = false;
+        remoteLoad.hidden = true;
+        img.src = remoteUrl;
+      } else {
+        img.hidden = true;
+        remoteLoad.hidden = false;
+      }
       return;
     }
     if (!isRelativeAssetSrc(src)) {
-      img.src = src;
+      remoteLoad.hidden = true;
+      img.hidden = false;
+      if (isSafeInlineImageUrl(src)) img.src = src;
+      else img.removeAttribute('src');
       return;
     }
+    remoteLoad.hidden = true;
+    img.hidden = false;
     resolver(src)
       .then((url) => {
         if (mySeq === seq) img.src = url;
@@ -342,6 +386,20 @@ function createResizableImageNodeView(
         if (mySeq === seq) img.src = src;
       });
   };
+
+  const unsubscribeRemoteImages = remoteImagePolicy.subscribe((allowedUrl) => {
+    if (currentRemoteUrl === allowedUrl) syncSrc(current);
+  });
+  const keepEditorSelection = (event: MouseEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const loadRemoteImage = (event: MouseEvent): void => {
+    event.stopPropagation();
+    if (currentRemoteUrl !== null) remoteImagePolicy.allowOnce(currentRemoteUrl);
+  };
+  remoteLoad.addEventListener('mousedown', keepEditorSelection);
+  remoteLoad.addEventListener('click', loadRemoteImage);
 
   const commit = (changes: { width?: number; align?: ImageAlign | null }): void => {
     const pos = args.getPos();
@@ -408,14 +466,27 @@ function createResizableImageNodeView(
     },
     stopEvent: (event: Event) => {
       // 拖拽与对齐按钮的事件由 nodeView 自处理，不交给编辑器。
-      return event.target === handle || bar.contains(event.target as Node);
+      return (
+        event.target === handle ||
+        event.target === remoteLoad ||
+        bar.contains(event.target as Node)
+      );
     },
     ignoreMutation: () => true,
+    destroy: () => {
+      seq += 1;
+      unsubscribeRemoteImages();
+      remoteLoad.removeEventListener('mousedown', keepEditorSelection);
+      remoteLoad.removeEventListener('click', loadRemoteImage);
+    },
   };
 }
 
 /** nodeView 注册插件：与 imageDisplayPlugin 同样需要 resolver；选中后提供缩放/对齐 UI。 */
-export function imageSizeNodeViewPlugin(resolver: ImageSrcResolver) {
+export function imageSizeNodeViewPlugin(
+  resolver: ImageSrcResolver,
+  options: ImageNodeViewOptions = {},
+) {
   return $prose(
     () =>
       new Plugin({
@@ -423,7 +494,7 @@ export function imageSizeNodeViewPlugin(resolver: ImageSrcResolver) {
         props: {
           nodeViews: {
             image: (node: PMNode, view: EditorView, getPos: () => number | undefined) =>
-              createResizableImageNodeView(node, resolver, { view, getPos }),
+              createResizableImageNodeView(node, resolver, { view, getPos }, options),
           },
         },
       }),

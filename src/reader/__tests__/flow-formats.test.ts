@@ -62,6 +62,24 @@ describe('sanitizeHtml', () => {
     expect(out).toContain('href="https://example.com/read"');
   });
 
+  it('makes remote images inert while preserving local image sources', () => {
+    const container = document.createElement('div');
+    container.innerHTML = sanitizeHtml(
+      '<img alt="remote" src="https://cdn.example/book.png" srcset="https://cdn.example/book@2x.png 2x">' +
+        '<img alt="relative" src="images/cover.png">' +
+        '<img alt="inline" src="data:image/png;base64,iVBORw0KGgo=">',
+    );
+
+    const images = container.querySelectorAll('img');
+    expect(images[0]!.getAttribute('src')).toBeNull();
+    expect(images[0]!.getAttribute('srcset')).toBeNull();
+    expect(images[0]!.getAttribute('data-lightink-remote-src')).toBe(
+      'https://cdn.example/book.png',
+    );
+    expect(images[1]!.getAttribute('src')).toBe('images/cover.png');
+    expect(images[2]!.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
+  });
+
   it('保留阅读格式标签', () => {
     const out = sanitizeHtml('<h1>T</h1><p>a <strong>b</strong> <em>c</em></p><blockquote>q</blockquote>');
     expect(out).toContain('<strong>b</strong>');

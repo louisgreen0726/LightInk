@@ -2323,3 +2323,33 @@ body.lightink-outline-resizing * {
   word-break: break-word;
   user-select: text;
 }
+
+/* Remote Markdown images stay inert until the reader explicitly loads them. */
+.lightink-remote-image-load {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px dashed var(--lightink-border);
+  border-radius: 4px;
+  background: var(--lightink-bg-elevated);
+  color: var(--lightink-muted);
+  font: 500 12px/1.35 var(--lightink-font-body);
+  text-align: center;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.lightink-remote-image-load:hover {
+  border-style: solid;
+  border-color: var(--lightink-accent);
+  color: var(--lightink-accent);
+}
+
+.lightink-remote-image-load:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 2px;
+}

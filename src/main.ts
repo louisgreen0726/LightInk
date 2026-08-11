@@ -869,6 +869,7 @@ function pruneSourceViews(): void {
 manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
+  remoteImageLoadLabel: i18n.t('reader.remoteImageLoad'),
   mountEditor,
   mountReader: async (host) =>
     createReaderView(host, {
