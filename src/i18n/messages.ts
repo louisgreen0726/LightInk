@@ -188,6 +188,11 @@ const en: Dict = {
   // Dialogs / misc
   'dialog.closeTab.title': 'Close Tab',
   'dialog.closeTab.message': '“{title}” has unsaved changes.\nSave before closing?',
+  'dialog.exit.title': 'Unsaved Documents',
+  'dialog.exit.message':
+    'The following documents have unsaved changes:\n\n{documents}\n\nSave all before exiting?',
+  'dialog.exit.saveAll': 'Save All',
+  'dialog.exit.discardAll': 'Discard All',
   'dialog.save': 'Save',
   'dialog.discard': 'Don’t Save',
   'dialog.cancel': 'Cancel',
@@ -400,6 +405,11 @@ const zhCN: Dict = {
 
   'dialog.closeTab.title': '关闭标签',
   'dialog.closeTab.message': '「{title}」有未保存的更改。\n保存后再关闭？',
+  'dialog.exit.title': '尚未保存的文档',
+  'dialog.exit.message':
+    '以下文档包含尚未保存的更改：\n\n{documents}\n\n是否全部保存后退出？',
+  'dialog.exit.saveAll': '全部保存',
+  'dialog.exit.discardAll': '全部丢弃',
   'dialog.save': '保存',
   'dialog.discard': '不保存',
   'dialog.cancel': '取消',
