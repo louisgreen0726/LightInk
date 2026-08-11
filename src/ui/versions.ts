@@ -22,6 +22,53 @@ export interface VersionActions {
   saveCurrent(): Promise<void>;
 }
 
+export interface BoundVersionActionsDeps<
+  T extends { readonly id: string; readonly filePath: string | null },
+> {
+  readonly targetId: string;
+  readonly filePath: string;
+  getTarget(id: string): T | null;
+  getContent(target: T): string;
+  setContent(target: T, content: string): void;
+  listVersions(filePath: string): Promise<VersionMeta[]>;
+  readVersion(filePath: string, id: string): Promise<string>;
+  restoreVersion(filePath: string, id: string, currentContent: string): Promise<string>;
+  createVersion(filePath: string, content: string): Promise<void>;
+}
+
+/** Bind async version operations to the document that opened the modal. */
+export function createBoundVersionActions<
+  T extends { readonly id: string; readonly filePath: string | null },
+>(deps: BoundVersionActionsDeps<T>): VersionActions {
+  const resolveTarget = (): T | null => {
+    const target = deps.getTarget(deps.targetId);
+    return target?.filePath === deps.filePath ? target : null;
+  };
+
+  return {
+    list: () => deps.listVersions(deps.filePath),
+    read: (id) => deps.readVersion(deps.filePath, id),
+    restore: async (id) => {
+      const target = resolveTarget();
+      if (target === null) return;
+      const content = await deps.restoreVersion(
+        deps.filePath,
+        id,
+        deps.getContent(target),
+      );
+      const liveTarget = resolveTarget();
+      if (liveTarget !== null) {
+        deps.setContent(liveTarget, content);
+      }
+    },
+    saveCurrent: async () => {
+      const target = resolveTarget();
+      if (target === null) return;
+      await deps.createVersion(deps.filePath, deps.getContent(target));
+    },
+  };
+}
+
 export interface VersionModalLabels {
   readonly title?: string;
   readonly loading?: string;

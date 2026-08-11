@@ -81,7 +81,11 @@ import { ShortcutRegistry } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { createWindowCloseGuard } from './ui/window-lifecycle.js';
-import { showVersionsModal, type VersionMeta } from './ui/versions.js';
+import {
+  createBoundVersionActions,
+  showVersionsModal,
+  type VersionMeta,
+} from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
 
@@ -1011,27 +1015,33 @@ autosave = createAutosave({
 /** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
 function showVersionsForActive(): void {
   const tab = activeMarkdownTab();
-  const filePath = tab?.filePath ?? null;
-  if (filePath === null) {
+  if (tab === null || tab.filePath === null) {
     return;
   }
+  const filePath = tab.filePath;
   showVersionsModal(
     document,
-    {
-      list: () => invoke<VersionMeta[]>('list_versions', { filePath }),
-      read: (id) => invoke<string>('read_version', { filePath, versionId: id }),
-      restore: async (id) => {
-        const currentContent = tab?.editor.getMarkdown() ?? '';
-        const content = await invoke<string>('restore_version', {
-          filePath,
+    createBoundVersionActions({
+      targetId: tab.id,
+      filePath,
+      getTarget: (id) => {
+        const target = manager.tabList.find((candidate) => candidate.id === id) ?? null;
+        return target !== null && isMarkdownTab(target) ? target : null;
+      },
+      getContent: (target) => target.editor.getMarkdown(),
+      setContent: (target, content) => target.editor.setMarkdown(content),
+      listVersions: (path) => invoke<VersionMeta[]>('list_versions', { filePath: path }),
+      readVersion: (path, id) =>
+        invoke<string>('read_version', { filePath: path, versionId: id }),
+      restoreVersion: (path, id, currentContent) =>
+        invoke<string>('restore_version', {
+          filePath: path,
           versionId: id,
           currentContent,
-        });
-        tab?.editor.setMarkdown(content);
-      },
-      saveCurrent: () =>
-        invoke('create_version', { filePath, content: tab?.editor.getMarkdown() ?? '' }),
-    },
+        }),
+      createVersion: (path, content) =>
+        invoke('create_version', { filePath: path, content }),
+    }),
     {
       title: i18n.t('dialog.versions.title'),
       loading: i18n.t('dialog.loading'),
