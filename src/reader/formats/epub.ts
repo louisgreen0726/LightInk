@@ -8,6 +8,7 @@
  */
 
 import { sanitizeHtml } from '../sanitize.js';
+import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { openSafeArchive } from './safe-archive.js';
 import { ParseError, type ReaderContent } from './types.js';
 
@@ -49,14 +50,18 @@ function resolveHref(opfPath: string, href: string): string {
 /**
  * Parse EPUB bytes into chapters. Missing/corrupt package data throws ParseError.
  */
-export async function parseEpub(bytes: Uint8Array): Promise<ReaderContent> {
-  const archive = await openSafeArchive(bytes, 'EPUB');
+export async function parseEpub(
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<ReaderContent> {
+  const archive = await openSafeArchive(bytes, 'EPUB', signal);
   try {
     // 1. container.xml → OPF 路径。
     let opfPath: string | null = null;
     const containerFile = archive.file('META-INF/container.xml');
     if (containerFile !== null) {
-      const container = await containerFile.readText();
+      const container = await containerFile.readText(signal);
+      throwIfReaderLoadCancelled(signal);
       const m = container.match(/<rootfile\b[^>]*full-path\s*=\s*("([^"]*)"|'([^']*)')/i);
       if (m !== null) {
         opfPath = m[2] ?? m[3] ?? null;
@@ -75,7 +80,8 @@ export async function parseEpub(bytes: Uint8Array): Promise<ReaderContent> {
     if (opfFile === null) {
       throw new ParseError('EPUB OPF 文件缺失');
     }
-    const opf = await opfFile.readText();
+    const opf = await opfFile.readText(signal);
+    throwIfReaderLoadCancelled(signal);
 
     const bookTitle = (
       opf.match(/<dc:title\b[^>]*>([\s\S]*?)<\/dc:title>/i)?.[1] ?? ''
@@ -110,6 +116,7 @@ export async function parseEpub(bytes: Uint8Array): Promise<ReaderContent> {
     const chapters: ReaderContent['chapters'] = [];
     let idx = 0;
     for (const idref of spineIds) {
+      throwIfReaderLoadCancelled(signal);
       const item = items.get(idref);
       if (item === undefined || !/x?html/i.test(item.mediaType)) {
         continue;
@@ -119,7 +126,8 @@ export async function parseEpub(bytes: Uint8Array): Promise<ReaderContent> {
       if (file === null) {
         continue;
       }
-      const xhtml = await file.readText();
+      const xhtml = await file.readText(signal);
+      throwIfReaderLoadCancelled(signal);
       const body = xhtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? '';
       const sectionTitle = (
         xhtml.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ''

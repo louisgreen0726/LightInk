@@ -21,7 +21,11 @@ import {
   type Locator,
 } from './annotations.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
-import type { ReaderInstance } from './types.js';
+import type { ReaderInstance, ReaderLoadOptions } from './types.js';
+import {
+  isReaderLoadCancelled,
+  throwIfReaderLoadCancelled,
+} from './load-lifecycle.js';
 import {
   bindBlockedRemoteImages,
   sessionRemoteImagePolicy,
@@ -55,7 +59,7 @@ function cssEscape(value: string): string {
 
 export interface ReaderViewDeps {
   /** 读取文件原始字节（生产为 invoke read_file_bytes → base64 → Uint8Array）。 */
-  readBytes?: (filePath: string) => Promise<Uint8Array>;
+  readBytes?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
   /** 翻译 i18n key（生产为 i18n.t）。 */
   t?: (key: string, vars?: Readonly<Record<string, string>>) => string;
   /** 文件内容哈希（Rust content_hash）；缺省则不启用标注。 */
@@ -78,15 +82,21 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const root = document.createElement('div');
   root.className = 'lightink-reader';
   root.setAttribute('role', 'document');
+  root.tabIndex = 0;
+  root.dataset.readerState = 'empty';
 
   const scrollHost = document.createElement('div');
   scrollHost.className = 'lightink-reader-scroll';
   scrollHost.dataset.readerHost = 'scroll';
 
-  const pageHost = document.createElement('div');
-  pageHost.className = 'lightink-reader-pages';
-  pageHost.dataset.readerHost = 'pages';
-  pageHost.hidden = true;
+  const createPageHost = (): HTMLDivElement => {
+    const element = document.createElement('div');
+    element.className = 'lightink-reader-pages';
+    element.dataset.readerHost = 'pages';
+    element.hidden = true;
+    return element;
+  };
+  let pageHost = createPageHost();
 
   const empty = document.createElement('div');
   empty.className = 'lightink-reader-empty';
@@ -106,6 +116,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   /** 标注侧栏默认隐藏（用户显式打开才显示，且作为 flex 子项不再覆盖内容）。 */
   let sidebarVisible = false;
   let loadedExt = '';
+  let loadGeneration = 0;
+  let activeLoadController: AbortController | null = null;
+  let destroyed = false;
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
 
@@ -285,33 +298,64 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   };
 
-  const renderPages = async (filePath: string, bytes: Uint8Array): Promise<void> => {
-    releaseRemoteImages.splice(0).forEach((release) => release());
+  const stagePages = async (
+    filePath: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<{ host: HTMLDivElement; pdf: PdfRenderHandle | null }> => {
     const ext = extOfPath(filePath);
     if (ext !== 'pdf' && ext !== 'cbz') {
       throw new ParseError(`暂不支持的页格式：.${ext || '?'}`);
     }
-    scrollHost.hidden = true;
-    pageHost.hidden = false;
-    pageHost.dataset.readerActive = 'true';
+    const stagedHost = createPageHost();
+    stagedHost.hidden = false;
+    stagedHost.dataset.readerActive = 'true';
     if (ext === 'pdf') {
-      if (pdfHandle !== null) {
-        await pdfHandle.destroy();
-      }
-      pdfHandle = await renderPdfInto(bytes, pageHost);
-    } else {
-      await renderCbzInto(bytes, pageHost);
+      const pdf = await renderPdfInto(bytes, stagedHost, signal);
+      return { host: stagedHost, pdf };
     }
+    await renderCbzInto(bytes, stagedHost, signal);
+    return { host: stagedHost, pdf: null };
   };
 
-  const loadAnnotations = async (filePath: string): Promise<void> => {
+  const commitStagedPages = (
+    staged: { host: HTMLDivElement; pdf: PdfRenderHandle | null },
+  ): void => {
+    releaseRemoteImages.splice(0).forEach((release) => release());
+    const previousPdf = pdfHandle;
+    pdfHandle = staged.pdf;
+    pageHost.replaceWith(staged.host);
+    pageHost = staged.host;
+    scrollHost.hidden = true;
+    void previousPdf?.destroy().catch(() => undefined);
+  };
+
+  const loadAnnotations = async (
+    filePath: string,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
     if (!annotationsEnabled) {
       return;
     }
     try {
-      contentHash = await deps.getContentHash!(filePath);
-      annotations = parseAnnotations(await deps.readAnnotations!(contentHash));
+      const nextContentHash = await deps.getContentHash!(filePath);
+      if (destroyed || signal.aborted || generation !== loadGeneration) {
+        return;
+      }
+      const nextAnnotations = parseAnnotations(
+        await deps.readAnnotations!(nextContentHash),
+      );
+      if (destroyed || signal.aborted || generation !== loadGeneration) {
+        return;
+      }
+      contentHash = nextContentHash;
+      annotations = nextAnnotations;
     } catch {
+      if (destroyed || signal.aborted || generation !== loadGeneration) {
+        return;
+      }
+      contentHash = null;
       annotations = [];
       deps.notify?.(t('annotation.loadFailed'));
       return;
@@ -388,30 +432,114 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   // 书签 / 笔记改由菜单触发（见 ReaderInstance.addBookmark/addNote），不再挂浮动工具栏。
 
   return {
-    async load(filePath: string): Promise<void> {
+    async load(filePath: string, options: ReaderLoadOptions = {}): Promise<void> {
       const readBytes = deps.readBytes;
       if (readBytes === undefined) {
         throw new Error('reader-view load requires the readBytes dependency');
       }
-      loadedExt = extOfPath(filePath);
-      const bytes = await readBytes(filePath);
-      if (PAGE_EXTS.has(loadedExt)) {
-        await renderPages(filePath, bytes);
-      } else {
-        const content = await parseReaderContent(filePath, bytes);
-        renderChapters(content.chapters);
+      if (destroyed) {
+        throw new Error('reader-view has been destroyed');
       }
-      await loadAnnotations(filePath);
+
+      activeLoadController?.abort();
+      const controller = new AbortController();
+      activeLoadController = controller;
+      const generation = ++loadGeneration;
+      const nextExt = extOfPath(filePath);
+      const cancelFromCaller = (): void => controller.abort();
+      if (options.signal?.aborted === true) {
+        controller.abort();
+      } else {
+        options.signal?.addEventListener('abort', cancelFromCaller, { once: true });
+      }
+      const isCurrent = (): boolean =>
+        !destroyed && !controller.signal.aborted && generation === loadGeneration;
+      let completed = false;
+
+      root.dataset.readerState = 'loading';
+      root.setAttribute('aria-busy', 'true');
+      try {
+        const bytes = await readBytes(filePath, controller.signal);
+        throwIfReaderLoadCancelled(controller.signal);
+        if (!isCurrent()) {
+          return;
+        }
+
+        if (PAGE_EXTS.has(nextExt)) {
+          const staged = await stagePages(filePath, bytes, controller.signal);
+          if (controller.signal.aborted) {
+            await staged.pdf?.destroy().catch(() => undefined);
+            throwIfReaderLoadCancelled(controller.signal);
+          }
+          if (!isCurrent()) {
+            await staged.pdf?.destroy().catch(() => undefined);
+            return;
+          }
+          loadedExt = nextExt;
+          annotations = [];
+          contentHash = null;
+          sidebar?.render(annotations);
+          commitStagedPages(staged);
+        } else {
+          const content = await parseReaderContent(filePath, bytes, controller.signal);
+          throwIfReaderLoadCancelled(controller.signal);
+          if (!isCurrent()) {
+            return;
+          }
+          loadedExt = nextExt;
+          annotations = [];
+          contentHash = null;
+          sidebar?.render(annotations);
+          const previousPdf = pdfHandle;
+          pdfHandle = null;
+          renderChapters(content.chapters);
+          void previousPdf?.destroy().catch(() => undefined);
+        }
+
+        await loadAnnotations(filePath, generation, controller.signal);
+        throwIfReaderLoadCancelled(controller.signal);
+        if (isCurrent()) {
+          root.dataset.readerState = 'ready';
+          root.setAttribute('aria-busy', 'false');
+          completed = true;
+        }
+      } catch (error) {
+        if (isReaderLoadCancelled(error, controller.signal)) {
+          if (!destroyed && generation === loadGeneration) {
+            root.dataset.readerState = 'cancelled';
+            root.setAttribute('aria-busy', 'false');
+          }
+          return;
+        }
+        if (!isCurrent()) {
+          return;
+        }
+        root.dataset.readerState = 'error';
+        root.setAttribute('aria-busy', 'false');
+        throw error;
+      } finally {
+        options.signal?.removeEventListener('abort', cancelFromCaller);
+        if (activeLoadController === controller && !completed) {
+          activeLoadController = null;
+        }
+      }
     },
     async destroy(): Promise<void> {
-      releaseRemoteImages.splice(0).forEach((release) => release());
-      if (pdfHandle !== null) {
-        await pdfHandle.destroy().catch(() => undefined);
+      if (destroyed) {
+        return;
       }
+      destroyed = true;
+      loadGeneration += 1;
+      activeLoadController?.abort();
+      activeLoadController = null;
+      releaseRemoteImages.splice(0).forEach((release) => release());
+      const handle = pdfHandle;
       pdfHandle = null;
       sidebar?.destroy();
       sidebar = null;
+      root.dataset.readerState = 'destroyed';
       root.remove();
+      await handle?.destroy().catch(() => undefined);
     },
     addBookmark: () => {
       if (annotationsEnabled) addAnnotation('bookmark');

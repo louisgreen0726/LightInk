@@ -69,6 +69,7 @@ import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './
 import { createReaderView } from './reader/reader-view.js';
 import { decodeReaderFileBase64, ReaderFileTooLargeError } from './reader/file-bytes.js';
 import { ReaderLimitError } from './reader/formats/types.js';
+import { throwIfReaderLoadCancelled } from './reader/load-lifecycle.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
@@ -209,10 +210,17 @@ function activeReaderTab(): ReaderTabState | null {
 }
 
 /** 读取阅读文件原始字节（read_file_bytes base64 → Uint8Array），供 reader-view.load。 */
-async function readReaderBytes(filePath: string): Promise<Uint8Array> {
+async function readReaderBytes(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   try {
+    throwIfReaderLoadCancelled(signal);
     const b64 = await invoke<string>('read_file_bytes', { path: filePath });
-    return decodeReaderFileBase64(filePath, b64);
+    throwIfReaderLoadCancelled(signal);
+    const bytes = decodeReaderFileBase64(filePath, b64);
+    throwIfReaderLoadCancelled(signal);
+    return bytes;
   } catch (error) {
     const detail = String(error);
     const nativeLimit = detail.match(/FILE_TOO_LARGE:(\d+):(\d+)/);

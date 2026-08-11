@@ -22,7 +22,7 @@ export interface ReaderInstance {
    * 读取并解析文件，把章节渲染进阅读视图（T4 接入流式格式）。
    * 解析失败（DRM、损坏、不支持）reject，由调用方负责 i18n 错误提示。
    */
-  load(filePath: string): Promise<void>;
+  load(filePath: string, options?: ReaderLoadOptions): Promise<void>;
   /**
    * 销毁阅读视图：移除 DOM、清理监听与渲染资源。closeTab 关闭 reader
    * 标签时调用；失败由调用方上报，不阻断关闭流程。
@@ -38,4 +38,9 @@ export interface ReaderInstance {
   isSidebarVisible(): boolean;
   /** 当前文档是否启用了标注（取决于 content_hash / 标注存储是否可用）。 */
   isAnnotationEnabled(): boolean;
+}
+
+export interface ReaderLoadOptions {
+  /** Optional caller cancellation, combined with the Reader's own supersession signal. */
+  signal?: AbortSignal;
 }

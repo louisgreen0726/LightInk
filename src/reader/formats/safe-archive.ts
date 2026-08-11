@@ -8,6 +8,11 @@
 import type { FileEntry } from '@zip.js/zip.js';
 
 import { ParseError, ReaderLimitError } from './types.js';
+import {
+  isReaderLoadCancelled,
+  ReaderLoadCancelledError,
+  throwIfReaderLoadCancelled,
+} from '../load-lifecycle.js';
 
 export interface ArchiveLimits {
   maxEntries: number;
@@ -94,8 +99,8 @@ export interface SafeArchiveEntry {
   readonly filename: string;
   readonly compressedSize: number;
   readonly uncompressedSize: number;
-  readText(): Promise<string>;
-  readBytes(): Promise<Uint8Array>;
+  readText(signal?: AbortSignal): Promise<string>;
+  readBytes(signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 export interface SafeArchive {
@@ -108,13 +113,17 @@ export interface SafeArchive {
 export async function openSafeArchive(
   bytes: Uint8Array,
   formatName: 'EPUB' | 'CBZ',
+  signal?: AbortSignal,
 ): Promise<SafeArchive> {
+  throwIfReaderLoadCancelled(signal);
   const zip = await import('@zip.js/zip.js');
+  throwIfReaderLoadCancelled(signal);
   const reader = new zip.ZipReader(new zip.Uint8ArrayReader(bytes));
   const files: FileEntry[] = [];
   const budget = new ArchiveBudgetTracker(READER_ARCHIVE_LIMITS);
   try {
     for await (const entry of reader.getEntriesGenerator()) {
+      throwIfReaderLoadCancelled(signal);
       budget.add(entry);
       if (!entry.directory) {
         files.push(entry);
@@ -122,6 +131,9 @@ export async function openSafeArchive(
     }
   } catch (error) {
     await reader.close().catch(() => undefined);
+    if (isReaderLoadCancelled(error, signal)) {
+      throw new ReaderLoadCancelledError();
+    }
     if (error instanceof ReaderLimitError) {
       throw error;
     }
@@ -132,8 +144,9 @@ export async function openSafeArchive(
     filename: entry.filename,
     compressedSize: entry.compressedSize,
     uncompressedSize: entry.uncompressedSize,
-    readText: () => entry.getData(new zip.TextWriter()),
-    readBytes: () => entry.getData(new zip.Uint8ArrayWriter()),
+    readText: (entrySignal) => entry.getData(new zip.TextWriter(), { signal: entrySignal }),
+    readBytes: (entrySignal) =>
+      entry.getData(new zip.Uint8ArrayWriter(), { signal: entrySignal }),
   }));
   const byName = new Map(entries.map((entry) => [entry.filename, entry]));
 

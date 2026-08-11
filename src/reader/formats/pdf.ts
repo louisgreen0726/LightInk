@@ -8,6 +8,11 @@
 
 import { ParseError } from './types.js';
 import { enforcePageCount } from './page-limits.js';
+import {
+  isReaderLoadCancelled,
+  ReaderLoadCancelledError,
+  throwIfReaderLoadCancelled,
+} from '../load-lifecycle.js';
 
 /** 缩放档位（与字号缩放独立，PDF 像素级）。 */
 export const PDF_SCALE_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -124,18 +129,30 @@ function devicePixelRatio(): number {
 export async function renderPdfInto(
   bytes: Uint8Array,
   container: HTMLElement,
+  signal?: AbortSignal,
 ): Promise<PdfRenderHandle> {
+  throwIfReaderLoadCancelled(signal);
   const pdfjs = await import('pdfjs-dist');
   const workerModule = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+  throwIfReaderLoadCancelled(signal);
   pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
 
-  let loadingTask;
-  let doc;
+  const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+  let doc: Awaited<typeof loadingTask.promise>;
+  const cancelInitialLoad = (): void => {
+    void loadingTask.destroy();
+  };
   try {
-    loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+    signal?.addEventListener('abort', cancelInitialLoad, { once: true });
     doc = await loadingTask.promise;
-  } catch {
+    throwIfReaderLoadCancelled(signal);
+  } catch (error) {
+    if (isReaderLoadCancelled(error, signal)) {
+      throw new ReaderLoadCancelledError();
+    }
     throw new ParseError('PDF 文件损坏或无法解析');
+  } finally {
+    signal?.removeEventListener('abort', cancelInitialLoad);
   }
   try {
     enforcePageCount('pdf', doc.numPages);
@@ -145,6 +162,34 @@ export async function renderPdfInto(
   }
   const controller = createPdfPageController(doc.numPages);
   const total = controller.totalPages;
+  let destroyed = false;
+  let renderGeneration = 0;
+  const renderTasks = new Map<
+    number,
+    { cancel(): void; readonly promise: Promise<unknown> }
+  >();
+  let observer: IntersectionObserver | null = null;
+  const isAborted = (): boolean => signal?.aborted === true;
+
+  const cancelRenderTasks = (): void => {
+    for (const task of renderTasks.values()) {
+      try {
+        task.cancel();
+      } catch {
+        // A completed pdf.js task may reject a late cancellation.
+      }
+    }
+    renderTasks.clear();
+  };
+
+  const onAbort = (): void => {
+    renderGeneration += 1;
+    cancelRenderTasks();
+    observer?.disconnect();
+    void loadingTask.destroy();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  throwIfReaderLoadCancelled(signal);
 
   // 每页一个占位 slot；预取 viewport 定高（getPage 不栅格化，开销远小于 render）。
   const slots: HTMLDivElement[] = [];
@@ -157,6 +202,7 @@ export async function renderPdfInto(
   container.replaceChildren();
   for (let i = 1; i <= total; i += 1) {
     const page = await doc.getPage(i);
+    throwIfReaderLoadCancelled(signal);
     const vp = page.getViewport({ scale: controller.scale });
     sizes.push({ width: vp.width, height: vp.height });
     const slot = document.createElement('div');
@@ -168,15 +214,26 @@ export async function renderPdfInto(
   }
 
   /** 渲染单页到其 slot（幂等：已有 canvas 则跳过）。 */
-  const renderSlot = async (index: number): Promise<void> => {
+  const renderSlot = async (
+    index: number,
+    generation = renderGeneration,
+  ): Promise<void> => {
     const slot = slots[index];
-    if (slot === undefined) {
+    if (
+      slot === undefined ||
+      destroyed ||
+      isAborted() ||
+      generation !== renderGeneration
+    ) {
       return;
     }
     if (slot.querySelector('canvas') !== null) {
       return; // 已渲染
     }
     const page = await doc.getPage(index + 1);
+    if (destroyed || isAborted() || generation !== renderGeneration) {
+      return;
+    }
     const dpr = devicePixelRatio();
     const viewport = page.getViewport({ scale: controller.scale * dpr });
     const canvas = document.createElement('canvas');
@@ -188,25 +245,54 @@ export async function renderPdfInto(
     slot.appendChild(canvas);
     const ctx = canvas.getContext('2d');
     if (ctx === null) {
+      canvas.remove();
       return;
     }
-    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+    const task = page.render({ canvas, canvasContext: ctx, viewport });
+    renderTasks.set(index, task);
+    try {
+      await task.promise;
+    } catch (error) {
+      if (
+        destroyed ||
+        isAborted() ||
+        generation !== renderGeneration ||
+        (error as { name?: unknown }).name === 'RenderingCancelledException'
+      ) {
+        canvas.remove();
+        return;
+      }
+      canvas.remove();
+      throw error;
+    } finally {
+      if (renderTasks.get(index) === task) {
+        renderTasks.delete(index);
+      }
+    }
+  };
+
+  const queueRender = (index: number): void => {
+    void renderSlot(index).catch((error: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error('[lightink/reader] PDF page render failed', error);
+    });
   };
 
   /** 清掉离屏过远的 slot 画布，释放内存（再次进入视口会重渲染）。 */
   const clearSlot = (index: number): void => {
+    renderTasks.get(index)?.cancel();
     slots[index]?.replaceChildren();
   };
 
   // 懒渲染：视口附近（上下各 ~2 屏缓冲）的页栅格化，离屏过远的清画布。
-  const observer =
+  observer =
     typeof IntersectionObserver !== 'undefined'
       ? new IntersectionObserver(
           (entries) => {
             for (const entry of entries) {
               const idx = Number((entry.target as HTMLElement).dataset.pageIndex);
               if (entry.isIntersecting) {
-                void renderSlot(idx);
+                queueRender(idx);
               } else {
                 clearSlot(idx);
               }
@@ -222,7 +308,7 @@ export async function renderPdfInto(
   } else {
     // 无 IntersectionObserver（理论上 WebView2 不会有）兜底：渲染全部。
     for (let i = 0; i < total; i += 1) {
-      void renderSlot(i);
+      queueRender(i);
     }
   }
 
@@ -245,9 +331,15 @@ export async function renderPdfInto(
   container.addEventListener('scroll', onScroll, { passive: true });
 
   const rerender = async (): Promise<void> => {
+    renderGeneration += 1;
+    const generation = renderGeneration;
+    cancelRenderTasks();
     // 缩放后重算所有 slot 尺寸（CSS px）。
     for (let i = 0; i < total; i += 1) {
       const page = await doc.getPage(i + 1);
+      if (destroyed || isAborted() || generation !== renderGeneration) {
+        return;
+      }
       const vp = page.getViewport({ scale: controller.scale });
       sizes[i] = { width: vp.width, height: vp.height };
       sizeSlot(slots[i]!, vp.width, vp.height);
@@ -257,12 +349,14 @@ export async function renderPdfInto(
     // 显式重渲染当前可见页（observer 对已在缓冲区的元素不会重复派发）。
     const scrollTop = container.scrollTop;
     const viewH = container.clientHeight;
+    let pageTop = 0;
     for (let i = 0; i < total; i += 1) {
-      const top = sizes[i]!.height * i;
-      const bottom = top + sizes[i]!.height;
-      if (bottom >= scrollTop && top <= scrollTop + viewH) {
-        await renderSlot(i);
+      const pageHeight = sizes[i]!.height;
+      const bottom = pageTop + pageHeight;
+      if (bottom >= scrollTop && pageTop <= scrollTop + viewH) {
+        await renderSlot(i, generation);
       }
+      pageTop = bottom;
     }
     onScroll();
   };
@@ -278,6 +372,13 @@ export async function renderPdfInto(
     rerender,
     scrollToPage,
     destroy: async () => {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      renderGeneration += 1;
+      signal?.removeEventListener('abort', onAbort);
+      cancelRenderTasks();
       container.removeEventListener('scroll', onScroll);
       observer?.disconnect();
       await loadingTask.destroy();

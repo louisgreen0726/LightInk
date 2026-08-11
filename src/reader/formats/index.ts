@@ -10,6 +10,7 @@ import { parseFb2 } from './fb2.js';
 import { parseMobi } from './mobi.js';
 import { parseTxt } from './txt.js';
 import { ParseError, type ReaderContent } from './types.js';
+import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 
 /** 取路径的小写扩展名（无扩展名/末尾点为 ''）。 */
 function extOfPath(path: string): string {
@@ -29,19 +30,28 @@ function extOfPath(path: string): string {
 export async function parseReaderContent(
   path: string,
   bytes: Uint8Array,
+  signal?: AbortSignal,
 ): Promise<ReaderContent> {
+  throwIfReaderLoadCancelled(signal);
   const ext = extOfPath(path);
+  let content: ReaderContent;
   switch (ext) {
     case 'txt':
-      return parseTxt(bytes);
+      content = parseTxt(bytes);
+      break;
     case 'fb2':
-      return parseFb2(bytes);
+      content = parseFb2(bytes);
+      break;
     case 'epub':
-      return parseEpub(bytes);
+      content = await parseEpub(bytes, signal);
+      break;
     case 'mobi':
     case 'azw3':
-      return parseMobi(bytes);
+      content = parseMobi(bytes);
+      break;
     default:
       throw new ParseError(`暂不支持的阅读格式：.${ext || '?'}`);
   }
+  throwIfReaderLoadCancelled(signal);
+  return content;
 }

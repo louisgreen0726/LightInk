@@ -9,6 +9,7 @@
 import { ParseError } from './types.js';
 import { openSafeArchive } from './safe-archive.js';
 import { enforcePageCount } from './page-limits.js';
+import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 
 const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 
@@ -71,8 +72,12 @@ export function listImageEntries(names: readonly string[]): string[] {
  * 把 CBZ 字节渲染为容器内的逐页 <img>（jszip 懒加载）。图片以 base64 data URL 内联。
  * 空图片集抛 ParseError。DOM 渲染为手工验证（无 jsdom/canvas）。
  */
-export async function renderCbzInto(bytes: Uint8Array, container: HTMLElement): Promise<void> {
-  const archive = await openSafeArchive(bytes, 'CBZ');
+export async function renderCbzInto(
+  bytes: Uint8Array,
+  container: HTMLElement,
+  signal?: AbortSignal,
+): Promise<void> {
+  const archive = await openSafeArchive(bytes, 'CBZ', signal);
   try {
     const images = listImageEntries(archive.entries.map((entry) => entry.filename));
     if (images.length === 0) {
@@ -81,11 +86,13 @@ export async function renderCbzInto(bytes: Uint8Array, container: HTMLElement): 
     enforcePageCount('cbz', images.length);
     container.replaceChildren();
     for (const name of images) {
+      throwIfReaderLoadCancelled(signal);
       const file = archive.file(name);
       if (file === null) {
         continue;
       }
-      const data = await file.readBytes();
+      const data = await file.readBytes(signal);
+      throwIfReaderLoadCancelled(signal);
       let binary = '';
       for (let offset = 0; offset < data.length; offset += 0x8000) {
         binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000));
