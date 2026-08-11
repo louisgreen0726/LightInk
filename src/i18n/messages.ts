@@ -98,6 +98,8 @@ const en: Dict = {
   'error.openFile': 'Could not open “{path}”: the file may have been moved or deleted.',
   'error.openFileMissing': 'Could not open “{path}”: file not found or unreadable.',
   'error.exportFailed': 'Export failed',
+  'error.exportUnsafeCss':
+    'Export stopped because the custom theme CSS contains a reserved </style sequence.',
   'error.recentRemoved': 'Removed from recent files.',
   'error.recentsPersistFailed':
     'Could not update recent files. Your documents are unaffected.',
@@ -322,6 +324,7 @@ const zhCN: Dict = {
   'error.openFile': '无法打开「{path}」：文件可能已被移动或删除。',
   'error.openFileMissing': '无法打开「{path}」：文件不存在或无法读取。',
   'error.exportFailed': '导出失败',
+  'error.exportUnsafeCss': '导出已停止：自定义主题 CSS 含有保留的 </style 终止序列。',
   'error.recentRemoved': '已从最近打开中移除。',
   'error.recentsPersistFailed': '无法更新最近打开列表，文档内容不受影响。',
   'error.unsupportedType':

@@ -27,6 +27,22 @@ export interface HtmlExportOptions {
   readonly cssText: string;
 }
 
+const STYLE_END_BOUNDARY = /<\/style/i;
+
+export class UnsafeCssBoundaryError extends Error {
+  constructor() {
+    super('CSS contains the reserved </style sequence');
+    this.name = 'UnsafeCssBoundaryError';
+  }
+}
+
+/** CSS is embedded in an HTML raw-text element and must not contain its end boundary. */
+export function assertSafeCssBoundary(cssText: string): void {
+  if (STYLE_END_BOUNDARY.test(cssText)) {
+    throw new UnsafeCssBoundaryError();
+  }
+}
+
 /** 文本节点转义（<title> 用）。 */
 export function escapeHtmlText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -43,6 +59,7 @@ export function escapeHtmlAttr(text: string): string {
  * 故 `<meta charset>` 放在 head 第一位。
  */
 export function buildHtmlDocument(opts: HtmlExportOptions): string {
+  assertSafeCssBoundary(opts.cssText);
   const theme = opts.theme.trim() === '' ? 'warm-light' : opts.theme;
   return [
     '<!DOCTYPE html>',

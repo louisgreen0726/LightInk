@@ -12,6 +12,7 @@ import {
   escapeHtmlText,
   isEmbeddableImageSrc,
   mimeFromPath,
+  UnsafeCssBoundaryError,
 } from '../html-export.js';
 
 describe('buildHtmlDocument', () => {
@@ -59,6 +60,17 @@ describe('buildHtmlDocument', () => {
     expect(html).toContain('hljs-keyword');
     expect(html).toContain('<span class="katex">E=mc²</span>');
     expect(html).toContain('<svg class="lightink-mermaid-svg">');
+  });
+
+  it('拒绝大小写不敏感的 style 结束边界', () => {
+    expect(() =>
+      buildHtmlDocument({
+        title: 't',
+        theme: 'warm-light',
+        bodyHtml: '<p>正文</p>',
+        cssText: 'body { color: black } /* </StYlE boundary */',
+      }),
+    ).toThrow(UnsafeCssBoundaryError);
   });
 });
 

@@ -598,6 +598,7 @@ const exportDeps: ExportServiceDeps = {
   // 原生矢量 PDF（Windows WebView2 PrintToPdf）：含可选文字；失败回退 printHtml。
   printPdfNative: (html, path) =>
     printToPdfFile(document, html, () => invoke<void>('print_webview_to_pdf', { path })),
+  getUnsafeCssErrorMessage: () => i18n.t('error.exportUnsafeCss'),
   reportError: (message, error) => {
     // eslint-disable-next-line no-console
     console.error(`[lightink/export] ${message}`, error);
