@@ -9,9 +9,56 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+pub const MAX_TEXT_FILE_BYTES: u64 = 32 * 1024 * 1024;
+pub const MAX_READER_FILE_BYTES: u64 = 128 * 1024 * 1024;
+
+fn file_limit_error(actual: u64, limit: u64) -> String {
+    format!("FILE_TOO_LARGE:{actual}:{limit}")
+}
+
+fn ensure_file_size(actual: u64, limit: u64) -> Result<(), String> {
+    if actual > limit {
+        return Err(file_limit_error(actual, limit));
+    }
+    Ok(())
+}
+
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let file = File::open(path).map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    let size = file
+        .metadata()
+        .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?
+        .len();
+    ensure_file_size(size, limit)?;
+
+    let mut bytes = Vec::with_capacity(size.min(limit) as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    ensure_file_size(bytes.len() as u64, limit)?;
+    Ok(bytes)
+}
+
+fn reader_limit_for_path(path: &Path) -> u64 {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "md" | "markdown" | "mdown" | "mkd" | "txt"
+    ) {
+        MAX_TEXT_FILE_BYTES
+    } else {
+        MAX_READER_FILE_BYTES
+    }
+}
+
 /// 读取 UTF-8 文本文件。io 错误映射为可读的中文错误信息。
 pub fn read_file_impl(path: &Path) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))
+    String::from_utf8(read_bounded(path, MAX_TEXT_FILE_BYTES)?)
+        .map_err(|_| "文件不是有效的 UTF-8 文本".to_string())
 }
 
 /// 原子写入：先写同目录临时文件并 flush/sync，再 rename 覆盖目标。
@@ -135,7 +182,7 @@ pub fn encode_base64(input: &[u8]) -> String {
 
 /// 读取文件的原始字节（不做 UTF-8 解码，电子书多为二进制）。io 错误映射为可读中文信息。
 pub fn read_file_bytes_impl(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))
+    read_bounded(path, reader_limit_for_path(path))
 }
 
 /// 读取文件字节并以标准 base64 返回（供前端 reader 解析二进制电子书格式）。
@@ -305,5 +352,42 @@ mod tests {
         let missing = dir.path().join("nope.epub");
         let err = super::read_file_bytes_impl(&missing).expect_err("must fail");
         assert!(err.contains("无法读取文件"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn file_size_limits_accept_boundary_and_reject_one_extra_byte() {
+        assert!(ensure_file_size(MAX_TEXT_FILE_BYTES, MAX_TEXT_FILE_BYTES).is_ok());
+        assert_eq!(
+            ensure_file_size(MAX_TEXT_FILE_BYTES + 1, MAX_TEXT_FILE_BYTES).unwrap_err(),
+            format!(
+                "FILE_TOO_LARGE:{}:{}",
+                MAX_TEXT_FILE_BYTES + 1,
+                MAX_TEXT_FILE_BYTES
+            )
+        );
+        assert!(ensure_file_size(MAX_READER_FILE_BYTES, MAX_READER_FILE_BYTES).is_ok());
+        assert!(ensure_file_size(MAX_READER_FILE_BYTES + 1, MAX_READER_FILE_BYTES).is_err());
+    }
+
+    #[test]
+    fn oversized_files_are_rejected_before_allocation() {
+        let dir = temp_dir();
+        let text = dir.path().join("oversized.txt");
+        File::create(&text)
+            .unwrap()
+            .set_len(MAX_TEXT_FILE_BYTES + 1)
+            .unwrap();
+        assert!(read_file_impl(&text)
+            .unwrap_err()
+            .starts_with("FILE_TOO_LARGE:"));
+
+        let reader = dir.path().join("oversized.epub");
+        File::create(&reader)
+            .unwrap()
+            .set_len(MAX_READER_FILE_BYTES + 1)
+            .unwrap();
+        assert!(read_file_bytes_impl(&reader)
+            .unwrap_err()
+            .starts_with("FILE_TOO_LARGE:"));
     }
 }

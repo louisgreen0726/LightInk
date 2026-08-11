@@ -67,6 +67,7 @@ import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
 import { createReaderView } from './reader/reader-view.js';
+import { decodeReaderFileBase64, ReaderFileTooLargeError } from './reader/file-bytes.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
@@ -206,22 +207,29 @@ function activeReaderTab(): ReaderTabState | null {
   return tab.kind === 'reader' ? tab : null;
 }
 
-/**
- * base64 → Uint8Array（read_file_bytes 返回 base64，前端 atob 解码为字节供解析器）。
- */
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = typeof atob === 'function' ? atob(b64) : '';
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
 /** 读取阅读文件原始字节（read_file_bytes base64 → Uint8Array），供 reader-view.load。 */
 async function readReaderBytes(filePath: string): Promise<Uint8Array> {
-  const b64 = await invoke<string>('read_file_bytes', { path: filePath });
-  return base64ToBytes(b64);
+  try {
+    const b64 = await invoke<string>('read_file_bytes', { path: filePath });
+    return decodeReaderFileBase64(filePath, b64);
+  } catch (error) {
+    const detail = String(error);
+    const nativeLimit = detail.match(/FILE_TOO_LARGE:(\d+):(\d+)/);
+    if (nativeLimit !== null) {
+      throw new Error(
+        i18n.t('reader.fileTooLarge', { actual: nativeLimit[1]!, limit: nativeLimit[2]! }),
+      );
+    }
+    if (error instanceof ReaderFileTooLargeError) {
+      throw new Error(
+        i18n.t('reader.fileTooLarge', {
+          actual: String(error.actualBytes),
+          limit: String(error.limitBytes),
+        }),
+      );
+    }
+    throw error;
+  }
 }
 
 /**

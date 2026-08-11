@@ -102,10 +102,6 @@ fn require_path_within(path: &Path, root: &Path, description: &str) -> Result<()
 /// - 为 None（文档未保存）：`rel_path` 必须以 `assets/` 开头，剥离后解析
 ///   `<staging_root>/staging-assets/<session_id>/<name>`；`session_id`
 ///   缺失时报错。
-/// 导出图片读取上限：超过即拒绝（全量读入 + base64 会放大约 4/3 倍并
-/// 经 IPC 返回，超大文件会导致卡顿/内存峰值）。
-const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
-
 pub fn read_image_base64_impl(
     doc_dir: Option<&Path>,
     staging_root: &Path,
@@ -154,11 +150,11 @@ pub fn read_image_base64_impl(
         return Err(format!("图片路径不是普通文件: {}", full.display()));
     }
     let size = metadata.len();
-    if size > MAX_IMAGE_BYTES {
+    if size > crate::asset::MAX_IMAGE_BYTES {
         return Err(format!(
             "图片过大（{} 字节，上限 {} 字节）: {}",
             size,
-            MAX_IMAGE_BYTES,
+            crate::asset::MAX_IMAGE_BYTES,
             full.display()
         ));
     }
@@ -401,7 +397,7 @@ mod tests {
         // 用稀疏文件快速构造超限体积
         let big = doc_dir.join("assets").join("big.png");
         let f = fs::File::create(&big).unwrap();
-        f.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        f.set_len(crate::asset::MAX_IMAGE_BYTES + 1).unwrap();
         drop(f);
         let err = read_image_base64_impl(Some(&doc_dir), dir.path(), None, "assets/big.png")
             .expect_err("must fail on oversize");

@@ -12,6 +12,14 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
+export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+
+export function assertImageByteLength(length: number): void {
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_IMAGE_BYTES) {
+    throw new Error(`Image is too large (${length} bytes; limit ${MAX_IMAGE_BYTES} bytes)`);
+  }
+}
+
 /**
  * 图片保存回调：接收图片字节与扩展名，resolve 为文档内引用的相对路径
  * （`assets/<name>.<ext>`）；落盘失败时 reject —— 调用方必须不插入引用。
@@ -76,6 +84,7 @@ export function fileNameStem(name: string): string {
 /** ArrayBuffer → base64 字符串（分块避免大图的参数栈溢出）。 */
 export function bytesToBase64(bytes: ArrayBuffer | Uint8Array): string {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  assertImageByteLength(view.byteLength);
   const CHUNK = 0x8000;
   let binary = '';
   for (let i = 0; i < view.length; i += CHUNK) {

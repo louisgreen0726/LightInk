@@ -30,6 +30,8 @@ const ASSETS_DIR_NAME: &str = "assets";
 const STAGING_DIR_NAME: &str = "staging-assets";
 /// 允许的图片扩展名白名单（小写）。svg 经 `<img>` 渲染，不内联解析。
 const ALLOWED_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
+pub const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_IMAGE_BASE64_LEN: usize = (MAX_IMAGE_BYTES as usize).div_ceil(3) * 4;
 
 /// 进程内单调计数器：与毫秒时间戳、内容哈希共同保证文件名唯一
 ///（同一毫秒连发多张图也不冲突）。
@@ -115,6 +117,22 @@ fn validate_ext(ext: &str) -> Result<String, String> {
     Ok(lowered)
 }
 
+fn ensure_image_size(actual: u64) -> Result<(), String> {
+    if actual > MAX_IMAGE_BYTES {
+        return Err(format!("IMAGE_TOO_LARGE:{actual}:{MAX_IMAGE_BYTES}"));
+    }
+    Ok(())
+}
+
+fn ensure_image_base64_length(actual: usize) -> Result<(), String> {
+    if actual > MAX_IMAGE_BASE64_LEN {
+        return Err(format!(
+            "IMAGE_BASE64_TOO_LARGE:{actual}:{MAX_IMAGE_BASE64_LEN}"
+        ));
+    }
+    Ok(())
+}
+
 /// FNV-1a 64-bit（与 snapshot.rs 同一哈希，跨运行稳定）。
 pub fn fnv64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -190,6 +208,7 @@ pub fn save_asset_impl(
     if bytes.is_empty() {
         return Err("图片内容为空，未保存".to_owned());
     }
+    ensure_image_size(bytes.len() as u64)?;
     let name = format!("{}.{}", unique_asset_name(bytes), ext);
     let dir = match doc_dir {
         Some(d) => d.join(ASSETS_DIR_NAME),
@@ -387,7 +406,9 @@ pub fn save_asset(
     bytes_base64: String,
     ext: String,
 ) -> Result<String, String> {
+    ensure_image_base64_length(bytes_base64.len())?;
     let bytes = decode_base64(&bytes_base64)?;
+    ensure_image_size(bytes.len() as u64)?;
     let staging_root = resolve_base_dir(&app);
     let doc_dir = resolve_doc_dir(doc_path.as_deref())?;
     save_asset_impl(doc_dir.as_deref(), &staging_root, &session_id, &bytes, &ext)
@@ -406,6 +427,10 @@ pub fn import_image_asset_impl(
         .extension()
         .and_then(|e| e.to_str())
         .ok_or_else(|| format!("无法识别图片扩展名: {}", source_path.display()))?;
+    let size = fs::metadata(source_path)
+        .map_err(|e| format!("无法读取图片信息 {}: {}", source_path.display(), e))?
+        .len();
+    ensure_image_size(size)?;
     let bytes = fs::read(source_path)
         .map_err(|e| format!("无法读取图片 {}: {}", source_path.display(), e))?;
     save_asset_impl(doc_dir, staging_root, session_id, &bytes, ext)
@@ -485,6 +510,14 @@ mod tests {
         for bad in ["exe", "html", ".png", "p/ng", "p\\ng", "", "js"] {
             assert!(validate_ext(bad).is_err(), "should reject {:?}", bad);
         }
+    }
+
+    #[test]
+    fn image_limits_accept_boundary_and_reject_one_extra_byte() {
+        assert!(ensure_image_size(MAX_IMAGE_BYTES).is_ok());
+        assert!(ensure_image_size(MAX_IMAGE_BYTES + 1).is_err());
+        assert!(ensure_image_base64_length(MAX_IMAGE_BASE64_LEN).is_ok());
+        assert!(ensure_image_base64_length(MAX_IMAGE_BASE64_LEN + 1).is_err());
     }
 
     // -- 保存 --
