@@ -24,7 +24,7 @@ function extOfPath(path: string): string {
 
 /**
  * 按文件扩展名解析字节为章节化阅读内容。
- * epub/txt/fb2 同步或异步解析；azw3 复用 mobi 解析（best-effort，仅无 DRM）。
+ * epub/txt/fb2 同步或异步解析；MOBI 仅支持明确检测过的 PalmDOC/MOBI6 子集。
  * 不支持的扩展名抛 ParseError。
  */
 export async function parseReaderContent(
@@ -46,7 +46,6 @@ export async function parseReaderContent(
       content = await parseEpub(bytes, signal);
       break;
     case 'mobi':
-    case 'azw3':
       content = parseMobi(bytes);
       break;
     default:

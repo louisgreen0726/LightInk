@@ -4,7 +4,7 @@
  * 解包 PalmDB（PDB 头 + 记录索引），读 record 0 的 PalmDOC 头得到压缩方式、正文
  * 总长、文本记录数与加密标志；DRM（encryption≠0）立即报错。按记录拼装正文字节，
  * PalmDOC LZ77（compression==2）逐记录解压；无压缩（==1）原样。正文为 HTML，
- * 按 <mbp:pagebreak/> 切章并消毒。仅支持无 DRM 的经典 PalmDOC MOBI；KF8/AZW3
+ * 按 <mbp:pagebreak/> 切章并消毒。仅支持无 DRM 的经典 PalmDOC MOBI；KF8/MOBI8
  * 复杂版式与 HUFF/CDIC 压缩不在本任务范围（遇 HUFF 报错）。
  *
  * 纯二进制 + 字符串实现，node 可测（测试合成最小 PalmDOC MOBI）。

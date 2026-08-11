@@ -47,7 +47,7 @@ export interface MarkdownTabState extends TabBase {
 }
 
 /**
- * 只读阅读标签（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）。不挂编辑器，
+ * 只读阅读标签（PDF/EPUB/MOBI/FB2/CBZ/TXT）。不挂编辑器，
  * dirty 恒为 false，永不进入保存/快照/外部变更检测等可写路径
  * （见 tab-manager 各方法的 kind 守卫）。持有一个 ReaderInstance，
  * 生命周期由 TabManager 管理。

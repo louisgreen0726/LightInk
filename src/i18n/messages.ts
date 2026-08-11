@@ -104,7 +104,7 @@ const en: Dict = {
   'error.recentsPersistFailed':
     'Could not update recent files. Your documents are unaffected.',
   'error.unsupportedType':
-    'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
+    'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/FB2/CBZ/TXT), and images are supported.',
   'reader.empty': 'Open an eBook to start reading.',
   'reader.loading': 'Loading document…',
   'reader.cancelled': 'Document loading was cancelled.',
@@ -347,7 +347,7 @@ const zhCN: Dict = {
   'error.recentRemoved': '已从最近打开中移除。',
   'error.recentsPersistFailed': '无法更新最近打开列表，文档内容不受影响。',
   'error.unsupportedType':
-    '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
+    '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/FB2/CBZ/TXT）或图片。',
   'reader.empty': '打开一本电子书开始阅读。',
   'reader.loading': '正在加载文档…',
   'reader.cancelled': '文档加载已取消。',
