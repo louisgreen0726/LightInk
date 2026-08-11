@@ -51,8 +51,9 @@ import {
   type InsertElementId,
 } from './editor/insert-commands.js';
 import { fileNameStem, importImageAsset } from './asset/asset-service.js';
-import { isReaderPath, planDroppedFiles } from './file/file-drop.js';
+import { planDroppedFiles } from './file/file-drop.js';
 import { OPEN_FILTERS } from './file/file-dialog.js';
+import { openDocumentPath } from './file/document-router.js';
 import { buildExportCss } from './export/export-css.js';
 import {
   exportActiveTabHtml,
@@ -92,7 +93,7 @@ import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
-import { createWindowCloseGuard } from './ui/window-lifecycle.js';
+import { installWindowCloseProtection } from './ui/window-lifecycle.js';
 import {
   createBoundVersionActions,
   showVersionsModal,
@@ -286,46 +287,30 @@ async function readReaderBytes(
  * 失败标签会立即清理。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
  */
 async function openPathByKind(path: string): Promise<TabState | null> {
-  if (!isReaderPath(path)) {
-    return manager.openFile(path);
-  }
-  const existing = manager.tabList.find(
-    (candidate): candidate is ReaderTabState =>
-      candidate.kind === 'reader' && candidate.filePath === path,
-  );
-  let tab: ReaderTabState;
-  try {
-    tab = await manager.openReader(path);
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error(`[lightink] 打开阅读文件失败: ${path}`, error);
-    return null;
-  }
-  if (existing === tab) {
-    return tab;
-  }
-  try {
-    await tab.reader.load(path);
-  } catch (error) {
-    await manager.closeTab(tab.id).catch(() => false);
-    const detail =
-      error instanceof ReaderLimitError
-        ? i18n.t(`reader.limit.${error.kind}`, {
-            actual: String(error.actual),
-            limit: String(error.limit),
-          })
-        : error instanceof ReaderCapabilityError
-          ? i18n.t(`reader.capability.${error.kind}`)
-          : error instanceof Error
-            ? error.message
-            : String(error ?? '');
-    void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
-      title: i18n.t('app.name'),
-      kind: 'error',
-    });
-    return null;
-  }
-  return tab;
+  return openDocumentPath(path, {
+    manager,
+    onReaderOpenError: (failedPath, error) => {
+      // eslint-disable-next-line no-console
+      console.error(`[lightink] 打开阅读文件失败: ${failedPath}`, error);
+    },
+    onReaderLoadError: (error) => {
+      const detail =
+        error instanceof ReaderLimitError
+          ? i18n.t(`reader.limit.${error.kind}`, {
+              actual: String(error.actual),
+              limit: String(error.limit),
+            })
+          : error instanceof ReaderCapabilityError
+            ? i18n.t(`reader.capability.${error.kind}`)
+            : error instanceof Error
+              ? error.message
+              : String(error ?? '');
+      void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
+        title: i18n.t('app.name'),
+        kind: 'error',
+      });
+    },
+  });
 }
 
 /**
@@ -1957,8 +1942,15 @@ function getShortcutBindings(): CheatBinding[] {
   }));
 }
 
-function makeApplicationCloseGuard(closeWindow: () => Promise<void>) {
-  return createWindowCloseGuard({
+/** Protect native title-bar, system-menu, and shortcut initiated application exits. */
+function installApplicationCloseProtection(): void {
+  installWindowCloseProtection({
+    window,
+    isNative: '__TAURI_INTERNALS__' in window,
+    getNativeWindow: async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      return getCurrentWindow();
+    },
     hasUnsavedChanges: () => {
       commitAllSourceModes();
       return manager.tabList.some((tab) => tab.kind === 'markdown' && tab.dirty);
@@ -1977,42 +1969,11 @@ function makeApplicationCloseGuard(closeWindow: () => Promise<void>) {
     },
     closeAllTabs: (action) => manager.closeAllTabs(action),
     flushDirtySnapshots: () => manager.flushDirtySnapshots(),
-    closeWindow,
     reportError: (error) => {
       // eslint-disable-next-line no-console
-      console.error('[lightink/window-close] close failed', error);
+      console.error('[lightink/window-close] close protection failed', error);
     },
   });
-}
-
-/** Protect native title-bar, system-menu, and shortcut initiated application exits. */
-function installApplicationCloseProtection(): void {
-  const installBrowserFallback = (): void => {
-    const guard = makeApplicationCloseGuard(async () => undefined);
-    window.addEventListener('beforeunload', (event) => {
-      guard.handleBeforeUnload(event);
-    });
-  };
-
-  if (!('__TAURI_INTERNALS__' in window)) {
-    installBrowserFallback();
-    return;
-  }
-  void (async () => {
-    try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const appWindow = getCurrentWindow();
-      const guard = makeApplicationCloseGuard(() => appWindow.close());
-      await appWindow.onCloseRequested((event) => {
-        guard.handleCloseRequested(event);
-      });
-    } catch (error) {
-      // Keep browser-style protection when the native event bridge is unavailable.
-      installBrowserFallback();
-      // eslint-disable-next-line no-console
-      console.error('[lightink/window-close] native close listener unavailable', error);
-    }
-  })();
 }
 
 installApplicationCloseProtection();

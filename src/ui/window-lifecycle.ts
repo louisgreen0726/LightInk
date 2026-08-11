@@ -23,6 +23,25 @@ export interface WindowCloseGuard {
   isHandlingClose(): boolean;
 }
 
+export interface NativeWindowCloseTarget {
+  close(): Promise<void>;
+  onCloseRequested(listener: (event: CloseRequestEventLike) => void): Promise<unknown>;
+}
+
+export interface BrowserCloseTarget {
+  addEventListener(
+    type: 'beforeunload',
+    listener: (event: BeforeUnloadEventLike) => void,
+  ): void;
+}
+
+export interface WindowCloseProtectionDeps
+  extends Omit<WindowCloseGuardDeps, 'closeWindow'> {
+  readonly window: BrowserCloseTarget;
+  readonly isNative: boolean;
+  readonly getNativeWindow: () => Promise<NativeWindowCloseTarget>;
+}
+
 /** Coordinate native close requests without allowing async confirmation races. */
 export function createWindowCloseGuard(deps: WindowCloseGuardDeps): WindowCloseGuard {
   let allowNextClose = false;
@@ -97,4 +116,38 @@ export function createWindowCloseGuard(deps: WindowCloseGuardDeps): WindowCloseG
     },
     isHandlingClose: () => inFlight !== null,
   };
+}
+
+/** Bind the shared guard to Tauri close events or the browser beforeunload fallback. */
+export function installWindowCloseProtection(deps: WindowCloseProtectionDeps): void {
+  const installBrowserFallback = (): void => {
+    const guard = createWindowCloseGuard({
+      ...deps,
+      closeWindow: async () => undefined,
+    });
+    deps.window.addEventListener('beforeunload', (event) => {
+      guard.handleBeforeUnload(event);
+    });
+  };
+
+  if (!deps.isNative) {
+    installBrowserFallback();
+    return;
+  }
+
+  void deps
+    .getNativeWindow()
+    .then(async (appWindow) => {
+      const guard = createWindowCloseGuard({
+        ...deps,
+        closeWindow: () => appWindow.close(),
+      });
+      await appWindow.onCloseRequested((event) => {
+        guard.handleCloseRequested(event);
+      });
+    })
+    .catch((error: unknown) => {
+      installBrowserFallback();
+      deps.reportError?.(error);
+    });
 }

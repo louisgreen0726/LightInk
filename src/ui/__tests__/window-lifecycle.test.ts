@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createWindowCloseGuard,
+  installWindowCloseProtection,
   type BeforeUnloadEventLike,
 } from '../window-lifecycle.js';
 
@@ -113,5 +114,27 @@ describe('browser beforeunload fallback', () => {
     dirty = false;
     guard.handleBeforeUnload(event);
     expect(event.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to beforeunload when the native close bridge cannot initialize', async () => {
+    const addEventListener = vi.fn();
+    const reportError = vi.fn();
+    const failure = new Error('window bridge unavailable');
+    installWindowCloseProtection({
+      window: { addEventListener },
+      isNative: true,
+      getNativeWindow: vi.fn(async () => {
+        throw failure;
+      }),
+      hasUnsavedChanges: () => false,
+      confirmExit: vi.fn(async () => 'cancel' as const),
+      closeAllTabs: vi.fn(async () => false),
+      flushDirtySnapshots: vi.fn(),
+      reportError,
+    });
+
+    await vi.waitFor(() => expect(addEventListener).toHaveBeenCalledOnce());
+    expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    expect(reportError).toHaveBeenCalledWith(failure);
   });
 });
