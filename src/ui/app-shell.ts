@@ -19,6 +19,7 @@ import {
 } from './chrome-prefs.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
+import { labelModal, mountModalFocus } from './modal-focus.js';
 
 export interface ShellTabInfo {
   id: string;
@@ -785,23 +786,21 @@ export function createAppShell(
     overlay.className = 'lightink-modal-overlay';
     const dialog = document.createElement('div');
     dialog.className = 'lightink-modal-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
     const title = document.createElement('div');
     title.className = 'lightink-modal-title';
     title.textContent = actions.t('help.cheatsheet');
+    labelModal(dialog, title);
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'lightink-modal-close';
     close.textContent = actions.t('dialog.close');
     dialog.append(title, renderCheatsheet(bindings), close);
     overlay.appendChild(dialog);
+    let releaseModal = (): void => overlay.remove();
     function dismiss(): void {
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-    }
-    function onKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        dismiss();
-      }
+      releaseModal();
     }
     overlay.addEventListener('pointerdown', (event) => {
       if (event.target === overlay) {
@@ -809,9 +808,10 @@ export function createAppShell(
       }
     });
     close.addEventListener('click', dismiss);
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(overlay);
-    close.focus();
+    releaseModal = mountModalFocus(document, overlay, dialog, {
+      initialFocus: close,
+      onEscape: dismiss,
+    });
   }
 
   function renderTabBar(
