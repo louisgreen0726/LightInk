@@ -163,7 +163,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let annotations: Annotation[] = [];
   let contentHash: string | null = null;
   let sidebar: AnnotationSidebar | null = null;
-  /** 标注侧栏默认隐藏（用户显式打开才显示，且作为 flex 子项不再覆盖内容）。 */
+  let sidebarBackdrop: HTMLButtonElement | null = null;
+  /** 标注侧栏默认隐藏；桌面占据固定列，窄窗切换为覆盖式 drawer。 */
   let sidebarVisible = false;
   let loadedExt = '';
   let loadGeneration = 0;
@@ -296,12 +297,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     void saveAnnotations();
   };
 
-  const ensureSidebar = (): void => {
+  function ensureSidebar(): void {
     if (sidebar !== null) {
       return;
     }
+    sidebarBackdrop = document.createElement('button');
+    sidebarBackdrop.type = 'button';
+    sidebarBackdrop.className = 'lightink-reader-sidebar-backdrop';
+    sidebarBackdrop.tabIndex = -1;
+    sidebarBackdrop.setAttribute('aria-hidden', 'true');
+    sidebarBackdrop.hidden = !sidebarVisible;
+    sidebarBackdrop.addEventListener('click', () => setSidebarVisible(false));
     sidebar = createAnnotationSidebar({
       t,
+      onClose: () => setSidebarVisible(false),
       onJump: (annotation) => {
         const loc = annotation.locator;
         if (loc.format === 'pdf' && pdfHandle !== null) {
@@ -360,18 +369,40 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         void saveAnnotations();
       },
     });
-    root.appendChild(sidebar.element);
+    sidebar.element.setAttribute('aria-hidden', sidebarVisible ? 'false' : 'true');
+    root.append(sidebarBackdrop, sidebar.element);
     sidebar.render(annotations);
-  };
+  }
 
-  /** 切换侧栏显隐：可见时确保已创建，并用 root class 驱动 CSS 布局（不再覆盖内容）。 */
-  const setSidebarVisible = (visible: boolean): void => {
+  /** 切换侧栏显隐，并让窄窗 drawer 获得或释放键盘焦点。 */
+  function setSidebarVisible(visible: boolean): void {
     sidebarVisible = visible;
     if (visible) {
       ensureSidebar();
     }
     root.classList.toggle('lightink-reader--sidebar', sidebarVisible);
-  };
+    sidebar?.element.setAttribute('aria-hidden', sidebarVisible ? 'false' : 'true');
+    if (sidebarBackdrop !== null) {
+      sidebarBackdrop.hidden = !sidebarVisible;
+    }
+    if (
+      sidebarVisible &&
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 700px)').matches
+    ) {
+      sidebar?.element
+        .querySelector<HTMLButtonElement>('.lightink-reader-sidebar-close')
+        ?.focus();
+    }
+    if (
+      !sidebarVisible &&
+      sidebar !== null &&
+      sidebar.element.contains(document.activeElement)
+    ) {
+      root.focus();
+    }
+  }
 
   const flowDocuments = (): Document[] =>
     Array.from(
@@ -648,6 +679,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   // PDF 连续滚动：←/→ 滚到上/下一页，+/- 缩放，0 还原。
   root.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && sidebarVisible) {
+      setSidebarVisible(false);
+      event.preventDefault();
+      return;
+    }
     const handle = pdfHandle;
     if (handle === null) {
       return;
@@ -811,6 +847,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       flowContentDispose = null;
       sidebar?.destroy();
       sidebar = null;
+      sidebarBackdrop?.remove();
+      sidebarBackdrop = null;
       setReaderState('destroyed');
       root.remove();
       disposeFlowContent?.();

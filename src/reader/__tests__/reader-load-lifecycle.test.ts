@@ -24,6 +24,7 @@ function frameSource(host: HTMLElement): string {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
 
@@ -187,5 +188,43 @@ describe('Reader load lifecycle', () => {
 
     await view.destroy();
     expect(disposeB).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the annotation drawer from its backdrop, button, and Escape', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host);
+    const root = host.querySelector<HTMLElement>('.lightink-reader')!;
+
+    view.toggleSidebar();
+    const sidebar = root.querySelector<HTMLElement>('.lightink-reader-sidebar')!;
+    const backdrop = root.querySelector<HTMLButtonElement>(
+      '.lightink-reader-sidebar-backdrop',
+    )!;
+    const close = sidebar.querySelector<HTMLButtonElement>(
+      '.lightink-reader-sidebar-close',
+    )!;
+    expect(view.isSidebarVisible()).toBe(true);
+    expect(sidebar.getAttribute('aria-hidden')).toBe('false');
+    expect(backdrop.hidden).toBe(false);
+    expect(backdrop.tabIndex).toBe(-1);
+    expect(backdrop.getAttribute('aria-hidden')).toBe('true');
+    expect(close.getAttribute('aria-label')).toBe('annotation.closeSidebar');
+    expect(document.activeElement).toBe(close);
+
+    backdrop.click();
+    expect(view.isSidebarVisible()).toBe(false);
+    expect(sidebar.getAttribute('aria-hidden')).toBe('true');
+    expect(backdrop.hidden).toBe(true);
+    expect(document.activeElement).toBe(root);
+
+    view.toggleSidebar();
+    close.click();
+    expect(view.isSidebarVisible()).toBe(false);
+
+    view.toggleSidebar();
+    root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(view.isSidebarVisible()).toBe(false);
   });
 });
