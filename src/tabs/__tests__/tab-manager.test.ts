@@ -74,7 +74,6 @@ function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
   const roundtrip: RoundtripDeps = {
     readFile: vi.fn(async () => '磁盘内容'),
     writeFile: vi.fn(async () => undefined),
-    clearSnapshot: vi.fn(async () => undefined),
     showOpenDialog: vi.fn(async () => null),
     showSaveDialog: vi.fn(async () => null),
     reportError: vi.fn(),
@@ -182,7 +181,6 @@ describe('打开与内容往返', () => {
     const customRoundtrip: RoundtripDeps = {
       readFile: vi.fn(async () => '# 你好 🚀\n\n特殊字符 <>&"\'\\'),
       writeFile: vi.fn(async () => undefined),
-      clearSnapshot: vi.fn(async () => undefined),
       showOpenDialog: vi.fn(async () => null),
       showSaveDialog: vi.fn(async () => null),
       reportError: vi.fn(),
@@ -244,7 +242,7 @@ describe('保存与脏标记', () => {
     await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(true);
     expect(tab!.dirty).toBe(false);
     expect(harness.roundtrip.writeFile).toHaveBeenCalledWith('C:\\a.md', '改动');
-    expect(harness.roundtrip.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
+    expect(harness.deps.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
   });
 
   it('保存失败保持脏标记且不清快照', async () => {
@@ -257,7 +255,7 @@ describe('保存与脏标记', () => {
     harness.manager.handleContentChanged(tab!.id);
     await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(false);
     expect(tab!.dirty).toBe(true);
-    expect(harness.roundtrip.clearSnapshot).not.toHaveBeenCalled();
+    expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
   });
 
   it('未命名标签保存转另存为，成功后迁移路径与标题', async () => {
@@ -465,8 +463,8 @@ describe('保存与快照写入竞态', () => {
     await harness.manager.saveTab(tab!.id);
     vi.advanceTimersByTime(2000);
     expect(harness.deps.writeSnapshot).not.toHaveBeenCalled();
-    // 文件路径快照由 saveToPathFlow 经 roundtrip.clearSnapshot 清除
-    expect(harness.roundtrip.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
+    // 文件路径快照由 TabManager 在保存状态落定后清除。
+    expect(harness.deps.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
   });
 
   it('进行中的快照写入完成后才清快照（无孤儿快照）', async () => {
@@ -489,10 +487,10 @@ describe('保存与快照写入竞态', () => {
     const savePromise = harness.manager.saveTab(tab!.id);
     // 快照写入未完成 → 保存流程挂起在 await 上
     await Promise.resolve();
-    expect(harness.roundtrip.clearSnapshot).not.toHaveBeenCalled();
+    expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
     resolveWrite!();
     await savePromise;
-    expect(harness.roundtrip.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
+    expect(harness.deps.clearSnapshot).toHaveBeenCalledWith('C:\\a.md');
   });
 });
 

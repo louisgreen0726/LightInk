@@ -13,7 +13,6 @@ import * as fileDialog from './file-dialog.js';
 export interface RoundtripDeps {
   readFile: (path: string) => Promise<string>;
   writeFile: (path: string, content: string) => Promise<void>;
-  clearSnapshot: (filePath: string) => Promise<void>;
   showOpenDialog: () => Promise<string | null>;
   showSaveDialog: (defaultPath?: string) => Promise<string | null>;
   /** 错误上报（T3 用 console/alert 兜底，完整 UI 在 T6/T11）。 */
@@ -23,7 +22,6 @@ export interface RoundtripDeps {
 export const defaultRoundtripDeps: RoundtripDeps = {
   readFile: fileService.readFile,
   writeFile: fileService.writeFile,
-  clearSnapshot: fileService.clearSnapshot,
   showOpenDialog: fileDialog.showOpenDialog,
   showSaveDialog: fileDialog.showSaveDialog,
   reportError: (message, error) => {
@@ -65,7 +63,8 @@ export async function openPathFlow(
 }
 
 /**
- * 保存到已知路径：原子写 → 成功后清除对应崩溃快照。
+ * 保存到已知路径：只负责原子写入。崩溃快照属于标签生命周期，调用方必须
+ * 在确认当前编辑内容确已落盘后再清理，避免异步保存期间的新编辑失去恢复副本。
  * 成功返回 true；失败上报并返回 false（调用方保持脏标记）。
  */
 export async function saveToPathFlow(
@@ -78,12 +77,6 @@ export async function saveToPathFlow(
   } catch (error) {
     deps.reportError(`保存文件失败: ${path}`, error);
     return false;
-  }
-  // 保存成功后才清快照；清快照失败不阻断保存语义，只记录。
-  try {
-    await deps.clearSnapshot(path);
-  } catch (error) {
-    deps.reportError(`清除快照失败: ${path}`, error);
   }
   return true;
 }

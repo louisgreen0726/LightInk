@@ -433,6 +433,9 @@ export class TabManager {
     }
     tab.lastSavedMarkdown = content;
     tab.dirty = false;
+    await this.deps.clearSnapshot(tab.filePath).catch((error: unknown) => {
+      this.deps.reportError(`清除快照失败: ${tab.filePath}`, error);
+    });
     // R13：自写（原子 persist）后必须更新基线，避免下次轮询误报自身保存为外部变更。
     await this.recordBaseline(tab);
     // 未命名时期的旧快照（若有）也一并清掉。
@@ -463,6 +466,9 @@ export class TabManager {
     }
     // 从未命名（或旧路径）迁移：清掉旧键对应的快照。
     const oldKey = snapshotKeyOf(tab);
+    await this.deps.clearSnapshot(newPath).catch((error: unknown) => {
+      this.deps.reportError(`清除快照失败: ${newPath}`, error);
+    });
     if (oldKey !== newPath) {
       await this.deps.clearSnapshot(oldKey).catch(() => undefined);
     }
