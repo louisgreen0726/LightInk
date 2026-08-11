@@ -39,6 +39,7 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
       return state.content;
     },
     getSelection: () => null,
+    getCursorPosition: () => null,
     getLinkAtCursor: () => null,
     getLinkAtPoint: () => null,
     toggleMark: () => undefined,
@@ -375,7 +376,8 @@ describe('保存与脏标记', () => {
   });
 
   it('保存失败不会阻塞同一标签队列中的下一次保存', async () => {
-    const harness = makeHarness();
+    const onSaveStatusChanged = vi.fn();
+    const harness = makeHarness({ onSaveStatusChanged });
     const writeFile = harness.roundtrip.writeFile as ReturnType<typeof vi.fn>;
     writeFile.mockRejectedValueOnce(new Error('disk full')).mockResolvedValueOnce(undefined);
     const tab = await harness.manager.openFile('C:\\a.md');
@@ -388,6 +390,8 @@ describe('保存与脏标记', () => {
     await expect(retried).resolves.toBe(true);
     expect(writeFile).toHaveBeenCalledTimes(2);
     expect(tab!.dirty).toBe(false);
+    expect(onSaveStatusChanged.mock.calls.map((call) => call[1])).toContain('error');
+    expect(harness.manager.getSaveStatus(tab!.id)).toBe('saved');
   });
 
   it('保存期间出现的新编辑保持 dirty 且不清除快照', async () => {
@@ -404,8 +408,10 @@ describe('保存与脏标记', () => {
 
     const saving = harness.manager.saveTab(tab!.id);
     await vi.waitFor(() => expect(writeFile).toHaveBeenCalledTimes(1));
+    expect(harness.manager.getSaveStatus(tab!.id)).toBe('saving');
     tab!.editor.setMarkdown('unsaved-v2');
     harness.manager.handleContentChanged(tab!.id);
+    expect(harness.manager.getSaveStatus(tab!.id)).toBe('dirty');
     releaseWrite!();
 
     await expect(saving).resolves.toBe(false);
@@ -1047,6 +1053,7 @@ describe('R13 外部文件变更检测', () => {
     await Promise.all([first, second]);
     expect(confirmConflict).toHaveBeenCalledTimes(1);
     expect(tab!.dirty).toBe(true); // keep：保留内存脏态
+    expect(harness.manager.getSaveStatus(tab!.id)).toBe('conflict');
   });
 
   it('stat 失败的一次性可见提示：每段不可读期只提示一次，恢复可读后重置', async () => {

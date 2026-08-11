@@ -224,6 +224,7 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
       return state.content;
     },
     getSelection: () => null,
+    getCursorPosition: () => null,
     getLinkAtCursor: () => null,
     getLinkAtPoint: () => null,
     toggleMark: () => undefined,

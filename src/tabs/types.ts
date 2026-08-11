@@ -61,6 +61,9 @@ export interface ReaderTabState extends TabBase {
 /** 单个标签页的完整会话状态（markdown 编辑标签或只读 reader 标签）。 */
 export type TabState = MarkdownTabState | ReaderTabState;
 
+/** User-visible persistence state for an editable document. */
+export type DocumentSaveStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
+
 /** 关闭未保存标签时用户的三选一。 */
 export type CloseChoice = 'save' | 'discard' | 'cancel';
 

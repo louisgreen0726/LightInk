@@ -79,7 +79,12 @@ import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
 import { showExitConfirmation } from './ui/exit-confirmation.js';
-import { createStatusBar, type StatusBar } from './ui/status-bar.js';
+import {
+  createStatusBar,
+  cursorPositionFromOffset,
+  type MarkdownStatusSnapshot,
+  type StatusBar,
+} from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
 import { installFontScale } from './ui/font-scale.js';
@@ -215,6 +220,8 @@ let shell: ReturnType<typeof createAppShell>;
 let outline: OutlineView;
 // T5/R3：字数状态栏在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let statusBar: StatusBar;
+// Per-tab source surfaces must be available to status callbacks during manager startup.
+const sourceViews = new Map<string, SourceView>();
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
 /** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
@@ -804,6 +811,7 @@ shell = createAppShell(
       if (outline !== undefined) {
         outline.retranslate();
       }
+      statusBar?.refresh(getActiveStatusSnapshot);
       // Refresh window title with localized app name.
       const tab = manager?.activeTab ?? null;
       if (tab !== null) {
@@ -1006,10 +1014,15 @@ manager = new TabManager({
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
     // T5/R3：状态栏防抖刷新（内部在隐藏时短路不渲染）。
-    statusBar.scheduleUpdate(getActiveMarkdownForStatus);
+    statusBar.scheduleUpdate(getActiveStatusSnapshot);
     // 查找面板打开时：内容编辑后同步命中计数（WYSIWYG 插件已重算 decoration，
     // 源码模式需重收 matches；都不强制跳回首命中）。
     refreshFindOnContentChange();
+  },
+  onSaveStatusChanged: (tabId) => {
+    if (manager?.activeTabId === tabId) {
+      statusBar?.refresh(getActiveStatusSnapshot);
+    }
   },
   onFileOpened: (filePath) => {
     void persistRecentMutation('add_recent', { path: filePath });
@@ -1077,32 +1090,58 @@ outline = createOutlineView({
 });
 shell.outlineSidebar.appendChild(outline.root);
 
-// T5/R3：字数状态栏。挂载于 shell 根部槽位；显隐偏好 localStorage 跨会话保持
-// （默认关闭），刷新由 TabManager 的 onActiveContentChanged 防抖驱动（见上）。
+// Document status bar: visible by default, with a persisted user override. Content and
+// cursor updates are debounced; save/conflict transitions refresh immediately.
 // 标签闭包现读 locale，语言切换后下次刷新即用新文案。
 statusBar = createStatusBar(document, shell.statusBarHost, {
   storage: window.localStorage,
-  labels: () =>
-    i18n.locale === 'en'
-      ? { words: 'Words', characters: 'Characters' }
-      : { words: '字数', characters: '字符' },
+  labels: () => ({
+    words: i18n.t('status.words'),
+    characters: i18n.t('status.characters'),
+    line: i18n.t('status.line'),
+    column: i18n.t('status.column'),
+    encoding: i18n.t('status.encoding'),
+    save: {
+      saved: i18n.t('status.save.saved'),
+      dirty: i18n.t('status.save.dirty'),
+      saving: i18n.t('status.save.saving'),
+      error: i18n.t('status.save.error'),
+      conflict: i18n.t('status.save.conflict'),
+    },
+  }),
 });
 
-/** 活动标签的 markdown（状态栏统计来源；与大纲同一事实源 editor.getMarkdown）。 */
-function getActiveMarkdownForStatus(): string | null {
+/** Build the current Markdown status from editor/source-mode facts. */
+function getActiveStatusSnapshot(): MarkdownStatusSnapshot | null {
   const tab = activeMarkdownTab();
-  if (tab === null) {
-    return null;
-  }
+  if (tab === null) return null;
   try {
-    return tab.editor.getMarkdown();
+    const markdown = tab.editor.getMarkdown();
+    const source = sourceViews.get(tab.id);
+    const textarea =
+      source?.isSourceMode === true
+        ? tab.hostElement.querySelector<HTMLTextAreaElement>('textarea.lightink-source-editor')
+        : null;
+    const cursor =
+      textarea === null
+        ? (tab.editor.getCursorPosition() ?? { line: 1, column: 1 })
+        : cursorPositionFromOffset(textarea.value, textarea.selectionEnd);
+    return {
+      kind: 'markdown',
+      markdown,
+      saveStatus: manager.getSaveStatus(tab.id) ?? (tab.dirty ? 'dirty' : 'saved'),
+      cursor,
+    };
   } catch {
     return null;
   }
 }
 
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
-statusBar.refresh(getActiveMarkdownForStatus);
+statusBar.refresh(getActiveStatusSnapshot);
+document.addEventListener('selectionchange', () => {
+  statusBar.scheduleUpdate(getActiveStatusSnapshot);
+});
 
 // R14：可选自动保存（默认关；偏好 localStorage 跨会话保持）。tick 前先提交
 // 活动标签的源码态编辑（与手动保存同口径），再扫全部有路径脏 tab 走同一保存流
@@ -1205,7 +1244,6 @@ async function openLocalMdLink(path: string): Promise<void> {
 }
 
 // T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。
-const sourceViews = new Map<string, SourceView>();
 function toggleActiveSourceMode(): void {
   const tab = activeMarkdownTab();
   if (tab === null) return;
@@ -1215,6 +1253,7 @@ function toggleActiveSourceMode(): void {
     sourceViews.set(tab.id, view);
   }
   view.toggle();
+  statusBar.refresh(getActiveStatusSnapshot);
 }
 /** 源码态下把活动标签的 textarea 源码同步回编辑器（供保存/大纲读取一致）。 */
 function commitActiveSourceMode(): void {

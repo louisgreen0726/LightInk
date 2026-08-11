@@ -61,7 +61,13 @@ import { tableOpsPlugin } from './plugins/table-ops.js';
 import { tocPlugin } from './plugins/toc.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
-import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
+import type {
+  CursorLink,
+  CursorPosition,
+  EditorInstance,
+  MountOptions,
+  SelectionSummary,
+} from './types.js';
 
 interface MountState {
   editor: MilkdownEditor | null;
@@ -296,6 +302,21 @@ export async function mountEditor(
       if (view === null) return null;
       const { from, to, empty } = view.state.selection;
       return { from, to, empty };
+    },
+    getCursorPosition(): CursorPosition | null {
+      const view = getView(state);
+      if (view === null) return null;
+      const before = view.state.doc.textBetween(
+        0,
+        view.state.selection.head,
+        '\n',
+        '\n',
+      );
+      const lines = before.split('\n');
+      return {
+        line: lines.length,
+        column: Array.from(lines[lines.length - 1] ?? '').length + 1,
+      };
     },
     getLinkAtCursor(): CursorLink | null {
       const view = getView(state);

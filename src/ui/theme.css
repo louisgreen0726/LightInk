@@ -156,6 +156,69 @@ html[data-display='xuhd'] {
   height: 100vh;
 }
 
+.lightink-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-top: 1px solid var(--lightink-border);
+  color: var(--lightink-muted);
+  background: var(--lightink-bg-elevated);
+  font-family: var(--lightink-font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: none;
+  flex: 0 0 auto;
+}
+
+.lightink-status-save,
+.lightink-status-details {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.lightink-status-save {
+  gap: 6px;
+  color: var(--lightink-muted);
+  font-weight: 600;
+}
+
+.lightink-status-save::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+  flex: 0 0 auto;
+}
+
+.lightink-status-bar[data-save-status='dirty'] .lightink-status-save,
+.lightink-status-bar[data-save-status='saving'] .lightink-status-save {
+  color: var(--lightink-accent);
+}
+
+.lightink-status-bar[data-save-status='error'] .lightink-status-save,
+.lightink-status-bar[data-save-status='conflict'] .lightink-status-save {
+  color: var(--lightink-danger);
+}
+
+.lightink-status-details {
+  justify-content: flex-end;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lightink-status-details > span + span::before {
+  margin-right: 8px;
+  color: var(--lightink-border);
+  content: '·';
+}
+
 /* Immersive chrome host: thin top trigger + collapsible menu bar. */
 .lightink-chrome-host {
   position: relative;
@@ -2472,6 +2535,11 @@ body.lightink-outline-resizing * {
   .lightink-versions-preview {
     min-height: 8rem;
     max-height: 32vh;
+  }
+
+  .lightink-status-encoding,
+  .lightink-status-counts {
+    display: none;
   }
 }
 
