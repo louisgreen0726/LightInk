@@ -628,6 +628,43 @@ describe('崩溃快照', () => {
     );
   });
 
+  it('serializes every snapshot write before clear so an old write cannot revive', async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const snapshots = new Map<string, string>();
+    const writeSnapshot = vi.fn(async (key: string, content: string) => {
+      if (content === 'version one') {
+        await firstBlocked;
+      }
+      snapshots.set(key, content);
+    });
+    const clearSnapshot = vi.fn(async (key: string) => {
+      snapshots.delete(key);
+    });
+    const harness = makeHarness({ writeSnapshot, clearSnapshot });
+    const tab = await harness.manager.newTab();
+    tab.editor.setMarkdown('version one');
+    harness.manager.handleContentChanged(tab.id);
+    const first = harness.manager.flushSnapshot(tab.id);
+    await vi.waitFor(() => expect(writeSnapshot).toHaveBeenCalledTimes(1));
+
+    tab.editor.setMarkdown('version two');
+    harness.manager.handleContentChanged(tab.id);
+    const second = harness.manager.flushSnapshot(tab.id);
+    const closing = harness.manager.closeTab(tab.id);
+    await Promise.resolve();
+    expect(harness.deps.detachHost).not.toHaveBeenCalled();
+
+    releaseFirst!();
+    await Promise.all([first, second, closing]);
+
+    expect(writeSnapshot).toHaveBeenCalledTimes(1);
+    expect(clearSnapshot).toHaveBeenCalledWith(tab.syntheticId);
+    expect(snapshots.has(tab.syntheticId)).toBe(false);
+  });
+
   it('连续编辑只触发一次防抖快照', async () => {
     const harness = makeHarness();
     const tab = await harness.manager.newTab();

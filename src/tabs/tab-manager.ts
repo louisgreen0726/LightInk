@@ -201,8 +201,10 @@ export class TabManager {
   private counter = 0;
   private untitledCounter = 0;
   private snapshotTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** 进行中的快照写入 Promise（按标签 id），保存前需先等待以避免写/清竞态。 */
-  private snapshotWrites = new Map<string, Promise<void>>();
+  /** 每个标签完整的快照 write/clear Promise 链。 */
+  private snapshotQueues = new Map<string, Promise<void>>();
+  /** clear 提升 generation，使尚未开始的旧写入在执行时自动失效。 */
+  private snapshotGenerations = new Map<string, number>();
   /** 同一标签的保存操作串行执行；失败会被队列尾吸收，不阻塞后续保存。 */
   private saveQueues = new Map<string, Promise<void>>();
   /** 同一标签的重复关闭请求共享一个操作，避免重复确认、销毁或数组删除。 */
@@ -446,7 +448,7 @@ export class TabManager {
     // 先停掉待写快照并等待进行中的快照写入完成，避免「写快照 IPC 晚于
     // 清快照 IPC 落盘」留下比文件新的孤儿快照。
     this.cancelPendingSnapshot(id);
-    await this.snapshotWrites.get(id)?.catch(() => undefined);
+    await this.waitForSnapshotQueue(id);
     const content = tab.editor.getMarkdown();
     // R13：写入前先比 mtime，发现外部变更即弹冲突、中止写入——即使轮询间隙
     // 也不静默覆盖（R13 核心禁令）。reload/keep 中止本次保存；overwrite 继续。
@@ -478,7 +480,7 @@ export class TabManager {
       return false; // reader 标签只读，永不另存为
     }
     this.cancelPendingSnapshot(id);
-    await this.snapshotWrites.get(id)?.catch(() => undefined);
+    await this.waitForSnapshotQueue(id);
     const content = tab.editor.getMarkdown();
     const newPath = await saveAsFlow(
       this.deps.roundtrip,
@@ -518,17 +520,13 @@ export class TabManager {
     if (!tab.dirty) {
       const revision = this.contentRevisions.get(tab.id) ?? 0;
       this.cancelPendingSnapshot(tab.id);
-      await this.snapshotWrites.get(tab.id)?.catch(() => undefined);
+      await this.waitForSnapshotQueue(tab.id);
       const stillCurrent = this.readMarkdown(tab);
       if (
         stillCurrent === content &&
         (this.contentRevisions.get(tab.id) ?? 0) === revision
       ) {
-        for (const key of new Set(snapshotKeys)) {
-          await this.deps.clearSnapshot(key).catch((error: unknown) => {
-            this.deps.reportError(`清除快照失败: ${key}`, error);
-          });
-        }
+        await this.clearSnapshotKeys(tab.id, snapshotKeys);
       }
       // 清理快照本身也是异步的；返回前再次确认没有更晚编辑。
       const afterCleanup = this.readMarkdown(tab);
@@ -662,10 +660,7 @@ export class TabManager {
 
     for (const tab of targets) {
       this.cancelPendingSnapshot(tab.id);
-      await this.snapshotWrites.get(tab.id)?.catch(() => undefined);
-      await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
-        this.deps.reportError('清除快照失败', error);
-      });
+      await this.clearSnapshotKeys(tab.id, [snapshotKeyOf(tab)]);
     }
     for (const tab of targets) {
       const destroy = tab.kind === 'markdown' ? tab.editor.destroy() : tab.reader.destroy();
@@ -680,7 +675,8 @@ export class TabManager {
     this.tabs = [];
     this.activeId = null;
     this.snapshotTimers.clear();
-    this.snapshotWrites.clear();
+    this.snapshotQueues.clear();
+    this.snapshotGenerations.clear();
     this.saveQueues.clear();
     this.contentRevisions.clear();
     this.autosaveConflictPrompted.clear();
@@ -720,9 +716,7 @@ export class TabManager {
     this.cancelPendingSnapshot(id);
     this.autosaveConflictPrompted.delete(id);
     this.externalUnreadableNotified.delete(id);
-    await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
-      this.deps.reportError('清除快照失败', error);
-    });
+    await this.clearSnapshotKeys(id, [snapshotKeyOf(tab)]);
     if (!discardConfirmed && tab.dirty) {
       tab.hostElement.inert = wasInert;
       return false;
@@ -746,6 +740,8 @@ export class TabManager {
     this.tabs.splice(index, 1);
     this.contentRevisions.delete(id);
     this.saveQueues.delete(id);
+    this.snapshotQueues.delete(id);
+    this.snapshotGenerations.delete(id);
     if (this.activeId === id) {
       const next = this.tabs[Math.min(index, this.tabs.length - 1)] ?? null;
       this.activeId = null;
@@ -797,26 +793,27 @@ export class TabManager {
     }
   }
 
-  /** 立即写入该标签的待处理快照（测试与关闭前兜底用）。 */
-  flushSnapshot(id: string): void {
+  /** 立即写入该标签的待处理快照，并等待该标签此前的全部快照操作。 */
+  flushSnapshot(id: string): Promise<void> {
     const timer = this.snapshotTimers.get(id);
     if (timer !== undefined) {
       clearTimeout(timer);
       this.snapshotTimers.delete(id);
       const tab = this.tabs.find((t) => t.id === id);
-      if (tab !== undefined && tab.dirty) {
-        this.writeSnapshotNow(tab);
+      if (tab !== undefined && tab.kind === 'markdown' && tab.dirty) {
+        return this.writeSnapshotNow(tab);
       }
     }
+    return this.waitForSnapshotQueue(id);
   }
 
   /** Flush every dirty document's pending recovery snapshot after exit cancellation. */
-  flushDirtySnapshots(): void {
-    for (const tab of this.tabs) {
-      if (tab.kind === 'markdown' && tab.dirty) {
-        this.flushSnapshot(tab.id);
-      }
-    }
+  async flushDirtySnapshots(): Promise<void> {
+    await Promise.all(
+      this.tabs
+        .filter((tab): tab is MarkdownTabState => tab.kind === 'markdown' && tab.dirty)
+        .map((tab) => this.flushSnapshot(tab.id)),
+    );
   }
 
   private async createTab(args: {
@@ -888,33 +885,65 @@ export class TabManager {
     const timer = setTimeout(() => {
       this.snapshotTimers.delete(tab.id);
       if (tab.dirty) {
-        this.writeSnapshotNow(tab);
+        void this.writeSnapshotNow(tab);
       }
     }, this.deps.snapshotDebounceMs);
     this.snapshotTimers.set(tab.id, timer);
   }
 
-  private writeSnapshotNow(tab: TabState): void {
+  private writeSnapshotNow(tab: TabState): Promise<void> {
     if (tab.kind !== 'markdown') {
-      return; // reader 标签永不写崩溃快照
+      return Promise.resolve(); // reader 标签永不写崩溃快照
     }
     let content: string;
     try {
       content = tab.editor.getMarkdown();
     } catch {
-      return;
+      return Promise.resolve();
     }
-    const pending = this.deps
-      .writeSnapshot(snapshotKeyOf(tab), content)
-      .catch((error: unknown) => {
-        this.deps.reportError('写入快照失败', error);
-      })
-      .finally(() => {
-        if (this.snapshotWrites.get(tab.id) === pending) {
-          this.snapshotWrites.delete(tab.id);
-        }
-      });
-    this.snapshotWrites.set(tab.id, pending);
+    const generation = this.snapshotGenerations.get(tab.id) ?? 0;
+    const key = snapshotKeyOf(tab);
+    return this.enqueueSnapshotOperation(tab.id, async () => {
+      if ((this.snapshotGenerations.get(tab.id) ?? 0) !== generation) {
+        return;
+      }
+      await this.deps.writeSnapshot(key, content);
+    }, '写入快照失败');
+  }
+
+  private waitForSnapshotQueue(id: string): Promise<void> {
+    return this.snapshotQueues.get(id) ?? Promise.resolve();
+  }
+
+  private enqueueSnapshotOperation(
+    id: string,
+    operation: () => Promise<void>,
+    errorMessage: string,
+  ): Promise<void> {
+    const previous = this.snapshotQueues.get(id);
+    const started = previous === undefined ? operation() : previous.then(operation, operation);
+    const pending = started.catch((error: unknown) => {
+      this.deps.reportError(errorMessage, error);
+    });
+    this.snapshotQueues.set(id, pending);
+    void pending.then(() => {
+      if (this.snapshotQueues.get(id) === pending) {
+        this.snapshotQueues.delete(id);
+      }
+    });
+    return pending;
+  }
+
+  private clearSnapshotKeys(id: string, keys: readonly string[]): Promise<void> {
+    this.cancelPendingSnapshot(id);
+    this.snapshotGenerations.set(id, (this.snapshotGenerations.get(id) ?? 0) + 1);
+    return this.enqueueSnapshotOperation(
+      id,
+      async () => {
+        await Promise.all([...new Set(keys)].map((key) => this.deps.clearSnapshot(key)));
+      },
+      `清除快照失败: ${keys.join(', ')}`,
+    );
   }
 
   private cancelPendingSnapshot(id: string): void {
