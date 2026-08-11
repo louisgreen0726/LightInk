@@ -271,6 +271,48 @@ describe('保存与脏标记', () => {
     expect(tab.dirty).toBe(false);
     expect(snapshotKeyOf(tab)).toBe('D:\\命名.md');
   });
+
+  it('同一标签的后发保存等待前一次完成并读取最新内容', async () => {
+    const harness = makeHarness();
+    let releaseFirst: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const writeFile = harness.roundtrip.writeFile as ReturnType<typeof vi.fn>;
+    writeFile.mockImplementationOnce(() => firstWrite).mockResolvedValueOnce(undefined);
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('v1');
+    harness.manager.handleContentChanged(tab!.id);
+
+    const firstSave = harness.manager.saveTab(tab!.id);
+    await vi.waitFor(() => expect(writeFile).toHaveBeenCalledTimes(1));
+    tab!.editor.setMarkdown('v2');
+    harness.manager.handleContentChanged(tab!.id);
+    const secondSave = harness.manager.saveTab(tab!.id);
+    await Promise.resolve();
+    expect(writeFile).toHaveBeenCalledTimes(1);
+
+    releaseFirst!();
+    await expect(firstSave).resolves.toBe(true);
+    await expect(secondSave).resolves.toBe(true);
+    expect(writeFile.mock.calls.map((call) => call[1])).toEqual(['v1', 'v2']);
+  });
+
+  it('保存失败不会阻塞同一标签队列中的下一次保存', async () => {
+    const harness = makeHarness();
+    const writeFile = harness.roundtrip.writeFile as ReturnType<typeof vi.fn>;
+    writeFile.mockRejectedValueOnce(new Error('disk full')).mockResolvedValueOnce(undefined);
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('改动');
+    harness.manager.handleContentChanged(tab!.id);
+
+    const failed = harness.manager.saveTab(tab!.id);
+    const retried = harness.manager.saveTab(tab!.id);
+    await expect(failed).resolves.toBe(false);
+    await expect(retried).resolves.toBe(true);
+    expect(writeFile).toHaveBeenCalledTimes(2);
+    expect(tab!.dirty).toBe(false);
+  });
 });
 
 describe('关闭未保存标签', () => {

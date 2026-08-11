@@ -197,6 +197,8 @@ export class TabManager {
   private snapshotTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 进行中的快照写入 Promise（按标签 id），保存前需先等待以避免写/清竞态。 */
   private snapshotWrites = new Map<string, Promise<void>>();
+  /** 同一标签的保存操作串行执行；失败会被队列尾吸收，不阻塞后续保存。 */
+  private saveQueues = new Map<string, Promise<void>>();
   /** R13：外部变更弹窗进行中标志，避免轮询/保存前重复堆叠弹窗。 */
   private externalDialogOpen = false;
   /**
@@ -409,12 +411,16 @@ export class TabManager {
 
   /** 保存：原子写成功 → 清脏标记 + 清对应崩溃快照。失败保持脏标记。 */
   async saveTab(id: string): Promise<boolean> {
+    return this.enqueueSave(id, () => this.performSaveTab(id));
+  }
+
+  private async performSaveTab(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
     if (tab.kind !== 'markdown') {
       return false; // reader 标签只读，永不保存
     }
     if (tab.filePath === null) {
-      return this.saveTabAs(id);
+      return this.performSaveTabAs(id);
     }
     // 先停掉待写快照并等待进行中的快照写入完成，避免「写快照 IPC 晚于
     // 清快照 IPC 落盘」留下比文件新的孤儿快照。
@@ -449,6 +455,10 @@ export class TabManager {
 
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
   async saveTabAs(id: string): Promise<boolean> {
+    return this.enqueueSave(id, () => this.performSaveTabAs(id));
+  }
+
+  private async performSaveTabAs(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
     if (tab.kind !== 'markdown') {
       return false; // reader 标签只读，永不另存为
@@ -489,6 +499,22 @@ export class TabManager {
     this.deps.onFileSaved?.(newPath, content);
     this.notifyChanged();
     return true;
+  }
+
+  private enqueueSave(id: string, operation: () => Promise<boolean>): Promise<boolean> {
+    const previous = this.saveQueues.get(id) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.saveQueues.set(id, tail);
+    void tail.then(() => {
+      if (this.saveQueues.get(id) === tail) {
+        this.saveQueues.delete(id);
+      }
+    });
+    return result;
   }
 
   /**
