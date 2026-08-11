@@ -9,7 +9,7 @@
 
 import './reader.css';
 import { parseReaderContent } from './formats/index.js';
-import type { ReaderChapter } from './formats/types.js';
+import type { ReaderChapter, ReaderContent } from './formats/types.js';
 import { ParseError } from './formats/types.js';
 import { renderCbzInto, type CbzRenderHandle } from './formats/cbz.js';
 import { renderPdfInto, type PdfRenderHandle } from './formats/pdf.js';
@@ -102,6 +102,12 @@ export interface ReaderViewDeps {
   notify?: (message: string) => void;
   /** Session-only consent for remote images; injectable for focused tests. */
   remoteImagePolicy?: RemoteImagePolicy;
+  /** Injectable flow parser for lifecycle tests. */
+  parseContent?: (
+    filePath: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ) => Promise<ReaderContent>;
 }
 
 /**
@@ -157,6 +163,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let activeLoadController: AbortController | null = null;
   let destroyed = false;
   let flowRenderGeneration = 0;
+  let flowContentDispose: (() => void) | null = null;
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
 
@@ -433,8 +440,39 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           frame.style.height = `${Math.max(1, frameDocument.documentElement.scrollHeight)}px`;
         };
         const onClick = (event: MouseEvent): void => {
-          if ((event.target as Element | null)?.closest('a[href]') !== null) {
-            event.preventDefault();
+          const target = event.target;
+          const link =
+            target instanceof Element ? target.closest<HTMLAnchorElement>('a[href]') : null;
+          if (link === null) {
+            return;
+          }
+          event.preventDefault();
+          const href = link.getAttribute('href') ?? '';
+          if (href.startsWith('#lightink-chapter?')) {
+            const params = new URLSearchParams(href.slice('#lightink-chapter?'.length));
+            const chapter = Number(params.get('chapter'));
+            if (!Number.isSafeInteger(chapter) || chapter < 0) {
+              return;
+            }
+            const targetArticle = scrollHost.querySelector<HTMLElement>(
+              `.lightink-reader-chapter[data-chapter-index="${chapter}"]`,
+            );
+            targetArticle?.scrollIntoView({ block: 'start' });
+            const targetId = params.get('target');
+            const targetFrame = targetArticle?.querySelector<HTMLIFrameElement>(
+              '.lightink-reader-chapter-frame',
+            );
+            targetFrame?.contentDocument?.getElementById(targetId ?? '')?.scrollIntoView({
+              block: 'center',
+            });
+          } else if (href.startsWith('#')) {
+            let targetId = href.slice(1);
+            try {
+              targetId = decodeURIComponent(targetId);
+            } catch {
+              return;
+            }
+            frameDocument.getElementById(targetId)?.scrollIntoView({ block: 'center' });
           }
         };
         const onMouseUp = (): void => {
@@ -502,6 +540,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     },
   ): void => {
     clearFlowBindings();
+    const previousFlowDispose = flowContentDispose;
+    flowContentDispose = null;
     const previousPdf = pdfHandle;
     const previousCbz = cbzHandle;
     pdfHandle = staged.pdf;
@@ -511,6 +551,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     scrollHost.hidden = true;
     void previousPdf?.destroy().catch(() => undefined);
     void previousCbz?.destroy().catch(() => undefined);
+    previousFlowDispose?.();
   };
 
   const loadAnnotations = async (
@@ -632,9 +673,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           sidebar?.render(annotations);
           commitStagedPages(staged);
         } else {
-          const content = await parseReaderContent(filePath, bytes, controller.signal);
-          throwIfReaderLoadCancelled(controller.signal);
+          const content = await (deps.parseContent ?? parseReaderContent)(
+            filePath,
+            bytes,
+            controller.signal,
+          );
+          if (controller.signal.aborted) {
+            content.dispose?.();
+            throwIfReaderLoadCancelled(controller.signal);
+          }
           if (!isCurrent()) {
+            content.dispose?.();
             return;
           }
           loadedExt = nextExt;
@@ -643,11 +692,23 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           sidebar?.render(annotations);
           const previousPdf = pdfHandle;
           const previousCbz = cbzHandle;
+          const previousFlowDispose = flowContentDispose;
           pdfHandle = null;
           cbzHandle = null;
-          renderChapters(content.chapters);
+          flowContentDispose = content.dispose ?? null;
+          try {
+            renderChapters(content.chapters);
+          } catch (error) {
+            flowContentDispose?.();
+            flowContentDispose = previousFlowDispose;
+            throw error;
+          }
           void previousPdf?.destroy().catch(() => undefined);
           void previousCbz?.destroy().catch(() => undefined);
+          previousFlowDispose?.();
+          for (const warning of content.warnings ?? []) {
+            deps.notify?.(t(`reader.warning.${warning}`));
+          }
         }
 
         await loadAnnotations(filePath, generation, controller.signal);
@@ -686,12 +747,15 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       clearFlowBindings();
       const handle = pdfHandle;
       const cbz = cbzHandle;
+      const disposeFlowContent = flowContentDispose;
       pdfHandle = null;
       cbzHandle = null;
+      flowContentDispose = null;
       sidebar?.destroy();
       sidebar = null;
       setReaderState('destroyed');
       root.remove();
+      disposeFlowContent?.();
       await handle?.destroy().catch(() => undefined);
       await cbz?.destroy().catch(() => undefined);
     },

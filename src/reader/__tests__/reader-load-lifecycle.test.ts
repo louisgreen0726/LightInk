@@ -166,4 +166,26 @@ describe('Reader load lifecycle', () => {
       'reader.failed',
     );
   });
+
+  it('disposes parser-owned resources on replacement and destroy', async () => {
+    const disposeA = vi.fn();
+    const disposeB = vi.fn();
+    const host = document.createElement('div');
+    const view = createReaderView(host, {
+      readBytes: async () => bytes('unused'),
+      parseContent: async (path) => ({
+        chapters: [{ title: path, html: `<p>${path}</p>` }],
+        dispose: path === 'a.epub' ? disposeA : disposeB,
+      }),
+    });
+
+    await view.load('a.epub');
+    expect(disposeA).not.toHaveBeenCalled();
+    await view.load('b.epub');
+    expect(disposeA).toHaveBeenCalledTimes(1);
+    expect(disposeB).not.toHaveBeenCalled();
+
+    await view.destroy();
+    expect(disposeB).toHaveBeenCalledTimes(1);
+  });
 });

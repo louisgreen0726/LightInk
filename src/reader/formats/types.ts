@@ -16,7 +16,13 @@ export interface ReaderChapter {
 /** 按阅读顺序的章节集合。 */
 export interface ReaderContent {
   chapters: ReaderChapter[];
+  /** Non-fatal fidelity limitations that should be shown once after load. */
+  warnings?: readonly ReaderWarningKind[];
+  /** Release parser-owned blob/object URLs. Idempotent when provided. */
+  dispose?: () => void;
 }
+
+export type ReaderWarningKind = 'epubStylesIgnored';
 
 /** 格式解析失败（DRM、损坏、不支持）。携带可向用户展示的原因。 */
 export class ParseError extends Error {
@@ -31,6 +37,7 @@ export type ReaderLimitKind =
   | 'archiveTotalBytes'
   | 'archiveEntryBytes'
   | 'archiveCompressionRatio'
+  | 'readerImageBytes'
   | 'pdfPages'
   | 'cbzPages';
 

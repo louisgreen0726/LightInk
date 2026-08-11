@@ -10,7 +10,15 @@
 import { sanitizeHtml } from '../sanitize.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { openSafeArchive } from './safe-archive.js';
-import { ParseError, type ReaderContent } from './types.js';
+import {
+  ParseError,
+  ReaderLimitError,
+  type ReaderContent,
+} from './types.js';
+import {
+  MAX_READER_IMAGE_BYTES,
+  SAFE_READER_IMAGE_MIME_TYPES,
+} from './resource-limits.js';
 
 interface ManifestItem {
   id: string;
@@ -33,18 +41,45 @@ function decodeXmlEntities(s: string): string {
     .replace(/&apos;/g, "'");
 }
 
-/** 把相对 href 解析到 zip 内的完整路径（相对 OPF 所在目录）。 */
-function resolveHref(opfPath: string, href: string): string {
-  const dir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+interface ArchiveReference {
+  path: string;
+  fragment: string;
+}
+
+/** Resolve a relative package reference without allowing it to walk above the archive root. */
+function resolveArchiveReference(basePath: string, href: string): ArchiveReference | null {
+  const value = decodeXmlEntities(href).trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) {
+    return null;
+  }
+  const hashIndex = value.indexOf('#');
+  const fragment = hashIndex >= 0 ? value.slice(hashIndex + 1) : '';
+  const withoutFragment = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
+  const queryIndex = withoutFragment.indexOf('?');
+  const encodedPath = queryIndex >= 0 ? withoutFragment.slice(0, queryIndex) : withoutFragment;
+  let referencePath: string;
+  try {
+    referencePath = decodeURIComponent(encodedPath);
+  } catch {
+    return null;
+  }
+  if (referencePath === '') {
+    return { path: basePath, fragment };
+  }
+  const dir = basePath.includes('/') ? basePath.slice(0, basePath.lastIndexOf('/') + 1) : '';
   const parts: string[] = [];
-  for (const seg of (dir + href).split('/')) {
+  const joined = referencePath.startsWith('/') ? referencePath.slice(1) : dir + referencePath;
+  for (const seg of joined.split('/')) {
     if (seg === '..') {
+      if (parts.length === 0) {
+        return null;
+      }
       parts.pop();
     } else if (seg !== '.' && seg !== '') {
       parts.push(seg);
     }
   }
-  return parts.join('/');
+  return { path: parts.join('/'), fragment };
 }
 
 /**
@@ -55,6 +90,14 @@ export async function parseEpub(
   signal?: AbortSignal,
 ): Promise<ReaderContent> {
   const archive = await openSafeArchive(bytes, 'EPUB', signal);
+  const resourceUrls = new Map<string, string>();
+  let returnedContent = false;
+  const dispose = (): void => {
+    for (const url of resourceUrls.values()) {
+      URL.revokeObjectURL(url);
+    }
+    resourceUrls.clear();
+  };
   try {
     // 1. container.xml → OPF 路径。
     let opfPath: string | null = null;
@@ -112,37 +155,125 @@ export async function parseEpub(
       }
     }
 
-    // 4. 逐 spine 读取 XHTML body 为章节。
-    const chapters: ReaderContent['chapters'] = [];
-    let idx = 0;
-    for (const idref of spineIds) {
-      throwIfReaderLoadCancelled(signal);
-      const item = items.get(idref);
-      if (item === undefined || !/x?html/i.test(item.mediaType)) {
-        continue;
+    const spineItems = spineIds
+      .map((idref) => items.get(idref))
+      .filter(
+        (item): item is ManifestItem =>
+          item !== undefined && /x?html/i.test(item.mediaType),
+      )
+      .map((item) => ({
+        item,
+        reference: resolveArchiveReference(opfPath, item.href),
+      }))
+      .filter(
+        (entry): entry is { item: ManifestItem; reference: ArchiveReference } =>
+          entry.reference !== null,
+      );
+    const chapterIndexByPath = new Map(
+      spineItems.map((entry, index) => [entry.reference.path, index]),
+    );
+    const manifestByPath = new Map<string, ManifestItem>();
+    for (const item of items.values()) {
+      const reference = resolveArchiveReference(opfPath, item.href);
+      if (reference !== null) {
+        manifestByPath.set(reference.path, item);
       }
-      const fullPath = resolveHref(opfPath, decodeXmlEntities(item.href));
-      const file = archive.file(fullPath) ?? archive.file(item.href);
+    }
+
+    const packagedImageUrl = async (path: string, mediaType: string): Promise<string | null> => {
+      if (!SAFE_READER_IMAGE_MIME_TYPES.has(mediaType)) {
+        return null;
+      }
+      const existing = resourceUrls.get(path);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const file = archive.file(path);
+      if (file === null) {
+        return null;
+      }
+      if (file.uncompressedSize > MAX_READER_IMAGE_BYTES) {
+        throw new ReaderLimitError(
+          'readerImageBytes',
+          file.uncompressedSize,
+          MAX_READER_IMAGE_BYTES,
+        );
+      }
+      const data = await file.readBytes(signal);
+      throwIfReaderLoadCancelled(signal);
+      const imageBytes = Uint8Array.from(data);
+      const url = URL.createObjectURL(new Blob([imageBytes.buffer], { type: mediaType }));
+      resourceUrls.set(path, url);
+      return url;
+    };
+
+    // 4. Read spine XHTML, resolve packaged images, and rewrite chapter links.
+    const chapters: ReaderContent['chapters'] = [];
+    for (let idx = 0; idx < spineItems.length; idx += 1) {
+      throwIfReaderLoadCancelled(signal);
+      const { reference } = spineItems[idx]!;
+      const fullPath = reference.path;
+      const file = archive.file(fullPath);
       if (file === null) {
         continue;
       }
       const xhtml = await file.readText(signal);
       throwIfReaderLoadCancelled(signal);
-      const body = xhtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? '';
-      const sectionTitle = (
-        xhtml.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ''
-      ).trim();
+      const document = new DOMParser().parseFromString(xhtml, 'text/html');
+      const body = document.body;
+      for (const image of body.querySelectorAll<HTMLImageElement>('img[src]')) {
+        const source = image.getAttribute('src') ?? '';
+        const imageReference = resolveArchiveReference(fullPath, source);
+        const manifestItem =
+          imageReference === null ? undefined : manifestByPath.get(imageReference.path);
+        const url =
+          imageReference === null || manifestItem === undefined
+            ? null
+            : await packagedImageUrl(imageReference.path, manifestItem.mediaType);
+        if (url === null) {
+          image.removeAttribute('src');
+        } else {
+          image.src = url;
+        }
+      }
+      for (const link of body.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+        const href = link.getAttribute('href') ?? '';
+        if (href.startsWith('#')) {
+          continue;
+        }
+        const linkReference = resolveArchiveReference(fullPath, href);
+        if (linkReference === null) {
+          continue;
+        }
+        const targetChapter = chapterIndexByPath.get(linkReference.path);
+        if (targetChapter === undefined) {
+          link.removeAttribute('href');
+          continue;
+        }
+        const params = new URLSearchParams({ chapter: String(targetChapter) });
+        if (linkReference.fragment !== '') {
+          params.set('target', linkReference.fragment);
+        }
+        link.setAttribute('href', `#lightink-chapter?${params.toString()}`);
+      }
+      const sectionTitle = document.title.trim();
       const title =
         sectionTitle || (idx === 0 && bookTitle ? bookTitle : `Chapter ${idx + 1}`);
-      chapters.push({ title, html: sanitizeHtml(body) });
-      idx += 1;
+      chapters.push({ title, html: sanitizeHtml(body.innerHTML) });
     }
 
     if (chapters.length === 0) {
       throw new ParseError('EPUB 未找到可读章节内容');
     }
-    return { chapters };
+    const warnings = [...items.values()].some((item) => item.mediaType === 'text/css')
+      ? (['epubStylesIgnored'] as const)
+      : undefined;
+    returnedContent = true;
+    return { chapters, warnings, dispose };
   } finally {
     await archive.close().catch(() => undefined);
+    if (!returnedContent) {
+      dispose();
+    }
   }
 }

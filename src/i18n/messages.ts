@@ -120,6 +120,8 @@ const en: Dict = {
     'An archive entry is too large ({actual} bytes; limit {limit} bytes).',
   'reader.limit.archiveCompressionRatio':
     'An archive entry has an unsafe compression ratio ({actual}:1; limit {limit}:1).',
+  'reader.limit.readerImageBytes':
+    'A packaged image is too large ({actual} bytes; limit {limit} bytes).',
   'reader.limit.pdfPages': 'PDF has too many pages ({actual}; limit {limit}).',
   'reader.limit.cbzPages': 'CBZ has too many image pages ({actual}; limit {limit}).',
   'reader.capability.mobiDrm': 'This MOBI file is DRM-protected and cannot be opened.',
@@ -127,6 +129,8 @@ const en: Dict = {
     'KF8/MOBI8 is not supported. LightInk currently supports unencrypted PalmDOC/MOBI6 only.',
   'reader.capability.mobiHuff':
     'HUFF/CDIC-compressed MOBI is not supported. LightInk currently supports unencrypted PalmDOC/MOBI6 only.',
+  'reader.warning.epubStylesIgnored':
+    'Some publisher styles were ignored to keep this book safe to read.',
   'reader.remoteImageLoad': 'Load remote image',
   'annotation.sidebar': 'Annotations',
   'annotation.empty': 'No annotations yet. Select text to highlight.',
@@ -362,6 +366,8 @@ const zhCN: Dict = {
     '压缩包中的单个条目过大（实际 {actual} 字节；上限 {limit} 字节）。',
   'reader.limit.archiveCompressionRatio':
     '压缩包中的条目压缩比不安全（实际 {actual}:1；上限 {limit}:1）。',
+  'reader.limit.readerImageBytes':
+    '书籍中的图片过大（实际 {actual} 字节；上限 {limit} 字节）。',
   'reader.limit.pdfPages': 'PDF 页数过多（实际 {actual}；上限 {limit}）。',
   'reader.limit.cbzPages': 'CBZ 图片页数过多（实际 {actual}；上限 {limit}）。',
   'reader.capability.mobiDrm': '此 MOBI 文件受 DRM 保护，无法打开。',
@@ -369,6 +375,7 @@ const zhCN: Dict = {
     '暂不支持 KF8/MOBI8；LightInk 当前仅支持未加密的 PalmDOC/MOBI6。',
   'reader.capability.mobiHuff':
     '暂不支持使用 HUFF/CDIC 压缩的 MOBI；LightInk 当前仅支持未加密的 PalmDOC/MOBI6。',
+  'reader.warning.epubStylesIgnored': '为保证阅读安全，已忽略书籍中的部分出版样式。',
   'reader.remoteImageLoad': '加载远程图片',
   'annotation.sidebar': '标注',
   'annotation.empty': '暂无标注。选中正文即可添加高亮。',
