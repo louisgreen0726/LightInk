@@ -5,6 +5,7 @@ mod asset;
 mod cli;
 mod export;
 mod file;
+mod identifiers;
 mod recents;
 mod snapshot;
 

@@ -13,6 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::file::write_file_impl;
+use crate::identifiers::{validate_session_id, validate_version_id};
 
 const SNAPSHOT_DIR_NAME: &str = "snapshots";
 const SNAPSHOT_EXT: &str = "snapshot";
@@ -108,8 +109,16 @@ fn remove_snapshot_file(path: &Path) -> Result<(), String> {
     }
 }
 
+fn validate_snapshot_key(file_path: &str) -> Result<(), String> {
+    if file_path.starts_with(UNTITLED_KEY_PREFIX) {
+        validate_session_id(file_path)?;
+    }
+    Ok(())
+}
+
 /// 原子写快照（复用 file 模块的原子写实现）；未命名键同步登记索引。
 pub fn write_snapshot_impl(base_dir: &Path, file_path: &str, content: &str) -> Result<(), String> {
+    validate_snapshot_key(file_path)?;
     let snap = snapshot_path_for(base_dir, file_path);
     if file_path.starts_with(UNTITLED_KEY_PREFIX) {
         let _guard = lock_untitled_index()?;
@@ -129,6 +138,7 @@ pub fn write_snapshot_impl(base_dir: &Path, file_path: &str, content: &str) -> R
 
 /// 删除快照；快照不存在不算错误。未命名键同步移除索引条目。
 pub fn clear_snapshot_impl(base_dir: &Path, file_path: &str) -> Result<(), String> {
+    validate_snapshot_key(file_path)?;
     let snap = snapshot_path_for(base_dir, file_path);
     if file_path.starts_with(UNTITLED_KEY_PREFIX) {
         let _guard = lock_untitled_index()?;
@@ -154,6 +164,10 @@ pub fn list_untitled_drafts_impl(base_dir: &Path) -> Result<Vec<UntitledDraft>, 
     let mut surviving: Vec<UntitledIndexEntry> = Vec::new();
     let mut pruned = false;
     for entry in entries {
+        if validate_session_id(&entry.key).is_err() || !entry.key.starts_with(UNTITLED_KEY_PREFIX) {
+            pruned = true;
+            continue;
+        }
         let snap = snapshot_path_for(base_dir, &entry.key);
         match fs::read_to_string(&snap) {
             Ok(content) => {
@@ -191,6 +205,7 @@ pub fn read_stale_snapshot_impl(
     base_dir: &Path,
     file_path: &str,
 ) -> Result<Option<String>, String> {
+    validate_snapshot_key(file_path)?;
     let snap = snapshot_path_for(base_dir, file_path);
     let snap_mtime = match mtime(&snap) {
         Some(t) => t,
@@ -279,7 +294,7 @@ fn list_version_ids(dir: &Path) -> Vec<String> {
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_string())
             })
-            .filter(|s| s.parse::<u64>().is_ok())
+            .filter(|s| validate_version_id(s).is_ok() && s.parse::<u64>().is_ok())
             .collect(),
         Err(_) => Vec::new(),
     };
@@ -342,6 +357,7 @@ pub fn read_version_impl(
     file_path: &str,
     version_id: &str,
 ) -> Result<String, String> {
+    let version_id = validate_version_id(version_id)?;
     let path = version_dir_for(base_dir, file_path).join(format!("{version_id}.{VERSION_EXT}"));
     fs::read_to_string(&path).map_err(|e| format!("无法读取版本 {version_id}: {e}"))
 }
@@ -578,6 +594,17 @@ mod tests {
         assert_eq!(stale, None);
     }
 
+    #[test]
+    fn rejects_invalid_untitled_snapshot_identifiers() {
+        let dir = temp_dir();
+        for key in ["untitled-../escape", "untitled-with space", "untitled-会话"] {
+            assert!(write_snapshot_impl(dir.path(), key, "draft").is_err());
+            assert!(clear_snapshot_impl(dir.path(), key).is_err());
+            assert!(read_stale_snapshot_impl(dir.path(), key).is_err());
+        }
+        assert!(!dir.path().join(SNAPSHOT_DIR_NAME).exists());
+    }
+
     // ── R13 版本快照 ──
     #[test]
     fn evict_ids_keeps_newest_cap() {
@@ -613,6 +640,16 @@ mod tests {
             read_version_impl(dir.path(), &path, &m.id).expect("read"),
             "完整内容 🚀"
         );
+    }
+
+    #[test]
+    fn version_reads_reject_non_numeric_or_oversized_identifiers() {
+        let dir = temp_dir();
+        let path = dir.path().join("d.md").to_string_lossy().into_owned();
+        for id in ["", "../1", "1.version", "123456789012345678901"] {
+            assert!(read_version_impl(dir.path(), &path, id).is_err());
+            assert!(restore_version_impl(dir.path(), &path, id, "current").is_err());
+        }
     }
 
     #[test]

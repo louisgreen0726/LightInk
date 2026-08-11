@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::identifiers::validate_session_id;
+
 /// 文档旁的图片目录名；文档内引用形如 `assets/<name>.<ext>`。
 const ASSETS_DIR_NAME: &str = "assets";
 /// 应用数据目录下的暂存根目录名（未保存文档的图片先落这里）。
@@ -148,24 +150,6 @@ fn unique_asset_name(bytes: &[u8]) -> String {
     )
 }
 
-/// 会话 id 消毒：只保留字母数字/`-`/`_`，其余替换为 `_`，杜绝路径穿越。
-fn sanitize_session_id(session_id: &str) -> Result<String, String> {
-    let cleaned: String = session_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        return Err("会话 id 不能为空".to_owned());
-    }
-    Ok(cleaned)
-}
-
 /// 原子写字节版（与 file.rs 的字符串版同一策略：同目录临时文件 +
 /// flush/sync + rename；失败时 NamedTempFile 自动清理，不留半截文件）。
 /// file.rs 不在本任务 scope，故字节变体放在这里。
@@ -201,6 +185,7 @@ pub fn save_asset_impl(
     bytes: &[u8],
     ext: &str,
 ) -> Result<String, String> {
+    let session_id = validate_session_id(session_id)?;
     let ext = validate_ext(ext)?;
     if bytes.is_empty() {
         return Err("图片内容为空，未保存".to_owned());
@@ -208,9 +193,7 @@ pub fn save_asset_impl(
     let name = format!("{}.{}", unique_asset_name(bytes), ext);
     let dir = match doc_dir {
         Some(d) => d.join(ASSETS_DIR_NAME),
-        None => staging_root
-            .join(STAGING_DIR_NAME)
-            .join(sanitize_session_id(session_id)?),
+        None => staging_root.join(STAGING_DIR_NAME).join(session_id),
     };
     write_bytes_atomic(&dir.join(&name), bytes)?;
     Ok(format!("{}/{}", ASSETS_DIR_NAME, name))
@@ -263,7 +246,7 @@ pub fn save_document_as_impl(
     doc_path: &Path,
     content: &str,
 ) -> Result<Vec<String>, String> {
-    let session_id = sanitize_session_id(session_id)?;
+    let session_id = validate_session_id(session_id)?;
     let doc_dir = doc_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -569,25 +552,10 @@ mod tests {
     }
 
     #[test]
-    fn session_id_is_sanitized_against_traversal() {
+    fn session_id_is_rejected_instead_of_rewritten() {
         let dir = temp_dir();
-        let rel = save_asset_impl(None, dir.path(), "../evil/../x", b"data", "png").unwrap();
-        let file_name = rel.strip_prefix("assets/").unwrap();
-        // 消毒后不会逃出 staging 根目录
-        let staged_root = dir.path().join(STAGING_DIR_NAME);
-        let mut found = false;
-        for entry in fs::read_dir(&staged_root).unwrap() {
-            let session = entry.unwrap();
-            let candidate = session.path().join(file_name);
-            if candidate.exists() {
-                assert!(candidate.starts_with(&staged_root));
-                found = true;
-            }
-        }
-        assert!(
-            found,
-            "sanitized staging file must exist under staging root"
-        );
+        assert!(save_asset_impl(None, dir.path(), "../evil/../x", b"data", "png").is_err());
+        assert!(!dir.path().join(STAGING_DIR_NAME).exists());
         assert!(save_asset_impl(None, dir.path(), "", b"data", "png").is_err());
     }
 

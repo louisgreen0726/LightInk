@@ -12,11 +12,13 @@
 //!     暂存目录内的文件名）。
 //!
 //! 安全：相对路径逐段校验并在读取前 canonicalize，拒绝 `..`、盘符/UNC、
-//! 绝对路径与 symlink 越界；会话 id 消毒规则与 asset.rs 一致。base64
+//! 绝对路径与 symlink 越界；会话 id 验证规则与 asset.rs 一致。base64
 //! 编码器为本模块自带实现（asset.rs 只有解码器），不引入新 crate。
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::identifiers::validate_session_id;
 
 /// 文档旁的图片目录名（与 asset.rs 同一约定）。
 const ASSETS_DIR_NAME: &str = "assets";
@@ -93,24 +95,6 @@ fn require_path_within(path: &Path, root: &Path, description: &str) -> Result<()
     Ok(())
 }
 
-/// 会话 id 消毒（与 asset.rs 同一规则）：只保留字母数字/`-`/`_`。
-fn sanitize_session_id(session_id: &str) -> Result<String, String> {
-    let cleaned: String = session_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        return Err("会话 id 不能为空".to_owned());
-    }
-    Ok(cleaned)
-}
-
 /// 读取相对路径图片并返回 base64。
 ///
 /// - `doc_dir` 为 Some：`rel_path` 必须位于 `assets/`，解析为
@@ -128,6 +112,7 @@ pub fn read_image_base64_impl(
     session_id: Option<&str>,
     rel_path: &str,
 ) -> Result<String, String> {
+    let session_id = session_id.map(validate_session_id).transpose()?;
     let parts = sanitize_rel_path(rel_path)?;
     if parts.first().map(String::as_str) != Some(ASSETS_DIR_NAME) || parts.len() < 2 {
         return Err(format!(
@@ -153,10 +138,7 @@ pub fn read_image_base64_impl(
             let canonical_base = canonicalize_path(staging_root, "应用数据目录")?;
             let canonical_staging = canonicalize_path(&staging_assets, "暂存资源根目录")?;
             require_path_within(&canonical_staging, &canonical_base, "暂存资源根目录")?;
-            let session_root = canonicalize_path(
-                &staging_assets.join(sanitize_session_id(session)?),
-                "会话资源目录",
-            )?;
+            let session_root = canonicalize_path(&staging_assets.join(session), "会话资源目录")?;
             require_path_within(&session_root, &canonical_staging, "会话资源目录")?;
             let full = parts[1..]
                 .iter()
@@ -401,15 +383,14 @@ mod tests {
     }
 
     #[test]
-    fn staging_session_id_is_sanitized() {
+    fn staging_session_id_is_rejected_instead_of_rewritten() {
         let dir = temp_dir();
-        let cleaned = "___evil____x"; // "../evil/../x" 消毒后
-        let staged = dir.path().join(STAGING_DIR_NAME).join(cleaned);
+        let staged = dir.path().join(STAGING_DIR_NAME).join("valid-session");
         fs::create_dir_all(&staged).unwrap();
         fs::write(staged.join("c.png"), b"png-c").unwrap();
-        let b64 = read_image_base64_impl(None, dir.path(), Some("../evil/../x"), "assets/c.png")
-            .expect("read with sanitized session");
-        assert_eq!(b64, encode_base64(b"png-c"));
+        assert!(
+            read_image_base64_impl(None, dir.path(), Some("../evil/../x"), "assets/c.png").is_err()
+        );
     }
 
     #[test]
