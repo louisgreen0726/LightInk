@@ -62,6 +62,19 @@ class FakeElement {
     return child;
   }
 
+  get firstChild(): FakeElement | undefined {
+    return this.children[0];
+  }
+
+  insertBefore<T extends FakeElement>(child: T, ref: FakeElement | null): T {
+    if (ref === null || !this.children.includes(ref)) {
+      this.children.push(child);
+    } else {
+      this.children.splice(this.children.indexOf(ref), 0, child);
+    }
+    return child;
+  }
+
   replaceChildren(...children: FakeElement[]): void {
     this.children = [...children];
   }
@@ -204,6 +217,46 @@ describe('createOutlineView 渲染', () => {
     });
     expect(itemTexts(view)).toEqual(['一', '二', '三']);
     expect(bodyOf(view).children[1].classList.contains('level-2')).toBe(true);
+    view.destroy();
+  });
+});
+
+describe('createOutlineView 折叠标记（T4/R2）', () => {
+  it('注入 toggleFoldAtOrdinal 时渲染折叠标记，折叠序号标 is-folded', () => {
+    const toggleFoldAtOrdinal = vi.fn();
+    const view = createOutlineView({
+      doc: fakeDocument(),
+      getActiveHost: () => null,
+      getActiveMarkdown: () => '# 一\n\n## 二\n',
+      toggleFoldAtOrdinal,
+      getFoldedOrdinals: () => [0], // 第 0 个标题「一」已折叠
+    });
+    const items = bodyOf(view).children;
+    const marker0 = items[0]?.firstChild as FakeElement;
+    const marker1 = items[1]?.firstChild as FakeElement;
+    expect(marker0?.classList.contains('lightink-outline-fold')).toBe(true);
+    expect(marker0?.classList.contains('is-folded')).toBe(true);
+    expect(marker1?.classList.contains('lightink-outline-fold')).toBe(true);
+    expect(marker1?.classList.contains('is-folded')).toBe(false);
+    view.destroy();
+  });
+
+  it('点击折叠标记触发 toggleFoldAtOrdinal(anchor) 且不跳转', () => {
+    const toggleFoldAtOrdinal = vi.fn();
+    const host = new FakeElement('div');
+    host.headings = [new FakeElement('h1'), new FakeElement('h2')];
+    const view = createOutlineView({
+      doc: fakeDocument(),
+      getActiveHost: () => host as unknown as HTMLElement,
+      getActiveMarkdown: () => '# 一\n\n## 二\n',
+      toggleFoldAtOrdinal,
+      getFoldedOrdinals: () => [],
+    });
+    const marker0 = bodyOf(view).children[0]?.firstChild as FakeElement;
+    marker0.emit('click', { preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(toggleFoldAtOrdinal).toHaveBeenCalledWith(0);
+    // 标记点击 stopPropagation 不触发条目跳转。
+    expect(host.headings[0]?.scrollIntoView).not.toHaveBeenCalled();
     view.destroy();
   });
 });

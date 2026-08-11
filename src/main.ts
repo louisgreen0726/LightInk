@@ -542,8 +542,36 @@ function activeExportSnapshot(): ExportTabSnapshot | null {
     title: tab.title,
     filePath: tab.filePath,
     sessionId: tab.syntheticId,
-    contentHtml: serializeEditorContent(tab.hostElement),
+    // T4/R2：导出含完整内容——剥离 heading-fold 的折叠装饰（display:none 区间与
+    // 三角 widget），它们挂在 .ProseMirror DOM 上，会被 serializeEditorContent 读到。
+    contentHtml: exportContentHtmlWithoutFold(tab.hostElement),
   };
+}
+
+/**
+ * T4/R2：导出用正文 HTML——克隆活动标签的 .ProseMirror 并剥离折叠装饰，确保
+ * 折叠态下导出的 HTML/PDF 仍含全部内容且无三角 widget 污染（R2 outcome「导出
+ * HTML/PDF 含完整内容」）。导出管线读取渲染后 DOM innerHTML（非 getMarkdown），
+ * 故必须在此清理折叠留下的内联 display:none / 折叠 class / widget 节点。
+ */
+function exportContentHtmlWithoutFold(host: HTMLElement): string {
+  const pm = host.querySelector('.ProseMirror');
+  if (pm === null) {
+    return serializeEditorContent(host);
+  }
+  const clone = pm.cloneNode(true) as HTMLElement;
+  // 移除每个标题前的折叠三角 widget。
+  clone.querySelectorAll('.lightink-fold-marker').forEach((el) => el.remove());
+  // 解除折叠区间隐藏：移除内联 display:none 与折叠 class，使被折叠块在导出中可见。
+  clone.querySelectorAll('.lightink-folded-region').forEach((el) => {
+    el.classList.remove('lightink-folded-region');
+    el.removeAttribute('style');
+  });
+  // 移除折叠标题的状态 class（不影响内容显示，仅清理）。
+  clone.querySelectorAll('.lightink-heading-folded').forEach((el) => {
+    el.classList.remove('lightink-heading-folded');
+  });
+  return clone.innerHTML;
 }
 
 /** 自定义主题激活时读取注入槽的 CSS，一并内嵌进导出文档。 */

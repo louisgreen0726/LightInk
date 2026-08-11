@@ -281,7 +281,10 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
         if (deps.toggleFoldAtOrdinal !== undefined) {
           const isFolded = foldedOrdinals.has(item.anchor);
           const marker = doc.createElement('span');
-          marker.className = 'lightink-outline-fold' + (isFolded ? ' is-folded' : '');
+          marker.classList.add('lightink-outline-fold');
+          if (isFolded) {
+            marker.classList.add('is-folded');
+          }
           marker.textContent = isFolded ? '▾' : '▸';
           marker.style.cssText =
             'cursor:pointer;display:inline-block;width:1.2em;margin-right:2px;' +
