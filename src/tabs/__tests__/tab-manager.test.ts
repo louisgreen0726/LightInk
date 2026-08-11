@@ -423,6 +423,67 @@ describe('关闭未保存标签', () => {
     await manager.closeTab(b.id);
     expect(manager.activeTabId).toBe(a.id);
   });
+
+  it('同一标签的并发关闭共享操作且不会删除其他标签', async () => {
+    const harness = makeHarness();
+    let resolveChoice: ((choice: CloseChoice) => void) | undefined;
+    harness.confirmClose.mockImplementation(
+      () =>
+        new Promise<CloseChoice>((resolve) => {
+          resolveChoice = resolve;
+        }),
+    );
+    const a = await harness.manager.newTab();
+    const b = await harness.manager.newTab();
+    a.editor.setMarkdown('dirty');
+    harness.manager.handleContentChanged(a.id);
+
+    const first = harness.manager.closeTab(a.id);
+    const second = harness.manager.closeTab(a.id);
+    expect(second).toBe(first);
+    expect(harness.confirmClose).toHaveBeenCalledTimes(1);
+    resolveChoice!('discard');
+
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(true);
+    expect(harness.manager.tabList.map((tab) => tab.id)).toEqual([b.id]);
+    expect(harness.deps.detachHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('关闭已经移除的标签是幂等操作', async () => {
+    const harness = makeHarness();
+    const a = await harness.manager.newTab();
+    const b = await harness.manager.newTab();
+    await expect(harness.manager.closeTab(a.id)).resolves.toBe(true);
+    await expect(harness.manager.closeTab(a.id)).resolves.toBe(true);
+    expect(harness.manager.tabList.map((tab) => tab.id)).toEqual([b.id]);
+    expect(harness.deps.detachHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('关闭时保存若被更新内容追上则保留标签', async () => {
+    const harness = makeHarness();
+    harness.confirmClose.mockResolvedValue('save');
+    let releaseWrite: (() => void) | undefined;
+    const pendingWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const writeFile = harness.roundtrip.writeFile as ReturnType<typeof vi.fn>;
+    writeFile.mockImplementationOnce(() => pendingWrite);
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('persisted-v1');
+    harness.manager.handleContentChanged(tab!.id);
+
+    const closing = harness.manager.closeTab(tab!.id);
+    await vi.waitFor(() => expect(writeFile).toHaveBeenCalledTimes(1));
+    tab!.editor.setMarkdown('unsaved-v2');
+    harness.manager.handleContentChanged(tab!.id);
+    releaseWrite!();
+
+    await expect(closing).resolves.toBe(false);
+    expect(harness.manager.tabList).toContain(tab);
+    expect(tab!.dirty).toBe(true);
+    expect(tab!.editor.destroy).not.toHaveBeenCalled();
+  });
 });
 
 describe('崩溃快照', () => {

@@ -199,6 +199,8 @@ export class TabManager {
   private snapshotWrites = new Map<string, Promise<void>>();
   /** 同一标签的保存操作串行执行；失败会被队列尾吸收，不阻塞后续保存。 */
   private saveQueues = new Map<string, Promise<void>>();
+  /** 同一标签的重复关闭请求共享一个操作，避免重复确认、销毁或数组删除。 */
+  private closingTabs = new Map<string, Promise<boolean>>();
   /** 编辑器内容每次成功变更后递增；用于约束异步保存完成时的快照清理。 */
   private contentRevisions = new Map<string, number>();
   /** R13：外部变更弹窗进行中标志，避免轮询/保存前重复堆叠弹窗。 */
@@ -413,6 +415,9 @@ export class TabManager {
 
   /** 保存：原子写成功 → 清脏标记 + 清对应崩溃快照。失败保持脏标记。 */
   async saveTab(id: string): Promise<boolean> {
+    if (this.closingTabs.has(id)) {
+      return false;
+    }
     return this.enqueueSave(id, () => this.performSaveTab(id));
   }
 
@@ -447,6 +452,9 @@ export class TabManager {
 
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
   async saveTabAs(id: string): Promise<boolean> {
+    if (this.closingTabs.has(id)) {
+      return false;
+    }
     return this.enqueueSave(id, () => this.performSaveTabAs(id));
   }
 
@@ -545,26 +553,63 @@ export class TabManager {
    * 正常关闭后清除对应崩溃快照并销毁编辑器与宿主 DOM。
    * 返回 true 表示标签已关闭。
    */
-  async closeTab(id: string): Promise<boolean> {
-    const tab = this.requireTab(id);
+  closeTab(id: string): Promise<boolean> {
+    const existing = this.closingTabs.get(id);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const pending = this.performCloseTab(id);
+    this.closingTabs.set(id, pending);
+    void pending.then(
+      () => this.clearClosingOperation(id, pending),
+      () => this.clearClosingOperation(id, pending),
+    );
+    return pending;
+  }
+
+  private clearClosingOperation(id: string, pending: Promise<boolean>): void {
+    if (this.closingTabs.get(id) === pending) {
+      this.closingTabs.delete(id);
+    }
+  }
+
+  private async performCloseTab(id: string): Promise<boolean> {
+    const tab = this.tabs.find((candidate) => candidate.id === id);
+    if (tab === undefined) {
+      return true;
+    }
+    let discardConfirmed = false;
     if (tab.dirty) {
       const choice = await this.deps.confirmClose(tab);
       if (choice === 'cancel') {
         return false;
       }
       if (choice === 'save') {
-        const saved = await this.saveTab(id);
+        const saved = await this.enqueueSave(id, () => this.performSaveTab(id));
         if (!saved) {
           return false; // 保存失败/另存为取消 → 不关闭
         }
+      } else {
+        discardConfirmed = true;
       }
     }
+    await this.saveQueues.get(id)?.catch(() => undefined);
+    if (!discardConfirmed && tab.dirty) {
+      return false;
+    }
+
+    const wasInert = tab.hostElement.inert;
+    tab.hostElement.inert = true;
     this.cancelPendingSnapshot(id);
     this.autosaveConflictPrompted.delete(id);
     this.externalUnreadableNotified.delete(id);
     await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
       this.deps.reportError('清除快照失败', error);
     });
+    if (!discardConfirmed && tab.dirty) {
+      tab.hostElement.inert = wasInert;
+      return false;
+    }
     // reader 标签销毁阅读视图；markdown 标签销毁编辑器。reader 永不写快照，
     // 上面的 clearSnapshot 对其为 no-op。
     if (tab.kind === 'markdown') {
@@ -576,10 +621,14 @@ export class TabManager {
         this.deps.reportError('销毁阅读视图失败', error);
       });
     }
-    this.deps.detachHost(tab.hostElement);
-
     const index = this.tabs.indexOf(tab);
+    if (index < 0) {
+      return true;
+    }
+    this.deps.detachHost(tab.hostElement);
     this.tabs.splice(index, 1);
+    this.contentRevisions.delete(id);
+    this.saveQueues.delete(id);
     if (this.activeId === id) {
       const next = this.tabs[Math.min(index, this.tabs.length - 1)] ?? null;
       this.activeId = null;

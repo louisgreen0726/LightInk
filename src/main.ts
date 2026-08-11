@@ -1761,24 +1761,31 @@ function showTabContextMenu(tabId: string, x: number, y: number): void {
   const items = buildTabContextMenuItems(
     { hasFile, t: (key) => i18n.t(key) },
     {
-    close: () => void manager.closeTab(tabId),
-    closeOthers: () => {
-      for (const other of manager.tabList) {
-        if (other.id !== tabId) void manager.closeTab(other.id);
-      }
-    },
-    copyPath: () => {
-      if (tab?.filePath !== null && tab?.filePath !== undefined) {
-        void navigator.clipboard?.writeText(tab.filePath);
-      }
-    },
-    revealInFiles: () => {
-      // 「在文件管理器中显示」走 opener reveal_path_in_files（lib.rs 已注册，与 R14 链接
-      // 分类的 opener 能力同源）。能力未注册时忽略，避免阻塞右键菜单。
-      const path = tab?.filePath;
-      if (path === null || path === undefined) return;
-      void invoke('reveal_path_in_files', { path }).catch(() => undefined);
-    },
+      close: () => {
+        commitSourceMode(tabId);
+        void manager.closeTab(tabId);
+      },
+      closeOthers: () => {
+        void (async () => {
+          for (const other of [...manager.tabList]) {
+            if (other.id === tabId) continue;
+            commitSourceMode(other.id);
+            if (!(await manager.closeTab(other.id))) break;
+          }
+        })();
+      },
+      copyPath: () => {
+        if (tab?.filePath !== null && tab?.filePath !== undefined) {
+          void navigator.clipboard?.writeText(tab.filePath);
+        }
+      },
+      revealInFiles: () => {
+        // 「在文件管理器中显示」走 opener reveal_path_in_files（lib.rs 已注册，与 R14 链接
+        // 分类的 opener 能力同源）。能力未注册时忽略，避免阻塞右键菜单。
+        const path = tab?.filePath;
+        if (path === null || path === undefined) return;
+        void invoke('reveal_path_in_files', { path }).catch(() => undefined);
+      },
   });
   // Keep tabs chrome open while the menu is up; release on every close path.
   shell.setTabsHold(true);
