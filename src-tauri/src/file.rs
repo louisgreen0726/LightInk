@@ -4,8 +4,8 @@
 //! 唯一 owner 是前端编辑器会话。写入采用「同目录临时文件 + rename」的原子写
 //! 策略：失败时清理临时文件并返回错误，目标路径上永远不会留下半截文件。
 
-use std::fs;
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -52,18 +52,37 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     write_file_impl(Path::new(&path), &content)
 }
 
-/// 文件 stat 结果（返回前端用于 R13 外部变更检测）：修改时间（毫秒，自
-/// UNIX_EPOCH）+ 字节数。两者经 mtime 对比判定磁盘是否比记录基线更新。
+/// 文件 stat 结果（返回前端用于外部变更检测）：元数据加内容指纹。
 #[derive(serde::Serialize, Debug)]
 pub struct FileStat {
     pub mtime_ms: u64,
     pub size: u64,
+    pub fingerprint: String,
 }
 
-/// 取文件的修改时间（ms）与大小。读不到元数据/修改时间时报可读中文错误
+fn fingerprint_reader(mut reader: impl Read) -> Result<String, std::io::Error> {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        for byte in &buffer[..count] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    Ok(format!("{:016x}", hash))
+}
+
+/// 取文件的修改时间、大小与内容指纹。读不到文件/修改时间时报可读中文错误
 /// （R13 失败行为：stat 失败 → 前端提示文件不可读，不做自动动作）。
 pub fn stat_file_impl(path: &Path) -> Result<FileStat, String> {
-    let meta = fs::metadata(path)
+    let file = File::open(path)
+        .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?;
+    let meta = file
+        .metadata()
         .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?;
     let mtime = meta
         .modified()
@@ -73,9 +92,12 @@ pub fn stat_file_impl(path: &Path) -> Result<FileStat, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    let fingerprint = fingerprint_reader(file)
+        .map_err(|e| format!("无法计算文件指纹 {}: {}", path.display(), e))?;
     Ok(FileStat {
         mtime_ms,
         size: meta.len(),
+        fingerprint,
     })
 }
 
@@ -200,6 +222,10 @@ mod tests {
         let st = stat_file_impl(&path).expect("stat");
         assert_eq!(st.size, content.len() as u64);
         assert!(st.mtime_ms > 0, "mtime should be a real epoch ms");
+        assert_eq!(st.fingerprint.len(), 16);
+        write_file_impl(&path, "different").expect("replace");
+        let changed = stat_file_impl(&path).expect("stat changed");
+        assert_ne!(st.fingerprint, changed.fingerprint);
     }
 
     #[test]

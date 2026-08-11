@@ -1817,7 +1817,7 @@ function installApplicationCloseProtection(): void {
 
 installApplicationCloseProtection();
 
-// R13：外部文件变更检测——窗口聚焦 + 定时（秒级）轮询活动文件 mtime。
+// R13：外部文件变更检测——窗口聚焦 + 定时（秒级）轮询活动文件 stat/指纹。
 // 检测逻辑与冲突/重载分派在 TabManager（可注入测试），这里只做时机触发。
 async function pollExternalChange(): Promise<void> {
   try {

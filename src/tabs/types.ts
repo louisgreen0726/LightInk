@@ -33,7 +33,7 @@ interface TabBase {
   /** 最近一次已保存（或初始加载）的内容，用于比较得出脏标记。 */
   lastSavedMarkdown: string;
   /**
-   * R13：最近一次加载/保存成功时记录的磁盘 `FileStat`（mtime+size），作为
+   * R13：最近一次加载/保存成功时记录的磁盘 `FileStat`（元数据+内容指纹），作为
    * 外部变更检测基线。未命名标签、stat 失败或 reader 标签为 null（不参与检测）。
    */
   lastSavedMtime: FileStat | null;

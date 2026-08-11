@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 
 import type { EditorInstance } from '../../editor/types.js';
 import type { RoundtripDeps } from '../../file/roundtrip.js';
+import type { FileStat } from '../../file/file-service.js';
 import type {
   ExternalConflictChoice,
   ExternalReloadChoice,
@@ -102,7 +103,11 @@ function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
     }),
     readStaleSnapshot: vi.fn(async () => null),
     // R13：默认 stat 返回稳定基线（mtime=1000），外部变更测试用 overrides 覆盖。
-    statFile: vi.fn(async () => ({ mtime_ms: 1000, size: 0 })),
+    statFile: vi.fn(async () => ({
+      mtime_ms: 1000,
+      size: 0,
+      fingerprint: '0000000000000000',
+    })),
     snapshotDebounceMs: 1000,
     ...overrides,
   };
@@ -812,10 +817,16 @@ describe('保存与快照写入竞态', () => {
 
 describe('R13 外部文件变更检测', () => {
   /** 可变 stat：返回值可随测试推进调整（模拟磁盘在外部被改写）。 */
-  function mutableStat(initial: { mtime_ms: number; size: number }) {
+  type MutableTestStat = { mtime_ms: number; size: number; fingerprint?: string };
+
+  function mutableStat(initial: MutableTestStat) {
     let cur = initial;
-    const fn = vi.fn(async () => ({ mtime_ms: cur.mtime_ms, size: cur.size }));
-    return { fn, set: (v: { mtime_ms: number; size: number }) => { cur = v; } };
+    const fn = vi.fn(async () => ({
+      mtime_ms: cur.mtime_ms,
+      size: cur.size,
+      fingerprint: cur.fingerprint ?? `${cur.mtime_ms}:${cur.size}`,
+    }));
+    return { fn, set: (v: MutableTestStat) => { cur = v; } };
   }
 
   const readFileFn = (h: Harness) => h.roundtrip.readFile as ReturnType<typeof vi.fn>;
@@ -835,6 +846,30 @@ describe('R13 外部文件变更检测', () => {
     expect(writeFileFn(harness)).not.toHaveBeenCalled();
     expect(tab!.dirty).toBe(true);
     expect(tab!.editor.getMarkdown()).toBe('mine');
+  });
+
+  it('相同 mtime 和大小但内容指纹变化仍触发冲突', async () => {
+    const stat = mutableStat({
+      mtime_ms: 1000,
+      size: 5,
+      fingerprint: 'aaaaaaaaaaaaaaaa',
+    });
+    const confirmConflict = vi.fn(async (): Promise<ExternalConflictChoice> => 'keep');
+    const harness = makeHarness({ statFile: stat.fn, confirmExternalConflict: confirmConflict });
+    readFileFn(harness).mockResolvedValue('first');
+    const tab = await harness.manager.openFile('C:\\same-size.md');
+    tab!.editor.setMarkdown('mine');
+    harness.manager.handleContentChanged(tab!.id);
+    stat.set({
+      mtime_ms: 1000,
+      size: 5,
+      fingerprint: 'bbbbbbbbbbbbbbbb',
+    });
+
+    await expect(harness.manager.saveTab(tab!.id)).resolves.toBe(false);
+
+    expect(confirmConflict).toHaveBeenCalledOnce();
+    expect(writeFileFn(harness)).not.toHaveBeenCalled();
   });
 
   it('保存前外部冲突，选 overwrite 仍写入（非静默覆盖）', async () => {
@@ -930,7 +965,11 @@ describe('R13 外部文件变更检测', () => {
     let cur = { mtime_ms: 1000, size: 5 };
     const statFile = vi.fn(async () => {
       if (fail) throw new Error('gone');
-      return { mtime_ms: cur.mtime_ms, size: cur.size };
+      return {
+        mtime_ms: cur.mtime_ms,
+        size: cur.size,
+        fingerprint: `${cur.mtime_ms}:${cur.size}`,
+      };
     });
     const reportError = vi.fn();
     const confirmReload = vi.fn(async (): Promise<ExternalReloadChoice> => 'reload');
@@ -947,13 +986,17 @@ describe('R13 外部文件变更检测', () => {
 
   it('聚焦双通道并发触发只弹一次冲突对话框（守卫在首个 await 前同步置位）', async () => {
     let baselineDone = false;
-    let pendingResolve: ((v: { mtime_ms: number; size: number }) => void) | null = null;
+    let pendingResolve: ((v: FileStat) => void) | null = null;
     const statFile = vi.fn((_path: string) => {
       if (!baselineDone) {
-        return Promise.resolve({ mtime_ms: 1000, size: 5 });
+        return Promise.resolve({
+          mtime_ms: 1000,
+          size: 5,
+          fingerprint: '1000:5',
+        });
       }
       // 检测期 stat 挂起：模拟两个并发调用都在等待磁盘结果。
-      return new Promise<{ mtime_ms: number; size: number }>((resolve) => {
+      return new Promise<FileStat>((resolve) => {
         pendingResolve = resolve;
       });
     });
@@ -966,7 +1009,7 @@ describe('R13 外部文件变更检测', () => {
     harness.manager.handleContentChanged(tab!.id);
     const first = harness.manager.checkActiveExternalChange();
     const second = harness.manager.checkActiveExternalChange(); // DOM focus + Tauri 焦点双通道
-    pendingResolve!({ mtime_ms: 2000, size: 9 });
+    pendingResolve!({ mtime_ms: 2000, size: 9, fingerprint: '2000:9' });
     await Promise.all([first, second]);
     expect(confirmConflict).toHaveBeenCalledTimes(1);
     expect(tab!.dirty).toBe(true); // keep：保留内存脏态
@@ -1114,7 +1157,11 @@ describe('reader 标签（只读，豁免可写路径）', () => {
     const { manager } = makeHarness({
       ...rd,
       confirmExternalReload: confirmReload,
-      statFile: vi.fn(async () => ({ mtime_ms: 9999, size: 100 })),
+      statFile: vi.fn(async () => ({
+        mtime_ms: 9999,
+        size: 100,
+        fingerprint: '9999:100',
+      })),
     });
     await manager.openReader('C:\\docs\\book.pdf');
     await manager.checkActiveExternalChange();

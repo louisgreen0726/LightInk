@@ -43,7 +43,7 @@ import {
 import * as fileService from '../file/file-service.js';
 import type { FileStat } from '../file/file-service.js';
 import {
-  isDiskNewer,
+  hasFileStatChanged,
   type ExternalConflictChoice,
   type ExternalReloadChoice,
 } from '../file/external-change.js';
@@ -113,7 +113,7 @@ export interface TabManagerDeps {
   writeSnapshot?: (key: string, content: string) => Promise<void>;
   clearSnapshot?: (key: string) => Promise<void>;
   readStaleSnapshot?: (path: string) => Promise<string | null>;
-  /** R13：取文件 mtime+size（默认为真实 Tauri stat_file 调用）。 */
+  /** R13：取文件元数据与内容指纹（默认为真实 Tauri stat_file 调用）。 */
   statFile?: (path: string) => Promise<FileStat>;
   /** 启动时枚举崩溃遗留的未命名草稿。 */
   listUntitledDrafts?: () => Promise<fileService.UntitledDraft[]>;
@@ -992,7 +992,7 @@ export class TabManager {
   }
 
   /**
-   * R13 保存前闸门：写入前比 mtime，发现外部变更弹冲突对话框。
+   * R13 保存前闸门：写入前比较完整 FileStat，发现外部变更弹冲突对话框。
    *   - stat 失败 → 视为无可覆盖的外部内容，交 write_file 自然成败（proceed）；
    *   - 未变更 → proceed；
    *   - 变更 + overwrite → proceed（用户明确选择覆盖，非静默）；
@@ -1009,7 +1009,7 @@ export class TabManager {
     } catch {
       return 'proceed';
     }
-    if (!isDiskNewer(tab.lastSavedMtime, disk)) {
+    if (!hasFileStatChanged(tab.lastSavedMtime, disk)) {
       return 'proceed';
     }
     // 即使未脏，覆盖也会丢磁盘新内容 → 必须让用户明确选择（R13）。
@@ -1064,7 +1064,7 @@ export class TabManager {
         }
         return;
       }
-      if (!isDiskNewer(tab.lastSavedMtime, disk)) {
+      if (!hasFileStatChanged(tab.lastSavedMtime, disk)) {
         return;
       }
       this.externalDialogOpen = true;
@@ -1124,8 +1124,8 @@ export class TabManager {
       if (tab.lastSavedMtime !== null) {
         try {
           const disk = await this.deps.statFile(tab.filePath);
-          if (isDiskNewer(tab.lastSavedMtime, disk)) {
-            const key = `${disk.mtime_ms}:${disk.size}`;
+          if (hasFileStatChanged(tab.lastSavedMtime, disk)) {
+            const key = `${disk.mtime_ms}:${disk.size}:${disk.fingerprint}`;
             if (this.autosaveConflictPrompted.get(tab.id) === key) {
               continue; // 同一外部变更已提示过且用户选择保留内存：本次静默跳过。
             }
