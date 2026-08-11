@@ -76,6 +76,7 @@ import { createStatusBar, type StatusBar } from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
 import { installFontScale } from './ui/font-scale.js';
+import { installWheelZoom } from './ui/wheel-zoom.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
@@ -94,6 +95,9 @@ installDisplayScale(document.documentElement, window);
 
 // Reading font zoom (body/code) over tier baselines; persists lightink.fontScale.
 const fontScale = installFontScale(document.documentElement, window.localStorage);
+
+// R5：Ctrl/Cmd + 滚轮字号缩放（与 Ctrl+=/- 同档位、同持久化）；capture 阶段拦截。
+installWheelZoom(document, fontScale);
 
 // UI language (en / zh-CN) + macOS shortcut labels.
 const i18n = createI18n(window.localStorage);

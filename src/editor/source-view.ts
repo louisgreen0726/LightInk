@@ -324,6 +324,8 @@ export class SourceView {
     // overflow:hidden 的 textarea 在部分 WebView 下不会把滚轮冒泡给祖先；
     // 显式把 delta 转给 #lightink-editor-area，保持与正常模式同一滚动条。
     const onWheel = (event: WheelEvent): void => {
+      // R5：Ctrl/Cmd+滚轮交给全局 wheel-zoom（字号缩放），不转发为页面滚动。
+      if (event.ctrlKey || event.metaKey) return;
       const scroller = this.scrollContainer();
       if (scroller === null) return;
       // 仅处理纵向滚；横向/捏合缩放留给浏览器。
