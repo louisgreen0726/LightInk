@@ -18,7 +18,7 @@ import {
   extFromMime,
   fileNameStem,
   importImageAsset,
-  migrateStagingAssets,
+  saveDocumentAs,
   mimeFromExt,
   readImageBase64,
   saveAsset,
@@ -105,13 +105,13 @@ describe('invoke wrappers', () => {
     await expect(saveAsset(null, 's', 'QUJD', 'png')).rejects.toBe('磁盘已满');
   });
 
-  it('migrateStagingAssets passes session and doc path', async () => {
+  it('saveDocumentAs passes the complete transaction payload', async () => {
     invokeMock.mockResolvedValue(['assets/img-x.png']);
-    const moved = await migrateStagingAssets('untitled-a1', 'C:\\docs\\a.md');
-    expect(moved).toEqual(['assets/img-x.png']);
-    expect(invokeMock).toHaveBeenCalledWith('migrate_staging_assets', {
+    await saveDocumentAs('untitled-a1', 'C:\\docs\\a.md', '# body');
+    expect(invokeMock).toHaveBeenCalledWith('save_document_as', {
       sessionId: 'untitled-a1',
       docPath: 'C:\\docs\\a.md',
+      content: '# body',
     });
   });
 });

@@ -162,8 +162,6 @@ export interface TabManagerDeps {
     bytesBase64: string,
     ext: string,
   ) => Promise<string>;
-  /** T4：另存为后迁移该会话暂存图片到文档旁 assets/。 */
-  migrateStagingAssets?: (sessionId: string, docPath: string) => Promise<string[]>;
   /** 读取文档相对引用图片（base64），供编辑器把 assets/… 解析为 data URL 显示。 */
   readImageBase64?: (
     docPath: string | null,
@@ -236,7 +234,6 @@ export class TabManager {
       statFile: fileService.statFile,
       listUntitledDrafts: fileService.listUntitledDrafts,
       saveAsset: assetService.saveAsset,
-      migrateStagingAssets: assetService.migrateStagingAssets,
       readImageBase64: assetService.readImageBase64,
       snapshotDebounceMs: DEFAULT_DEBOUNCE_MS,
       reportError: (message, error) => {
@@ -484,6 +481,7 @@ export class TabManager {
     const content = tab.editor.getMarkdown();
     const newPath = await saveAsFlow(
       this.deps.roundtrip,
+      tab.syntheticId,
       content,
       tab.filePath ?? undefined,
     );
@@ -493,14 +491,6 @@ export class TabManager {
     const oldKey = snapshotKeyOf(tab);
     tab.filePath = newPath;
     tab.title = fileNameOf(newPath);
-    // T4：未命名时期粘贴的图片落在会话暂存目录；引用均为相对路径
-    // assets/...，按原名迁入新文档旁 assets/ 后引用保持有效，无需改写
-    // 文档内容。无暂存时 Rust 侧为 no-op。
-    try {
-      await this.deps.migrateStagingAssets(tab.syntheticId, newPath);
-    } catch (error) {
-      this.deps.reportError('迁移暂存图片失败', error);
-    }
     return this.finalizeSuccessfulSave(tab, newPath, content, [newPath, oldKey]);
   }
 
@@ -835,7 +825,7 @@ export class TabManager {
         onContentChanged: () => this.handleContentChanged(id),
         // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
         // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
-        // （sessionId = syntheticId），保存时由 saveTabAs 迁移。
+        // （sessionId = syntheticId），保存时由 saveTabAs 与文档一起提交。
         assetSaver: createAssetSaver({
           saveAsset: this.deps.saveAsset,
           sessionId: args.syntheticId,

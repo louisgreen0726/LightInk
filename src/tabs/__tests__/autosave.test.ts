@@ -261,6 +261,7 @@ function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
   const roundtrip: RoundtripDeps = {
     readFile: vi.fn(async () => '磁盘内容'),
     writeFile: vi.fn(async () => undefined),
+    saveDocumentAs: vi.fn(async () => undefined),
     showOpenDialog: vi.fn(async () => null),
     showSaveDialog: vi.fn(async () => null),
     reportError: vi.fn(),

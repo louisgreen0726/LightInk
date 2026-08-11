@@ -5,8 +5,8 @@
 //! 原子落盘：
 //!   - 文档已保存（`doc_path` 为 Some）→ 写入 `<文档目录>/assets/`；
 //!   - 文档未保存 → 写入应用数据目录下按会话隔离的暂存目录
-//!     `staging-assets/<session_id>/`，保存（另存为）时由
-//!     `migrate_staging_assets` 迁移进 `<文档目录>/assets/`。
+//!     `staging-assets/<session_id>/`，保存（另存为）时与 Markdown 一起
+//!     事务式提交进 `<文档目录>/assets/`。
 //!
 //! 两种情况下返回给前端的引用都是相对路径 `assets/<name>.<ext>`：暂存期
 //! 与迁移后的引用形式一致，迁移只是搬动文件，文档内容无需改写；移动整个
@@ -193,8 +193,8 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 ///
 /// - `doc_dir` 为 Some：写入 `<doc_dir>/assets/`；
 /// - 为 None（文档未保存）：写入 `<staging_root>/staging-assets/<session_id>/`，
-///   返回同样的相对引用 —— 保存时 `migrate_staging_assets_impl` 按原名
-///   搬入 `<文档目录>/assets/`，引用保持有效。
+///   返回同样的相对引用 —— 保存时 `save_document_as_impl` 按原名提交到
+///   `<文档目录>/assets/`，引用保持有效。
 pub fn save_asset_impl(
     doc_dir: Option<&Path>,
     staging_root: &Path,
@@ -215,57 +215,6 @@ pub fn save_asset_impl(
     };
     write_bytes_atomic(&dir.join(&name), bytes)?;
     Ok(format!("{}/{}", ASSETS_DIR_NAME, name))
-}
-
-/// 把某会话暂存目录里的全部图片搬入 `<doc_path 父目录>/assets/`（按原名
-/// 移动，跨设备时回退 copy+delete），返回迁移后的相对引用列表（排序后）。
-/// 暂存目录不存在视为无事可做（Ok(空)）；搬空后删除会话目录。
-pub fn migrate_staging_assets_impl(
-    staging_root: &Path,
-    session_id: &str,
-    doc_path: &str,
-) -> Result<Vec<String>, String> {
-    let staging = staging_root
-        .join(STAGING_DIR_NAME)
-        .join(sanitize_session_id(session_id)?);
-    if !staging.exists() {
-        return Ok(Vec::new());
-    }
-    let doc_dir = Path::new(doc_path)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| format!("无效的文档路径: {}", doc_path))?;
-    let target_dir = doc_dir.join(ASSETS_DIR_NAME);
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("无法创建目录 {}: {}", target_dir.display(), e))?;
-
-    let mut moved: Vec<String> = Vec::new();
-    let entries = fs::read_dir(&staging)
-        .map_err(|e| format!("无法读取暂存目录 {}: {}", staging.display(), e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("无法读取暂存目录项: {}", e))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("无法读取暂存文件类型: {}", e))?;
-        if !file_type.is_file() {
-            continue;
-        }
-        let name = entry.file_name();
-        let target = target_dir.join(&name);
-        if fs::rename(entry.path(), &target).is_err() {
-            // 跨文件系统等 rename 失败场景：回退 copy + delete。
-            fs::copy(entry.path(), &target).map_err(|e| {
-                format!("无法迁移暂存图片到 {}: {}", target.display(), e)
-            })?;
-            fs::remove_file(entry.path())
-                .map_err(|e| format!("无法清理暂存图片: {}", e))?;
-        }
-        moved.push(format!("{}/{}", ASSETS_DIR_NAME, name.to_string_lossy()));
-    }
-    // 搬空后移除会话目录（删不掉不阻断，留空目录无害）。
-    let _ = fs::remove_dir(&staging);
-    moved.sort();
-    Ok(moved)
 }
 
 fn files_have_same_content(left: &Path, right: &Path) -> Result<bool, String> {
@@ -504,17 +453,6 @@ pub fn import_image_asset(
     )
 }
 
-/// 文档首次保存（另存为）后调用：把该会话暂存的图片迁移到文档旁的
-/// assets/ 目录。返回迁移后的相对引用列表。
-#[tauri::command]
-pub fn migrate_staging_assets(
-    app: tauri::AppHandle,
-    session_id: String,
-    doc_path: String,
-) -> Result<Vec<String>, String> {
-    migrate_staging_assets_impl(&resolve_base_dir(&app), &session_id, &doc_path)
-}
-
 /// Atomically persist a Save As request together with any assets staged for
 /// the untitled editor session.
 #[tauri::command]
@@ -655,54 +593,6 @@ mod tests {
         }
         assert!(found, "sanitized staging file must exist under staging root");
         assert!(save_asset_impl(None, dir.path(), "", b"data", "png").is_err());
-    }
-
-    // -- 迁移 --
-
-    #[test]
-    fn migrate_moves_staged_files_into_doc_assets() {
-        let dir = temp_dir();
-        let session = "untitled-m1";
-        let rel_a = save_asset_impl(None, dir.path(), session, b"png-a", "png").unwrap();
-        let rel_b = save_asset_impl(None, dir.path(), session, b"png-b", "png").unwrap();
-
-        let doc_path = dir.path().join("docs").join("笔记.md");
-        fs::create_dir_all(doc_path.parent().unwrap()).unwrap();
-        let moved = migrate_staging_assets_impl(
-            dir.path(),
-            session,
-            &doc_path.to_string_lossy(),
-        )
-        .expect("migrate");
-        assert_eq!(moved, {
-            let mut v = vec![rel_a.clone(), rel_b.clone()];
-            v.sort();
-            v
-        });
-        // 文件已按原名落在文档旁 assets/，内容一致
-        let doc_dir = doc_path.parent().unwrap();
-        assert_eq!(fs::read(doc_dir.join(&rel_a)).unwrap(), b"png-a");
-        assert_eq!(fs::read(doc_dir.join(&rel_b)).unwrap(), b"png-b");
-        // 暂存目录已清空移除
-        assert!(!dir.path().join(STAGING_DIR_NAME).join(session).exists());
-    }
-
-    #[test]
-    fn migrate_without_staging_is_noop() {
-        let dir = temp_dir();
-        let doc = dir.path().join("a.md");
-        let moved =
-            migrate_staging_assets_impl(dir.path(), "never-staged", &doc.to_string_lossy())
-                .expect("noop migrate");
-        assert!(moved.is_empty());
-    }
-
-    #[test]
-    fn migrate_rejects_doc_path_without_parent() {
-        let dir = temp_dir();
-        let session = "untitled-m2";
-        save_asset_impl(None, dir.path(), session, b"x", "png").unwrap();
-        assert!(migrate_staging_assets_impl(dir.path(), session, "").is_err());
     }
 
     // -- transactional Save As --

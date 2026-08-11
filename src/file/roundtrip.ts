@@ -8,11 +8,13 @@
 
 import * as fileService from './file-service.js';
 import * as fileDialog from './file-dialog.js';
+import { saveDocumentAs } from '../asset/asset-service.js';
 
 /** 供测试注入的依赖面。生产环境直接使用真实模块。 */
 export interface RoundtripDeps {
   readFile: (path: string) => Promise<string>;
   writeFile: (path: string, content: string) => Promise<void>;
+  saveDocumentAs: (sessionId: string, path: string, content: string) => Promise<void>;
   showOpenDialog: () => Promise<string | null>;
   showSaveDialog: (defaultPath?: string) => Promise<string | null>;
   /** 错误上报（T3 用 console/alert 兜底，完整 UI 在 T6/T11）。 */
@@ -22,6 +24,7 @@ export interface RoundtripDeps {
 export const defaultRoundtripDeps: RoundtripDeps = {
   readFile: fileService.readFile,
   writeFile: fileService.writeFile,
+  saveDocumentAs,
   showOpenDialog: fileDialog.showOpenDialog,
   showSaveDialog: fileDialog.showSaveDialog,
   reportError: (message, error) => {
@@ -82,10 +85,11 @@ export async function saveToPathFlow(
 }
 
 /**
- * 另存为：弹保存对话框 → 写入新路径。返回新路径；取消或失败返回 null。
+ * 另存为：弹保存对话框 → 事务式写入资源和新路径。返回新路径；取消或失败返回 null。
  */
 export async function saveAsFlow(
   deps: RoundtripDeps,
+  sessionId: string,
   content: string,
   defaultPath?: string,
 ): Promise<string | null> {
@@ -93,6 +97,11 @@ export async function saveAsFlow(
   if (path === null) {
     return null;
   }
-  const ok = await saveToPathFlow(deps, path, content);
-  return ok ? path : null;
+  try {
+    await deps.saveDocumentAs(sessionId, path, content);
+    return path;
+  } catch (error) {
+    deps.reportError(`另存文件失败: ${path}`, error);
+    return null;
+  }
 }

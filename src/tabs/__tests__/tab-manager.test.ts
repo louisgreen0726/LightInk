@@ -72,9 +72,13 @@ interface Harness {
 function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
   const editors: Harness['editors'] = [];
   const snapshots = new Map<string, string>();
+  const writeFile = vi.fn(async (_path: string, _content: string) => undefined);
   const roundtrip: RoundtripDeps = {
     readFile: vi.fn(async () => '磁盘内容'),
-    writeFile: vi.fn(async () => undefined),
+    writeFile,
+    saveDocumentAs: vi.fn(async (_sessionId: string, path: string, content: string) => {
+      await writeFile(path, content);
+    }),
     showOpenDialog: vi.fn(async () => null),
     showSaveDialog: vi.fn(async () => null),
     reportError: vi.fn(),
@@ -220,9 +224,13 @@ describe('多标签并行编辑互不影响', () => {
 
 describe('打开与内容往返', () => {
   it('openFile 读取内容创建标签，标题取文件名', async () => {
+    const writeFile = vi.fn(async (_path: string, _content: string) => undefined);
     const customRoundtrip: RoundtripDeps = {
       readFile: vi.fn(async () => '# 你好 🚀\n\n特殊字符 <>&"\'\\'),
-      writeFile: vi.fn(async () => undefined),
+      writeFile,
+      saveDocumentAs: vi.fn(async (_sessionId: string, path: string, content: string) => {
+        await writeFile(path, content);
+      }),
       showOpenDialog: vi.fn(async () => null),
       showSaveDialog: vi.fn(async () => null),
       reportError: vi.fn(),
@@ -312,6 +320,27 @@ describe('保存与脏标记', () => {
     expect(tab.title).toBe('命名.md');
     expect(tab.dirty).toBe(false);
     expect(snapshotKeyOf(tab)).toBe('D:\\命名.md');
+  });
+
+  it('另存为事务失败时保留原路径、标题和 dirty 状态', async () => {
+    const harness = makeHarness();
+    (harness.roundtrip.showSaveDialog as ReturnType<typeof vi.fn>).mockResolvedValue(
+      'D:\\new.md',
+    );
+    (harness.roundtrip.saveDocumentAs as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('asset conflict'),
+    );
+    const tab = await harness.manager.openFile('C:\\original.md');
+    tab!.editor.setMarkdown('unsaved');
+    harness.manager.handleContentChanged(tab!.id);
+
+    await expect(harness.manager.saveTabAs(tab!.id)).resolves.toBe(false);
+
+    expect(tab!.filePath).toBe('C:\\original.md');
+    expect(tab!.title).toBe('original.md');
+    expect(tab!.lastSavedMarkdown).toBe('磁盘内容');
+    expect(tab!.dirty).toBe(true);
+    expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
   });
 
   it('同一标签的后发保存等待前一次完成并读取最新内容', async () => {

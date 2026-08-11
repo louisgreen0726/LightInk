@@ -48,7 +48,6 @@ pub fn run() {
             snapshot::list_untitled_drafts,
             asset::save_asset,
             asset::save_document_as,
-            asset::migrate_staging_assets,
             asset::import_image_asset,
             export::read_image_base64,
             export::print_webview_to_pdf,

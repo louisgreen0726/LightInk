@@ -17,6 +17,7 @@ function makeDeps(overrides: Partial<RoundtripDeps> = {}) {
   const deps: RoundtripDeps = {
     readFile: vi.fn(async () => '磁盘内容'),
     writeFile: vi.fn(async () => undefined),
+    saveDocumentAs: vi.fn(async () => undefined),
     showOpenDialog: vi.fn(async () => null),
     showSaveDialog: vi.fn(async () => null),
     reportError: vi.fn(),
@@ -77,25 +78,32 @@ describe('saveToPathFlow', () => {
 describe('saveAsFlow', () => {
   it('取消对话框返回 null 且不写文件', async () => {
     const deps = makeDeps();
-    await expect(saveAsFlow(deps, '内容')).resolves.toBeNull();
-    expect(deps.writeFile).not.toHaveBeenCalled();
+    await expect(saveAsFlow(deps, 'untitled-1', '内容')).resolves.toBeNull();
+    expect(deps.saveDocumentAs).not.toHaveBeenCalled();
   });
 
   it('选定新路径后写入并返回路径', async () => {
     const deps = makeDeps({
       showSaveDialog: vi.fn(async () => 'D:\\新文件.md'),
     });
-    await expect(saveAsFlow(deps, '另存内容')).resolves.toBe('D:\\新文件.md');
-    expect(deps.writeFile).toHaveBeenCalledWith('D:\\新文件.md', '另存内容');
+    await expect(saveAsFlow(deps, 'untitled-1', '另存内容')).resolves.toBe(
+      'D:\\新文件.md',
+    );
+    expect(deps.saveDocumentAs).toHaveBeenCalledWith(
+      'untitled-1',
+      'D:\\新文件.md',
+      '另存内容',
+    );
   });
 
   it('写入失败返回 null', async () => {
     const deps = makeDeps({
       showSaveDialog: vi.fn(async () => 'D:\\x.md'),
-      writeFile: vi.fn(async () => {
+      saveDocumentAs: vi.fn(async () => {
         throw '只读';
       }),
     });
-    await expect(saveAsFlow(deps, '内容')).resolves.toBeNull();
+    await expect(saveAsFlow(deps, 'untitled-1', '内容')).resolves.toBeNull();
+    expect(deps.reportError).toHaveBeenCalledOnce();
   });
 });

@@ -2,7 +2,7 @@
  * `asset-service` — 图片资源持久化的 typed 薄封装 + saver 工厂（T4）。
  *
  * 图片资源的唯一 owner 是 Rust 资源服务（src-tauri/src/asset.rs）；这里只
- * 负责把 `invoke('save_asset' | 'migrate_staging_assets')` 的参数/返回值
+ * 负责把图片与事务式另存为命令的参数/返回值
  * 整理成 TypeScript 类型，并提供纯函数工具（base64 编码、MIME→扩展名）。
  *
  * 引用约定：无论图片落在文档旁 `assets/` 还是未保存文档的会话暂存目录，
@@ -103,14 +103,15 @@ export async function saveAsset(
 }
 
 /**
- * 文档首次保存（另存为）后调用：把该会话暂存的图片迁移到文档旁的
- * assets/ 目录。返回迁移后的相对引用列表；无暂存时 resolve 为空数组。
+ * 事务式另存为：Rust 先无覆盖地提交该会话的暂存资源，再原子写入 Markdown。
+ * 任一步失败时 reject，调用方必须保留原标签路径、dirty 状态和暂存资源。
  */
-export async function migrateStagingAssets(
+export async function saveDocumentAs(
   sessionId: string,
   docPath: string,
-): Promise<string[]> {
-  return invoke<string[]>('migrate_staging_assets', { sessionId, docPath });
+  content: string,
+): Promise<void> {
+  await invoke<string[]>('save_document_as', { sessionId, docPath, content });
 }
 
 /**
