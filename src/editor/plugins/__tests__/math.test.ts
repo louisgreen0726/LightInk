@@ -252,31 +252,46 @@ describe('renderMathHtml', () => {
 describe('createKatexLoader', () => {
   it('never invokes the factory until the loader is called (lazy)', async () => {
     const factory = vi.fn(async () => ({ renderToString: () => '<span/>' }));
-    const load = createKatexLoader(factory);
+    const loadStyles = vi.fn(async () => undefined);
+    const load = createKatexLoader(factory, loadStyles);
     // 无公式文档的路径根本不调用 load —— 此处模拟：只构造、不调用。
     expect(factory).not.toHaveBeenCalled();
+    expect(loadStyles).not.toHaveBeenCalled();
     await load();
     expect(factory).toHaveBeenCalledTimes(1);
+    expect(loadStyles).toHaveBeenCalledTimes(1);
   });
 
-  it('memoizes the module promise (single import)', async () => {
+  it('memoizes the renderer and stylesheet imports together', async () => {
     const factory = vi.fn(async () => ({ renderToString: () => '<span/>' }));
-    const load = createKatexLoader(factory);
+    const loadStyles = vi.fn(async () => undefined);
+    const load = createKatexLoader(factory, loadStyles);
     const [a, b] = await Promise.all([load(), load()]);
     expect(factory).toHaveBeenCalledTimes(1);
+    expect(loadStyles).toHaveBeenCalledTimes(1);
     expect(a).toBe(b);
   });
 
   it('accepts the default-export interop shape (real katex module)', async () => {
-    const load = createKatexLoader(() => import('katex'));
+    const load = createKatexLoader(() => import('katex'), async () => undefined);
     const renderer = await load();
     expect(typeof renderer.renderToString).toBe('function');
     expect(renderer.renderToString('x')).toContain('katex');
   });
 
   it('rejects modules without renderToString', async () => {
-    const load = createKatexLoader(async () => ({}));
+    const load = createKatexLoader(async () => ({}), async () => undefined);
     await expect(load()).rejects.toThrow('renderToString');
+  });
+
+  it('does not expose the renderer when the stylesheet fails to load', async () => {
+    const load = createKatexLoader(
+      async () => ({ renderToString: () => '<span/>' }),
+      async () => {
+        throw new Error('style chunk unavailable');
+      },
+    );
+    await expect(load()).rejects.toThrow('style chunk unavailable');
   });
 });
 
