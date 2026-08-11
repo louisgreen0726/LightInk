@@ -248,12 +248,81 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
         .map_err(|_| "打印通道关闭（主线程未返回结果）".to_string())?
 }
 
-/// 非 Windows：原生 PrintToPdf 仅 WebView2（Windows）有；Linux/macOS 走
-/// `window.print()` 系统对话框（WebKitGTK/WKWebView 的「打印为 PDF」本就输出
-/// 矢量文字）。返回错误，由前端回退到打印对话框路径。
-#[cfg(not(windows))]
+/// macOS：WKWebView `createPDFWithConfiguration:completionHandler:`（macOS 11+）
+/// 生成含原生可选文字的矢量 PDF，与 Windows WebView2 PrintToPdf 对齐。经 tauri
+/// `with_webview` 取底层 WKWebView 指针，createPDF 异步回调把 NSData 写入路径。
+///
+/// **UNVERIFIED on macOS**：本分支在 Windows 开发机编写，无法编译/运行验证。
+/// 需 macOS 构建 + 手测确认 PlatformWebview.webview 句柄、objc2 block 与 NSData
+/// 写文件的正确性（delivery 阶段 macOS CI/手测）。
+#[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn print_webview_to_pdf(_window: tauri::WebviewWindow, _path: String) -> Result<(), String> {
+pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2_foundation::{NSData, NSError};
+    use objc2_web_kit::WKWebView;
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+
+    window
+        .with_webview(move |wv: tauri::webview::PlatformWebview| {
+            let outcome: Result<(), String> = (|| -> Result<(), String> {
+                // UNVERIFIED：tauri-runtime-wry 在 macOS 的 Webview 暴露 webview 字段
+                // （*mut c_void = WKWebView 指针）。retain 为 Retained<WKWebView>。
+                let wk: Retained<WKWebView> = unsafe {
+                    let ptr = wv.webview as *mut WKWebView;
+                    Retained::retain(ptr).map_err(|_| "WKWebView 句柄无效".to_string())?
+                };
+
+                let (pdf_tx, pdf_rx) = mpsc::channel::<Result<Retained<NSData>, String>>();
+                let block = RcBlock::new(
+                    move |data: *mut NSData, err: *mut NSError| {
+                        if !err.is_null() {
+                            let _ = pdf_tx.send(Err("createPDF 返回 NSError".to_string()));
+                            return;
+                        }
+                        if data.is_null() {
+                            let _ = pdf_tx.send(Err("createPDF 返回空数据".to_string()));
+                            return;
+                        }
+                        match unsafe { Retained::retain(data) } {
+                            Ok(d) => {
+                                let _ = pdf_tx.send(Ok(d));
+                            }
+                            Err(_) => {
+                                let _ = pdf_tx.send(Err("NSData retain 失败".to_string()));
+                            }
+                        }
+                    },
+                );
+                unsafe {
+                    wk.createPDFWithConfiguration_completionHandler(None, &block);
+                }
+                let pdf_data = pdf_rx
+                    .recv()
+                    .map_err(|_| "createPDF 通道关闭".to_string())??;
+                let bytes: &[u8] = pdf_data.bytes();
+                std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"))?;
+                Ok(())
+            })();
+            let _ = tx.send(outcome);
+        })
+        .map_err(|e| format!("with_webview 失败: {e}"))?;
+
+    rx.recv()
+        .map_err(|_| "打印通道关闭（主线程未返回结果）".to_string())?
+}
+
+/// Linux：WebKitGTK 无等价编程式 PrintToPdf；返回错误由前端回退到 `window.print()`
+/// 系统打印对话框（WebKitGTK 的「打印为 PDF」输出矢量文字）。
+#[cfg(not(any(windows, target_os = "macos")))]
+#[tauri::command]
+pub fn print_webview_to_pdf(
+    _window: tauri::WebviewWindow,
+    _path: String,
+) -> Result<(), String> {
     Err("当前平台不支持原生 PrintToPdf，请使用打印对话框".to_string())
 }
 
