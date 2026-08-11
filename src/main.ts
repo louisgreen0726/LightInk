@@ -917,7 +917,10 @@ manager = new TabManager({
   createHostElement: (tabId) => {
     const el = document.createElement('div');
     el.className = 'lightink-tab-host';
+    el.id = `lightink-panel-${tabId}`;
     el.dataset.tabId = tabId;
+    el.setAttribute('role', 'tabpanel');
+    el.setAttribute('aria-labelledby', `lightink-tab-${tabId}`);
     return el;
   },
   attachHost: (el) => {

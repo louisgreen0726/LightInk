@@ -156,6 +156,10 @@ class FakeEl {
     /* no-op for shell tests */
   }
 
+  focus(): void {
+    /* no-op */
+  }
+
   querySelector(selector: string): FakeEl | null {
     if (selector.startsWith('#')) {
       const id = selector.slice(1);
@@ -340,6 +344,11 @@ describe('createAppShell immersive chrome', () => {
     const tabBar = (root as unknown as FakeEl).querySelector('#lightink-tabbar');
     expect(tabBar?.children).toHaveLength(3);
     expect(tabBar?.children.map((c) => c.dataset.tabId)).toEqual(['tab-1', 'tab-2', 'tab-3']);
+    expect(tabBar?.getAttribute('role')).toBe('tablist');
+    const activeButton = tabBar?.children[1]?.children[0];
+    expect(activeButton?.getAttribute('role')).toBe('tab');
+    expect(activeButton?.getAttribute('aria-selected')).toBe('true');
+    expect(tabBar?.children[1]?.children[1]?.tagName).toBe('button');
   });
 
   it('restores pinned chrome from initialPinPrefs', () => {

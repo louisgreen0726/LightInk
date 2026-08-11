@@ -589,6 +589,8 @@ export function createAppShell(
 
   const tabBar = document.createElement('div');
   tabBar.id = 'lightink-tabbar';
+  tabBar.setAttribute('role', 'tablist');
+  tabBar.setAttribute('aria-label', actions.t('chrome.showTabs'));
 
   const editorArea = document.createElement('div');
   editorArea.id = 'lightink-editor-area';
@@ -820,31 +822,67 @@ export function createAppShell(
     // Always render the full open-tab list; visibility is chrome pin/reveal CSS only.
     tabBar.replaceChildren(
       ...tabs.map((tab) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'lightink-tab';
-        btn.dataset.tabId = tab.id;
+        const item = document.createElement('div');
+        item.className = 'lightink-tab';
+        item.dataset.tabId = tab.id;
         if (tab.id === activeId) {
-          btn.classList.add('active');
+          item.classList.add('active');
         }
         if (tab.dirty) {
-          btn.classList.add('dirty');
+          item.classList.add('dirty');
         }
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'lightink-tab-button';
+        btn.id = `lightink-tab-${tab.id}`;
+        btn.setAttribute('role', 'tab');
+        btn.setAttribute('aria-selected', tab.id === activeId ? 'true' : 'false');
+        btn.setAttribute('aria-controls', `lightink-panel-${tab.id}`);
+        btn.tabIndex = tab.id === activeId ? 0 : -1;
         const label = document.createElement('span');
         label.className = 'lightink-tab-label';
         label.textContent = tab.dirty ? `● ${tab.title}` : tab.title;
         btn.appendChild(label);
         btn.addEventListener('click', () => callbacks.onSwitch(tab.id));
-        const close = document.createElement('span');
+        btn.addEventListener('keydown', (event) => {
+          const current = tabs.findIndex((candidate) => candidate.id === tab.id);
+          let next = current;
+          if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+          else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = tabs.length - 1;
+          else if (event.key === 'Delete') {
+            event.preventDefault();
+            callbacks.onClose(tab.id);
+            return;
+          } else {
+            return;
+          }
+          event.preventDefault();
+          const target = tabs[next];
+          if (target === undefined) return;
+          callbacks.onSwitch(target.id);
+          const targetItem = Array.from(tabBar.children).find(
+            (candidate) => (candidate as HTMLElement).dataset.tabId === target.id,
+          );
+          const targetButton = Array.from(targetItem?.children ?? []).find((child) =>
+            child.classList.contains('lightink-tab-button'),
+          );
+          (targetButton as HTMLButtonElement | undefined)?.focus();
+        });
+        const close = document.createElement('button');
+        close.type = 'button';
         close.className = 'lightink-tab-close';
         close.textContent = '×';
-        close.setAttribute('aria-label', `关闭 ${tab.title}`);
+        const closeLabel = actions.t('chrome.closeTab', { title: tab.title });
+        close.setAttribute('aria-label', closeLabel);
+        close.setAttribute('title', closeLabel);
         close.addEventListener('click', (e) => {
           e.stopPropagation();
           callbacks.onClose(tab.id);
         });
-        btn.appendChild(close);
-        return btn;
+        item.append(btn, close);
+        return item;
       }),
     );
   }
