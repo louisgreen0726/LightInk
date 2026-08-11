@@ -253,8 +253,10 @@ function createFoldMarker(
 }
 
 /**
- * 由 folded 集合 + doc 派生 decoration：每个标题挂三角 widget（折叠态加 heading
- * class），折叠区间内每个顶层块挂 display:none node decoration。
+ * 由 folded 集合 + doc 派生 decoration：未被折叠区间隐藏的标题挂三角 widget
+ * （折叠态加 heading class），折叠区间内每个顶层块挂 display:none node decoration。
+ * 落在某个折叠区间内的（更深的）子标题既被 display:none 隐藏，也不再产生三角
+ * widget——否则会留下孤立可点击标记，点击后切换不可见内容（R2 正文折叠主路径）。
  */
 export function buildFoldDecorations(
   doc: PMNode,
@@ -263,7 +265,24 @@ export function buildFoldDecorations(
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const headings = collectHeadings(doc);
+  const ranges = computeFoldedRanges(doc, folded);
+  // 收集所有被折叠区间隐藏的「标题」位置：这些子标题不渲染三角 widget。
+  const hiddenHeadingPos = new Set<number>();
+  for (const r of ranges) {
+    let pos = r.from;
+    while (pos < r.to) {
+      const child = doc.nodeAt(pos);
+      if (child === null) break;
+      if (child.type.name === 'heading') {
+        hiddenHeadingPos.add(pos);
+      }
+      pos += child.nodeSize;
+    }
+  }
   for (const h of headings) {
+    if (hiddenHeadingPos.has(h.pos)) {
+      continue; // 已被父折叠隐藏的子标题：不留三角标记
+    }
     const isFolded = folded.has(h.pos);
     decorations.push(
       Decoration.widget(h.pos, () => createFoldMarker(h.pos, isFolded, getView), {
@@ -283,7 +302,7 @@ export function buildFoldDecorations(
       }
     }
   }
-  for (const r of computeFoldedRanges(doc, folded)) {
+  for (const r of ranges) {
     let pos = r.from;
     while (pos < r.to) {
       const child = doc.nodeAt(pos);

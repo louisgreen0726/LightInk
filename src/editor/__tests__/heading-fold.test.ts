@@ -333,12 +333,12 @@ describe('光标守卫 appendTransaction', () => {
       ]),
       plugins: [createHeadingFoldProsePlugin()],
     });
-    const before = state.selection.from;
+    const target = state.doc.content.size - 1;
     state = state.apply(
-      state.tr.setSelection(TextSelection.create(state.doc, state.doc.content.size - 1)),
+      state.tr.setSelection(TextSelection.create(state.doc, target)),
     );
-    // 无折叠 → 选区原样保留（未被强制移动）。
-    expect(state.selection.from).not.toBe(before);
+    // 无折叠 → appendTransaction 返回 null，选区停在 setSelection 目标处（未被移动）。
+    expect(state.selection.from).toBe(target);
   });
 });
 
@@ -357,5 +357,22 @@ describe('buildFoldDecorations', () => {
     expect(unfolded.length).toBe(2);
     // 折叠 A：额外 标题折叠 class（1）+ 隐藏区间 p1、p2（2）= +3。
     expect(folded.length).toBe(unfolded.length + 3);
+  });
+
+  it('折叠父标题时其更深子标题不产生孤立三角 widget（被隐藏则无标记）', () => {
+    const doc = buildDoc([
+      { type: 'heading', level: 1, text: 'A' },
+      { type: 'heading', level: 2, text: 'A1' },
+      { type: 'paragraph', text: 'x' },
+      { type: 'heading', level: 1, text: 'B' },
+    ]);
+    const aPos = collectHeadings(doc)[0]!.pos;
+    const unfolded = buildFoldDecorations(doc, new Set(), () => null).find();
+    const folded = buildFoldDecorations(doc, new Set([aPos]), () => null).find();
+    // 未折叠：三个标题（h1A、h2A1、h1B）各一个三角 widget。
+    expect(unfolded.length).toBe(3);
+    // 折叠 A：A widget + B widget（h2A1 落入 A 区间被隐藏，不产生 widget）+ A 折叠
+    // class + 隐藏 h2A1 块 + 隐藏 x 块 = 5。若未跳过子标题 widget 则为 6。
+    expect(folded.length).toBe(5);
   });
 });
