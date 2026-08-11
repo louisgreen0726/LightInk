@@ -75,9 +75,12 @@ export interface MenuBar {
   rebuild(menus: Menu[], options?: { loadingLabel?: string | (() => string) }): void;
 }
 
+let nextMenuBarId = 0;
+
 export function createMenuBar(spec: MenuBarSpec, doc: Document = document): MenuBar {
   const element = doc.createElement('div');
   element.className = 'lightink-menu-bar';
+  element.setAttribute('role', 'menubar');
   let menus = [...spec.menus];
   let loadingLabel: string | (() => string) = spec.loadingLabel ?? '加载中…';
   let openMenuId: string | null = null;
@@ -85,9 +88,57 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
   const itemButtons = new Map<string, HTMLButtonElement>();
   const triggers = new Map<string, HTMLButtonElement>();
   /** 当前打开的子菜单浮层（同时最多一个）。 */
-  let openFlyout: { itemId: string; el: HTMLDivElement } | null = null;
+  let openFlyout: {
+    itemId: string;
+    el: HTMLDivElement;
+    trigger: HTMLButtonElement;
+  } | null = null;
+  const idPrefix = `lightink-menu-${nextMenuBarId++}`;
+
+  const focusButton = (button: HTMLButtonElement): void => {
+    if (button.classList.contains('lightink-menu-trigger')) {
+      for (const trigger of triggers.values()) {
+        trigger.tabIndex = trigger === button ? 0 : -1;
+      }
+      button.focus();
+      return;
+    }
+    const owner = button.parentElement;
+    if (owner !== null) {
+      for (const sibling of directMenuButtons(owner)) {
+        sibling.tabIndex = sibling === button ? 0 : -1;
+      }
+    }
+    button.focus();
+  };
+
+  const directMenuButtons = (container: HTMLElement): HTMLButtonElement[] =>
+    Array.from(container.children).filter(
+      (child): child is HTMLButtonElement =>
+        child.classList.contains('lightink-menu-item') &&
+        !(child as HTMLButtonElement).disabled,
+    );
+
+  const focusMenuEdge = (container: HTMLElement, edge: 'first' | 'last'): void => {
+    const buttons = directMenuButtons(container);
+    const button = edge === 'first' ? buttons[0] : buttons[buttons.length - 1];
+    if (button !== undefined) focusButton(button);
+  };
+
+  const moveMenuFocus = (
+    container: HTMLElement,
+    current: HTMLButtonElement,
+    delta: number,
+  ): void => {
+    const buttons = directMenuButtons(container);
+    if (buttons.length === 0) return;
+    const currentIndex = Math.max(0, buttons.indexOf(current));
+    const nextIndex = (currentIndex + delta + buttons.length) % buttons.length;
+    focusButton(buttons[nextIndex]!);
+  };
 
   function closeFlyout(): void {
+    openFlyout?.trigger.setAttribute('aria-expanded', 'false');
     openFlyout?.el.remove();
     openFlyout = null;
   }
@@ -102,21 +153,26 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
 
   function closeAll(): void {
     closeFlyout();
-    for (const panel of panels.values()) {
+    for (const [menuId, panel] of panels) {
       panel.hidden = true;
+      triggers.get(menuId)?.setAttribute('aria-expanded', 'false');
     }
     notifyOpenChange(null);
   }
 
-  function openMenu(menuId: string): void {
+  function openMenu(menuId: string, focus?: 'first' | 'last'): void {
     closeFlyout();
-    for (const panel of panels.values()) {
+    for (const [id, panel] of panels) {
       panel.hidden = true;
+      triggers.get(id)?.setAttribute('aria-expanded', 'false');
     }
     const panel = panels.get(menuId);
     if (panel !== undefined) {
+      refreshMenu(menuId);
       panel.hidden = false;
+      triggers.get(menuId)?.setAttribute('aria-expanded', 'true');
       notifyOpenChange(menuId);
+      if (focus !== undefined) focusMenuEdge(panel, focus);
     } else {
       notifyOpenChange(null);
     }
@@ -130,6 +186,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     if (item.enabled !== undefined) {
       btn.disabled = !item.enabled();
     }
+    btn.setAttribute('aria-disabled', btn.disabled ? 'true' : 'false');
     // Prefer class walk over querySelector so node fakes without full CSSOM still work.
     const children = Array.from(btn.children) as HTMLElement[];
     const labelEl =
@@ -162,6 +219,8 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     btn.type = 'button';
     btn.className = 'lightink-menu-item';
     btn.dataset.itemId = item.id;
+    btn.setAttribute('role', 'menuitem');
+    btn.tabIndex = -1;
     if (item.title !== undefined && item.title !== '') {
       btn.setAttribute('title', item.title);
     }
@@ -196,6 +255,8 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     }
     if (item.submenu !== undefined) {
       btn.classList.add('lightink-menu-item--sub');
+      btn.setAttribute('aria-haspopup', 'menu');
+      btn.setAttribute('aria-expanded', 'false');
       const arrow = doc.createElement('span');
       arrow.className = 'lightink-menu-item-sub-arrow';
       arrow.textContent = '▸';
@@ -204,6 +265,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     if (item.enabled !== undefined) {
       btn.disabled = !item.enabled();
     }
+    btn.setAttribute('aria-disabled', btn.disabled ? 'true' : 'false');
     // 子菜单触发器的点击行为由调用方挂载（展开浮层而非触发 action）。
     if (item.submenu === undefined) {
       btn.addEventListener('click', (event) => {
@@ -219,11 +281,20 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
   }
 
   /** 打开（或切换）某触发器项的子菜单浮层；异步加载期间显示占位。 */
-  function openSubmenu(item: MenuItem, btn: HTMLButtonElement, panel: HTMLDivElement): void {
+  function openSubmenu(
+    item: MenuItem,
+    btn: HTMLButtonElement,
+    panel: HTMLDivElement,
+    focusFirst = false,
+  ): void {
     if (item.submenu === undefined) return;
     closeFlyout();
     const flyout = doc.createElement('div');
     flyout.className = 'lightink-menu-flyout';
+    flyout.id = `${idPrefix}-flyout-${item.id}`;
+    flyout.setAttribute('role', 'menu');
+    btn.setAttribute('aria-controls', flyout.id);
+    btn.setAttribute('aria-expanded', 'true');
     flyout.style.top = `${btn.offsetTop}px`;
     flyout.style.left = '100%';
     const loading = createItemButton(
@@ -236,7 +307,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
       () => undefined,
     );
     flyout.appendChild(loading);
-    openFlyout = { itemId: item.id, el: flyout };
+    openFlyout = { itemId: item.id, el: flyout, trigger: btn };
     panel.appendChild(flyout);
 
     void Promise.resolve(item.submenu()).then((items) => {
@@ -247,9 +318,14 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
           if (sub.separator === true) {
             const sep = doc.createElement('hr');
             sep.className = 'lightink-menu-separator';
+            sep.setAttribute('role', 'separator');
             return sep;
           }
-          return createItemButton(sub, () => closeAll());
+          const subButton = createItemButton(sub, () => closeAll());
+          subButton.addEventListener('keydown', (event) => {
+            handleFlyoutKeyDown(event, subButton, flyout, btn);
+          });
+          return subButton;
         }),
       );
       // 视口右缘放不下时翻到面板左侧。
@@ -260,7 +336,116 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
         flyout.style.left = 'auto';
         flyout.style.right = '100%';
       }
+      if (focusFirst) focusMenuEdge(flyout, 'first');
     });
+  }
+
+  function adjacentMenu(menuId: string, delta: number): Menu | undefined {
+    const current = menus.findIndex((menu) => menu.id === menuId);
+    if (current < 0 || menus.length === 0) return undefined;
+    return menus[(current + delta + menus.length) % menus.length];
+  }
+
+  function handleTriggerKeyDown(
+    event: KeyboardEvent,
+    menu: Menu,
+    trigger: HTMLButtonElement,
+  ): void {
+    const move = (delta: number): void => {
+      const next = adjacentMenu(menu.id, delta);
+      if (next === undefined) return;
+      if (openMenuId !== null) openMenu(next.id);
+      const nextTrigger = triggers.get(next.id);
+      if (nextTrigger !== undefined) focusButton(nextTrigger);
+    };
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      move(1);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      move(-1);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const targetMenu = event.key === 'Home' ? menus[0] : menus[menus.length - 1];
+      const target = targetMenu === undefined ? undefined : triggers.get(targetMenu.id);
+      if (targetMenu !== undefined && openMenuId !== null) openMenu(targetMenu.id);
+      if (target !== undefined) focusButton(target);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      openMenu(menu.id, event.key === 'ArrowDown' ? 'first' : 'last');
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (openMenuId === menu.id) {
+        closeAll();
+      } else {
+        openMenu(menu.id, 'first');
+      }
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeAll();
+      focusButton(trigger);
+    }
+  }
+
+  function handlePanelKeyDown(
+    event: KeyboardEvent,
+    menu: Menu,
+    item: MenuItem,
+    button: HTMLButtonElement,
+    panel: HTMLDivElement,
+  ): void {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveMenuFocus(panel, button, event.key === 'ArrowDown' ? 1 : -1);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      focusMenuEdge(panel, event.key === 'Home' ? 'first' : 'last');
+    } else if (event.key === 'ArrowRight' && item.submenu !== undefined) {
+      event.preventDefault();
+      openSubmenu(item, button, panel, true);
+    } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      const next = adjacentMenu(menu.id, event.key === 'ArrowRight' ? 1 : -1);
+      if (next !== undefined) openMenu(next.id, 'first');
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeAll();
+      const trigger = triggers.get(menu.id);
+      if (trigger !== undefined) focusButton(trigger);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (item.submenu !== undefined) {
+        openSubmenu(item, button, panel, true);
+      } else {
+        button.click();
+      }
+    } else if (event.key === 'Tab') {
+      closeAll();
+    }
+  }
+
+  function handleFlyoutKeyDown(
+    event: KeyboardEvent,
+    button: HTMLButtonElement,
+    flyout: HTMLDivElement,
+    parentButton: HTMLButtonElement,
+  ): void {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveMenuFocus(flyout, button, event.key === 'ArrowDown' ? 1 : -1);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      focusMenuEdge(flyout, event.key === 'Home' ? 'first' : 'last');
+    } else if (event.key === 'Escape' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      closeFlyout();
+      focusButton(parentButton);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      button.click();
+    } else if (event.key === 'Tab') {
+      closeAll();
+    }
   }
 
   function renderMenus(nextMenus: Menu[]): void {
@@ -276,6 +461,11 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
       trigger.type = 'button';
       trigger.className = 'lightink-menu-trigger';
       trigger.dataset.menuId = menu.id;
+      trigger.id = `${idPrefix}-trigger-${menu.id}`;
+      trigger.setAttribute('role', 'menuitem');
+      trigger.setAttribute('aria-haspopup', 'menu');
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.tabIndex = element.children.length === 0 ? 0 : -1;
       trigger.textContent = resolveMenuLabel(menu.label);
       trigger.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -294,19 +484,30 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
           openMenu(menu.id);
         }
       });
+      trigger.addEventListener('keydown', (event) => {
+        handleTriggerKeyDown(event, menu, trigger);
+      });
 
       const panel = doc.createElement('div');
       panel.className = 'lightink-menu-panel';
       panel.dataset.menuId = menu.id;
+      panel.id = `${idPrefix}-panel-${menu.id}`;
+      panel.setAttribute('role', 'menu');
+      panel.setAttribute('aria-labelledby', trigger.id);
+      trigger.setAttribute('aria-controls', panel.id);
       panel.hidden = true;
       for (const item of menu.items) {
         if (item.separator === true) {
           const sep = doc.createElement('hr');
           sep.className = 'lightink-menu-separator';
+          sep.setAttribute('role', 'separator');
           panel.appendChild(sep);
           continue;
         }
         const btn = createItemButton(item, () => closeAll());
+        btn.addEventListener('keydown', (event) => {
+          handlePanelKeyDown(event, menu, item, btn, panel);
+        });
         if (item.submenu !== undefined) {
           btn.addEventListener('mouseenter', () => {
             refreshItemEnabled(item);
@@ -329,6 +530,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
 
       const wrap = doc.createElement('div');
       wrap.className = 'lightink-menu';
+      wrap.setAttribute('role', 'none');
       wrap.append(trigger, panel);
       element.appendChild(wrap);
     }

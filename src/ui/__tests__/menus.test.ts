@@ -21,12 +21,15 @@ class FakeEl {
   hidden = false;
   disabled = false;
   type = '';
+  id = '';
+  tabIndex = 0;
   title = '';
   dataset: Record<string, string> = {};
   style: Record<string, string> = {};
   children: FakeEl[] = [];
   parent: FakeEl | null = null;
   private readonly listeners = new Map<string, Array<(e: FakeEvent) => void>>();
+  private readonly attrs = new Map<string, string>();
   readonly classList = {
     contains: (c: string): boolean => this.className.split(/\s+/).filter(Boolean).includes(c),
     add: (c: string): void => {
@@ -38,6 +41,22 @@ class FakeEl {
 
   constructor(tag: string) {
     this.tagName = tag.toUpperCase();
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+
+  get parentElement(): FakeEl | null {
+    return this.parent;
+  }
+
+  focus(): void {
+    /* focus state is asserted through tabIndex in this fake */
   }
 
   get textContent(): string {
@@ -177,6 +196,10 @@ describe('createMenuBar 渲染', () => {
     expect(trigger(bar).textContent).toBe('文件');
     expect(trigger(bar).dataset.menuId).toBe('file');
     expect(panelEl(bar).hidden).toBe(true);
+    expect(asEl(bar.element).getAttribute('role')).toBe('menubar');
+    expect(trigger(bar).getAttribute('role')).toBe('menuitem');
+    expect(trigger(bar).getAttribute('aria-expanded')).toBe('false');
+    expect(panelEl(bar).getAttribute('role')).toBe('menu');
   });
 
   it('菜单项标注快捷键；分隔符渲染', () => {
@@ -240,6 +263,19 @@ describe('展开/关闭与派发', () => {
     bar.openMenu('file');
     doc.dispatch('keydown', { key: 'Escape' });
     expect(panelEl(bar).hidden).toBe(true);
+  });
+
+  it('uses arrow keys and Home/End to move through enabled menu items', () => {
+    const doc = new FakeDoc();
+    const bar = createMenuBar(spec(), doc as unknown as Document);
+    trigger(bar).fire('keydown', { key: 'ArrowDown' });
+    const [first, second, disabled] = menuItems(bar);
+    expect(first?.tabIndex).toBe(0);
+    first?.fire('keydown', { key: 'ArrowDown' });
+    expect(second?.tabIndex).toBe(0);
+    second?.fire('keydown', { key: 'End' });
+    expect(disabled?.disabled).toBe(true);
+    expect(second?.tabIndex).toBe(0);
   });
 });
 
