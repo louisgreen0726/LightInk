@@ -183,6 +183,30 @@ const themeService = new ThemeService({
   readFile,
 });
 
+function reportCustomThemeError(error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error ?? '');
+  void dialogMessage(i18n.t('error.customTheme', { detail }), {
+    title: i18n.t('app.name'),
+    kind: 'error',
+  });
+}
+
+void themeService.restorePersistedCustomTheme().catch(reportCustomThemeError);
+
+async function selectCustomTheme(): Promise<void> {
+  try {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: 'CSS', extensions: ['css'] }],
+    });
+    if (typeof selected === 'string') {
+      await themeService.reloadCustomThemeFile(selected);
+    }
+  } catch (error) {
+    reportCustomThemeError(error);
+  }
+}
+
 // 外壳按钮/快捷键回调仅在用户交互时触发，此时 manager 必然已赋值。
 let manager: TabManager;
 // Shell is assigned after createAppShell returns; menu labels/actions use optional access.
@@ -716,9 +740,13 @@ shell = createAppShell(
     },
     getCurrentThemeId: () => themeService.currentThemeId,
     onReloadCustomTheme: () => {
-      void themeService.reloadCustomThemeFile();
+      void themeService.reloadCustomThemeFile().catch(reportCustomThemeError);
     },
+    onSelectCustomTheme: () => void selectCustomTheme(),
+    onResetCustomTheme: () => themeService.resetCustomTheme(),
     canReloadCustomTheme: () => themeService.customThemePath !== null,
+    canResetCustomTheme: () =>
+      themeService.isCustomThemeActive || themeService.customThemePath !== null,
     onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),

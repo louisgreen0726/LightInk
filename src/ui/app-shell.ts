@@ -98,8 +98,13 @@ export interface AppShellActions {
   getCurrentThemeId(): string;
   /** 热重载自定义主题文件（R15：接通既有 reloadCustomThemeFile）。 */
   onReloadCustomTheme(): void;
+  /** Select and activate a custom CSS theme file. */
+  onSelectCustomTheme(): void;
+  /** Remove the custom theme and return to the default. */
+  onResetCustomTheme(): void;
   /** 是否存在可重载的自定义主题文件。 */
   canReloadCustomTheme(): boolean;
+  canResetCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
   /**
@@ -320,11 +325,26 @@ export function buildMenus(actions: AppShellActions): Menu[] {
     ),
     separator('view-theme-sep2'),
     menuItem(
+      'view-select-custom-theme',
+      () =>
+        actions.getCurrentThemeId() === 'custom'
+          ? `✓ ${t('theme.custom')}`
+          : t('theme.custom'),
+      actions.onSelectCustomTheme,
+    ),
+    menuItem(
       'view-reload-custom-theme',
       () => t('view.reloadCustomTheme'),
       actions.onReloadCustomTheme,
       '',
       () => actions.canReloadCustomTheme(),
+    ),
+    menuItem(
+      'view-reset-custom-theme',
+      () => t('view.resetCustomTheme'),
+      actions.onResetCustomTheme,
+      '',
+      () => actions.canResetCustomTheme(),
     ),
   ];
 

@@ -45,6 +45,7 @@ const en: Dict = {
   'view.theme': 'Theme',
   'view.toggleTheme': 'Toggle Theme (Light/Dark)',
   'view.reloadCustomTheme': 'Reload Custom Theme',
+  'view.resetCustomTheme': 'Reset Custom Theme',
   'view.pinChrome': 'Pin Navigation',
   'view.unpinChrome': 'Unpin Navigation',
   'view.fullscreen': 'Full Screen',
@@ -61,6 +62,7 @@ const en: Dict = {
   'theme.cool-light': 'Cool Light',
   'theme.dark': 'Ink Dark',
   'theme.midnight': 'Midnight',
+  'theme.custom': 'Custom Theme…',
 
   'chrome.showMenu': 'Show menu bar',
   'chrome.showTabs': 'Show tab bar',
@@ -103,6 +105,7 @@ const en: Dict = {
   'error.recentRemoved': 'Removed from recent files.',
   'error.recentsPersistFailed':
     'Could not update recent files. Your documents are unaffected.',
+  'error.customTheme': 'Could not load the custom theme.\n{detail}',
   'error.unsupportedType':
     'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/FB2/CBZ/TXT), and images are supported.',
   'reader.empty': 'Open an eBook to start reading.',
@@ -296,6 +299,7 @@ const zhCN: Dict = {
   'view.theme': '主题',
   'view.toggleTheme': '切换主题（浅/深）',
   'view.reloadCustomTheme': '重新加载自定义主题',
+  'view.resetCustomTheme': '恢复默认主题',
   'view.pinChrome': '固定导航栏',
   'view.unpinChrome': '取消固定导航栏',
   'view.fullscreen': '全屏',
@@ -312,6 +316,7 @@ const zhCN: Dict = {
   'theme.cool-light': '云白浅色',
   'theme.dark': '墨夜深色',
   'theme.midnight': '深空深色',
+  'theme.custom': '自定义主题…',
 
   'chrome.showMenu': '显示菜单栏',
   'chrome.showTabs': '显示标签栏',
@@ -352,6 +357,7 @@ const zhCN: Dict = {
   'error.exportUnsafeCss': '导出已停止：自定义主题 CSS 含有保留的 </style 终止序列。',
   'error.recentRemoved': '已从最近打开中移除。',
   'error.recentsPersistFailed': '无法更新最近打开列表，文档内容不受影响。',
+  'error.customTheme': '无法加载自定义主题。\n{detail}',
   'error.unsupportedType':
     '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/FB2/CBZ/TXT）或图片。',
   'reader.empty': '打开一本电子书开始阅读。',
