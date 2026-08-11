@@ -11,7 +11,7 @@ import './reader.css';
 import { parseReaderContent } from './formats/index.js';
 import type { ReaderChapter } from './formats/types.js';
 import { ParseError } from './formats/types.js';
-import { renderCbzInto } from './formats/cbz.js';
+import { renderCbzInto, type CbzRenderHandle } from './formats/cbz.js';
 import { renderPdfInto, type PdfRenderHandle } from './formats/pdf.js';
 import {
   parseAnnotations,
@@ -110,6 +110,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     deps.getContentHash !== undefined && deps.readAnnotations !== undefined;
 
   let pdfHandle: PdfRenderHandle | null = null;
+  let cbzHandle: CbzRenderHandle | null = null;
   let annotations: Annotation[] = [];
   let contentHash: string | null = null;
   let sidebar: AnnotationSidebar | null = null;
@@ -138,8 +139,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (pdfHandle !== null) {
       return { format: 'pdf', page: pdfHandle.controller.page, quote: '' };
     }
-    if (PAGE_EXTS.has(loadedExt)) {
-      return { format: 'cbz', page: 1 };
+    if (cbzHandle !== null) {
+      return { format: 'cbz', page: cbzHandle.currentPage };
     }
     if (loadedExt === 'txt') {
       return { format: 'text', start: 0, end: 0 };
@@ -206,8 +207,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           return;
         }
         if (loc.format === 'cbz') {
-          const pages = pageHost.querySelectorAll('.lightink-reader-page');
-          (pages[loc.page - 1] as HTMLElement | undefined)?.scrollIntoView({ block: 'start' });
+          cbzHandle?.scrollToPage(loc.page);
           return;
         }
         // flow / text：优先定位到该条高亮的 <mark>，否则到章节。
@@ -302,7 +302,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     filePath: string,
     bytes: Uint8Array,
     signal: AbortSignal,
-  ): Promise<{ host: HTMLDivElement; pdf: PdfRenderHandle | null }> => {
+  ): Promise<{
+    host: HTMLDivElement;
+    pdf: PdfRenderHandle | null;
+    cbz: CbzRenderHandle | null;
+  }> => {
     const ext = extOfPath(filePath);
     if (ext !== 'pdf' && ext !== 'cbz') {
       throw new ParseError(`暂不支持的页格式：.${ext || '?'}`);
@@ -312,22 +316,29 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     stagedHost.dataset.readerActive = 'true';
     if (ext === 'pdf') {
       const pdf = await renderPdfInto(bytes, stagedHost, signal);
-      return { host: stagedHost, pdf };
+      return { host: stagedHost, pdf, cbz: null };
     }
-    await renderCbzInto(bytes, stagedHost, signal);
-    return { host: stagedHost, pdf: null };
+    const cbz = await renderCbzInto(bytes, stagedHost, signal);
+    return { host: stagedHost, pdf: null, cbz };
   };
 
   const commitStagedPages = (
-    staged: { host: HTMLDivElement; pdf: PdfRenderHandle | null },
+    staged: {
+      host: HTMLDivElement;
+      pdf: PdfRenderHandle | null;
+      cbz: CbzRenderHandle | null;
+    },
   ): void => {
     releaseRemoteImages.splice(0).forEach((release) => release());
     const previousPdf = pdfHandle;
+    const previousCbz = cbzHandle;
     pdfHandle = staged.pdf;
+    cbzHandle = staged.cbz;
     pageHost.replaceWith(staged.host);
     pageHost = staged.host;
     scrollHost.hidden = true;
     void previousPdf?.destroy().catch(() => undefined);
+    void previousCbz?.destroy().catch(() => undefined);
   };
 
   const loadAnnotations = async (
@@ -469,10 +480,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           const staged = await stagePages(filePath, bytes, controller.signal);
           if (controller.signal.aborted) {
             await staged.pdf?.destroy().catch(() => undefined);
+            await staged.cbz?.destroy().catch(() => undefined);
             throwIfReaderLoadCancelled(controller.signal);
           }
           if (!isCurrent()) {
             await staged.pdf?.destroy().catch(() => undefined);
+            await staged.cbz?.destroy().catch(() => undefined);
             return;
           }
           loadedExt = nextExt;
@@ -491,9 +504,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           contentHash = null;
           sidebar?.render(annotations);
           const previousPdf = pdfHandle;
+          const previousCbz = cbzHandle;
           pdfHandle = null;
+          cbzHandle = null;
           renderChapters(content.chapters);
           void previousPdf?.destroy().catch(() => undefined);
+          void previousCbz?.destroy().catch(() => undefined);
         }
 
         await loadAnnotations(filePath, generation, controller.signal);
@@ -534,12 +550,15 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       activeLoadController = null;
       releaseRemoteImages.splice(0).forEach((release) => release());
       const handle = pdfHandle;
+      const cbz = cbzHandle;
       pdfHandle = null;
+      cbzHandle = null;
       sidebar?.destroy();
       sidebar = null;
       root.dataset.readerState = 'destroyed';
       root.remove();
       await handle?.destroy().catch(() => undefined);
+      await cbz?.destroy().catch(() => undefined);
     },
     addBookmark: () => {
       if (annotationsEnabled) addAnnotation('bookmark');
