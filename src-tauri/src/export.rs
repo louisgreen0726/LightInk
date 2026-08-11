@@ -268,51 +268,53 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
 
     window
         .with_webview(move |wv: tauri::webview::PlatformWebview| {
-            let outcome: Result<(), String> = (|| -> Result<(), String> {
-                // UNVERIFIED：tauri-runtime-wry 在 macOS 的 Webview 暴露 webview 字段
-                // （*mut c_void = WKWebView 指针）。retain 为 Retained<WKWebView>。
-                let wk: Retained<WKWebView> = unsafe {
-                    let ptr = wv.webview as *mut WKWebView;
-                    Retained::retain(ptr).map_err(|_| "WKWebView 句柄无效".to_string())?
-                };
-
-                let (pdf_tx, pdf_rx) = mpsc::channel::<Result<Retained<NSData>, String>>();
-                let block = RcBlock::new(
-                    move |data: *mut NSData, err: *mut NSError| {
-                        if !err.is_null() {
-                            let _ = pdf_tx.send(Err("createPDF 返回 NSError".to_string()));
-                            return;
-                        }
-                        if data.is_null() {
-                            let _ = pdf_tx.send(Err("createPDF 返回空数据".to_string()));
-                            return;
-                        }
-                        match unsafe { Retained::retain(data) } {
-                            Ok(d) => {
-                                let _ = pdf_tx.send(Ok(d));
-                            }
-                            Err(_) => {
-                                let _ = pdf_tx.send(Err("NSData retain 失败".to_string()));
-                            }
-                        }
-                    },
-                );
-                unsafe {
-                    wk.createPDFWithConfiguration_completionHandler(None, &block);
+            // retain WKWebView；失败经 tx 报错并立即返回（不在主线程阻塞等待）。
+            let wk: Retained<WKWebView> = match unsafe {
+                Retained::retain(wv.webview as *mut WKWebView)
+            } {
+                Ok(w) => w,
+                Err(_) => {
+                    let _ = tx.send(Err("WKWebView 句柄无效".to_string()));
+                    return;
                 }
-                let pdf_data = pdf_rx
-                    .recv()
-                    .map_err(|_| "createPDF 通道关闭".to_string())??;
-                let bytes: &[u8] = pdf_data.bytes();
-                std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"))?;
-                Ok(())
-            })();
-            let _ = tx.send(outcome);
+            };
+
+            // createPDF completion 即终点：retain NSData → 写盘 → tx.send。
+            // 闭包调 createPDF 后立即返回，主线程回到 run loop 派发 completion，
+            // 避免在主线程 recv 阻塞 → completion 派发回主队列 → 死锁（与 Windows
+            // 分支 wait_for_async_operation 消息泵同理）。
+            let block = RcBlock::new(
+                move |data: *mut NSData, err: *mut NSError| {
+                    if !err.is_null() {
+                        let _ = tx.send(Err("createPDF 返回 NSError".to_string()));
+                        return;
+                    }
+                    if data.is_null() {
+                        let _ = tx.send(Err("createPDF 返回空数据".to_string()));
+                        return;
+                    }
+                    let pdf = match unsafe { Retained::retain(data) } {
+                        Ok(d) => d,
+                        Err(_) => {
+                            let _ = tx.send(Err("NSData retain 失败".to_string()));
+                            return;
+                        }
+                    };
+                    let bytes: &[u8] = pdf.bytes();
+                    let res =
+                        std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"));
+                    let _ = tx.send(res);
+                },
+            );
+            unsafe {
+                wk.createPDFWithConfiguration_completionHandler(None, &block);
+            }
+            // 闭包立即返回；最终结果由 completion block 经 tx → 命令线程 rx.recv()。
         })
         .map_err(|e| format!("with_webview 失败: {e}"))?;
 
     rx.recv()
-        .map_err(|_| "打印通道关闭（主线程未返回结果）".to_string())?
+        .map_err(|_| "打印通道关闭（completion 未派发或主线程未返回结果）".to_string())?
 }
 
 /// Linux：WebKitGTK 无等价编程式 PrintToPdf；返回错误由前端回退到 `window.print()`
