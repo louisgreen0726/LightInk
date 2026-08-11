@@ -199,6 +199,8 @@ export class TabManager {
   private snapshotWrites = new Map<string, Promise<void>>();
   /** 同一标签的保存操作串行执行；失败会被队列尾吸收，不阻塞后续保存。 */
   private saveQueues = new Map<string, Promise<void>>();
+  /** 编辑器内容每次成功变更后递增；用于约束异步保存完成时的快照清理。 */
+  private contentRevisions = new Map<string, number>();
   /** R13：外部变更弹窗进行中标志，避免轮询/保存前重复堆叠弹窗。 */
   private externalDialogOpen = false;
   /**
@@ -437,20 +439,10 @@ export class TabManager {
     if (!ok) {
       return false;
     }
-    tab.lastSavedMarkdown = content;
-    tab.dirty = false;
-    await this.deps.clearSnapshot(tab.filePath).catch((error: unknown) => {
-      this.deps.reportError(`清除快照失败: ${tab.filePath}`, error);
-    });
-    // R13：自写（原子 persist）后必须更新基线，避免下次轮询误报自身保存为外部变更。
-    await this.recordBaseline(tab);
-    // 未命名时期的旧快照（若有）也一并清掉。
-    if (tab.syntheticId !== tab.filePath) {
-      await this.deps.clearSnapshot(tab.syntheticId).catch(() => undefined);
-    }
-    this.deps.onFileSaved?.(tab.filePath, content);
-    this.notifyChanged();
-    return true;
+    return this.finalizeSuccessfulSave(tab, tab.filePath, content, [
+      tab.filePath,
+      tab.syntheticId,
+    ]);
   }
 
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
@@ -474,18 +466,9 @@ export class TabManager {
     if (newPath === null) {
       return false;
     }
-    // 从未命名（或旧路径）迁移：清掉旧键对应的快照。
     const oldKey = snapshotKeyOf(tab);
-    await this.deps.clearSnapshot(newPath).catch((error: unknown) => {
-      this.deps.reportError(`清除快照失败: ${newPath}`, error);
-    });
-    if (oldKey !== newPath) {
-      await this.deps.clearSnapshot(oldKey).catch(() => undefined);
-    }
     tab.filePath = newPath;
     tab.title = fileNameOf(newPath);
-    tab.lastSavedMarkdown = content;
-    tab.dirty = false;
     // T4：未命名时期粘贴的图片落在会话暂存目录；引用均为相对路径
     // assets/...，按原名迁入新文档旁 assets/ 后引用保持有效，无需改写
     // 文档内容。无暂存时 Rust 侧为 no-op。
@@ -494,11 +477,51 @@ export class TabManager {
     } catch (error) {
       this.deps.reportError('迁移暂存图片失败', error);
     }
-    // R13：另存为新路径后，以新路径的磁盘 stat 为检测基线。
+    return this.finalizeSuccessfulSave(tab, newPath, content, [newPath, oldKey]);
+  }
+
+  private async finalizeSuccessfulSave(
+    tab: MarkdownTabState,
+    savedPath: string,
+    content: string,
+    snapshotKeys: readonly string[],
+  ): Promise<boolean> {
+    tab.lastSavedMarkdown = content;
+    // R13：自写（原子 persist）后必须更新基线，避免下次轮询误报自身保存为外部变更。
     await this.recordBaseline(tab);
-    this.deps.onFileSaved?.(newPath, content);
+    this.deps.onFileSaved?.(savedPath, content);
+
+    const current = this.readMarkdown(tab);
+    tab.dirty = current === null || current !== content;
+    if (!tab.dirty) {
+      const revision = this.contentRevisions.get(tab.id) ?? 0;
+      this.cancelPendingSnapshot(tab.id);
+      await this.snapshotWrites.get(tab.id)?.catch(() => undefined);
+      const stillCurrent = this.readMarkdown(tab);
+      if (
+        stillCurrent === content &&
+        (this.contentRevisions.get(tab.id) ?? 0) === revision
+      ) {
+        for (const key of new Set(snapshotKeys)) {
+          await this.deps.clearSnapshot(key).catch((error: unknown) => {
+            this.deps.reportError(`清除快照失败: ${key}`, error);
+          });
+        }
+      }
+      // 清理快照本身也是异步的；返回前再次确认没有更晚编辑。
+      const afterCleanup = this.readMarkdown(tab);
+      tab.dirty = afterCleanup === null || afterCleanup !== content;
+    }
     this.notifyChanged();
-    return true;
+    return !tab.dirty;
+  }
+
+  private readMarkdown(tab: MarkdownTabState): string | null {
+    try {
+      return tab.editor.getMarkdown();
+    } catch {
+      return null;
+    }
   }
 
   private enqueueSave(id: string, operation: () => Promise<boolean>): Promise<boolean> {
@@ -597,6 +620,7 @@ export class TabManager {
     } catch {
       return; // 编辑器已销毁等异常时静默跳过
     }
+    this.contentRevisions.set(id, (this.contentRevisions.get(id) ?? 0) + 1);
     tab.dirty = current !== tab.lastSavedMarkdown;
     if (tab.dirty) {
       this.scheduleSnapshot(tab, current);

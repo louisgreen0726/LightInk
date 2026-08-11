@@ -293,7 +293,7 @@ describe('保存与脏标记', () => {
     expect(writeFile).toHaveBeenCalledTimes(1);
 
     releaseFirst!();
-    await expect(firstSave).resolves.toBe(true);
+    await expect(firstSave).resolves.toBe(false);
     await expect(secondSave).resolves.toBe(true);
     expect(writeFile.mock.calls.map((call) => call[1])).toEqual(['v1', 'v2']);
   });
@@ -312,6 +312,58 @@ describe('保存与脏标记', () => {
     await expect(retried).resolves.toBe(true);
     expect(writeFile).toHaveBeenCalledTimes(2);
     expect(tab!.dirty).toBe(false);
+  });
+
+  it('保存期间出现的新编辑保持 dirty 且不清除快照', async () => {
+    const harness = makeHarness();
+    let releaseWrite: (() => void) | undefined;
+    const pendingWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const writeFile = harness.roundtrip.writeFile as ReturnType<typeof vi.fn>;
+    writeFile.mockImplementationOnce(() => pendingWrite);
+    const tab = await harness.manager.openFile('C:\\a.md');
+    tab!.editor.setMarkdown('persisted-v1');
+    harness.manager.handleContentChanged(tab!.id);
+
+    const saving = harness.manager.saveTab(tab!.id);
+    await vi.waitFor(() => expect(writeFile).toHaveBeenCalledTimes(1));
+    tab!.editor.setMarkdown('unsaved-v2');
+    harness.manager.handleContentChanged(tab!.id);
+    releaseWrite!();
+
+    await expect(saving).resolves.toBe(false);
+    expect(tab!.lastSavedMarkdown).toBe('persisted-v1');
+    expect(tab!.dirty).toBe(true);
+    expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('另存为期间出现新编辑时保留新路径和 dirty 状态', async () => {
+    const harness = makeHarness();
+    let releaseWrite: (() => void) | undefined;
+    const pendingWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const writeFile = harness.roundtrip.writeFile as ReturnType<typeof vi.fn>;
+    writeFile.mockImplementationOnce(() => pendingWrite);
+    (harness.roundtrip.showSaveDialog as ReturnType<typeof vi.fn>).mockResolvedValue(
+      'D:\\draft.md',
+    );
+    const tab = await harness.manager.newTab();
+    tab.editor.setMarkdown('persisted-v1');
+    harness.manager.handleContentChanged(tab.id);
+
+    const saving = harness.manager.saveTabAs(tab.id);
+    await vi.waitFor(() => expect(writeFile).toHaveBeenCalledTimes(1));
+    tab.editor.setMarkdown('unsaved-v2');
+    harness.manager.handleContentChanged(tab.id);
+    releaseWrite!();
+
+    await expect(saving).resolves.toBe(false);
+    expect(tab.filePath).toBe('D:\\draft.md');
+    expect(tab.lastSavedMarkdown).toBe('persisted-v1');
+    expect(tab.dirty).toBe(true);
+    expect(harness.deps.clearSnapshot).not.toHaveBeenCalled();
   });
 });
 
