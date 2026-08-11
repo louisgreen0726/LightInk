@@ -54,27 +54,15 @@ import { fileNameStem, importImageAsset } from './asset/asset-service.js';
 import { planDroppedFiles } from './file/file-drop.js';
 import { OPEN_FILTERS } from './file/file-dialog.js';
 import { openDocumentPath } from './file/document-router.js';
-import { buildExportCss } from './export/export-css.js';
-import {
-  exportActiveTabHtml,
-  exportActiveTabPdf,
-  serializeEditorContent,
-  type ExportServiceDeps,
-  type ExportTabSnapshot,
+import type {
+  ExportServiceDeps,
+  ExportTabSnapshot,
 } from './export/export-service.js';
-import { printToPdfFile, printViaMainWindow } from './export/pdf-export.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
-import { createReaderView } from './reader/reader-view.js';
-import { decodeReaderFileBase64, ReaderFileTooLargeError } from './reader/file-bytes.js';
-import {
-  ReaderCapabilityError,
-  ReaderLimitError,
-} from './reader/formats/types.js';
-import { throwIfReaderLoadCancelled } from './reader/load-lifecycle.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
@@ -249,17 +237,27 @@ function activeReaderTab(): ReaderTabState | null {
   return tab.kind === 'reader' ? tab : null;
 }
 
+function throwIfReaderReadCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted === true) {
+    throw new Error('Reader load cancelled');
+  }
+}
+
 /** 读取阅读文件原始字节（read_file_bytes base64 → Uint8Array），供 reader-view.load。 */
 async function readReaderBytes(
   filePath: string,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
+  throwIfReaderReadCancelled(signal);
+  const { decodeReaderFileBase64, ReaderFileTooLargeError } = await import(
+    './reader/file-bytes.js'
+  );
   try {
-    throwIfReaderLoadCancelled(signal);
+    throwIfReaderReadCancelled(signal);
     const b64 = await invoke<string>('read_file_bytes', { path: filePath });
-    throwIfReaderLoadCancelled(signal);
+    throwIfReaderReadCancelled(signal);
     const bytes = decodeReaderFileBase64(filePath, b64);
-    throwIfReaderLoadCancelled(signal);
+    throwIfReaderReadCancelled(signal);
     return bytes;
   } catch (error) {
     const detail = String(error);
@@ -281,6 +279,57 @@ async function readReaderBytes(
   }
 }
 
+const READER_LIMIT_MESSAGE_KEYS = {
+  archiveEntries: 'reader.limit.archiveEntries',
+  archiveTotalBytes: 'reader.limit.archiveTotalBytes',
+  archiveEntryBytes: 'reader.limit.archiveEntryBytes',
+  archiveCompressionRatio: 'reader.limit.archiveCompressionRatio',
+  readerImageBytes: 'reader.limit.readerImageBytes',
+  pdfPages: 'reader.limit.pdfPages',
+  cbzPages: 'reader.limit.cbzPages',
+} as const;
+
+const READER_CAPABILITY_MESSAGE_KEYS = {
+  mobiDrm: 'reader.capability.mobiDrm',
+  mobiKf8: 'reader.capability.mobiKf8',
+  mobiHuff: 'reader.capability.mobiHuff',
+} as const;
+
+function readerLoadErrorDetail(error: unknown): string {
+  if (error !== null && typeof error === 'object') {
+    const candidate = error as Record<string, unknown>;
+    const kind = typeof candidate['kind'] === 'string' ? candidate['kind'] : '';
+    if (
+      candidate['name'] === 'ReaderLimitError' &&
+      Object.prototype.hasOwnProperty.call(READER_LIMIT_MESSAGE_KEYS, kind) &&
+      typeof candidate['actual'] === 'number' &&
+      typeof candidate['limit'] === 'number'
+    ) {
+      const key = READER_LIMIT_MESSAGE_KEYS[kind as keyof typeof READER_LIMIT_MESSAGE_KEYS];
+      return i18n.t(key, {
+        actual: String(candidate['actual']),
+        limit: String(candidate['limit']),
+      });
+    }
+    if (
+      candidate['name'] === 'ReaderCapabilityError' &&
+      Object.prototype.hasOwnProperty.call(READER_CAPABILITY_MESSAGE_KEYS, kind)
+    ) {
+      const key =
+        READER_CAPABILITY_MESSAGE_KEYS[kind as keyof typeof READER_CAPABILITY_MESSAGE_KEYS];
+      return i18n.t(key);
+    }
+  }
+  return error instanceof Error ? error.message : String(error ?? '');
+}
+
+function reportReaderLoadError(error: unknown): void {
+  void dialogMessage(i18n.t('reader.loadFailed', { detail: readerLoadErrorDetail(error) }), {
+    title: i18n.t('app.name'),
+    kind: 'error',
+  });
+}
+
 /**
  * 按扩展名把路径路由到 markdown 编辑标签或只读 reader 标签，并加载/解析内容。
  * reader 标签：openReader 后调用 reader.load；解析失败（DRM/损坏）弹 i18n 错误提示，
@@ -292,23 +341,10 @@ async function openPathByKind(path: string): Promise<TabState | null> {
     onReaderOpenError: (failedPath, error) => {
       // eslint-disable-next-line no-console
       console.error(`[lightink] 打开阅读文件失败: ${failedPath}`, error);
+      reportReaderLoadError(error);
     },
     onReaderLoadError: (error) => {
-      const detail =
-        error instanceof ReaderLimitError
-          ? i18n.t(`reader.limit.${error.kind}`, {
-              actual: String(error.actual),
-              limit: String(error.limit),
-            })
-          : error instanceof ReaderCapabilityError
-            ? i18n.t(`reader.capability.${error.kind}`)
-            : error instanceof Error
-              ? error.message
-              : String(error ?? '');
-      void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
-        title: i18n.t('app.name'),
-        kind: 'error',
-      });
+      reportReaderLoadError(error);
     },
   });
 }
@@ -597,6 +633,45 @@ function runClipboardCommand(command: 'cut' | 'copy' | 'paste'): void {
   });
 }
 
+interface ExportPipeline {
+  readonly buildExportCss: (extraCss?: string) => string;
+  readonly exportHtml: (deps: ExportServiceDeps) => Promise<boolean>;
+  readonly exportPdf: (deps: ExportServiceDeps) => Promise<boolean>;
+  readonly printHtml: (doc: Document, html: string) => void;
+  readonly printPdfNative: (
+    doc: Document,
+    html: string,
+    invokeNative: () => Promise<void>,
+  ) => Promise<void>;
+}
+
+let exportPipelinePromise: Promise<ExportPipeline> | null = null;
+
+/** Load the export implementation and its self-contained CSS only after an export command. */
+function loadExportPipeline(): Promise<ExportPipeline> {
+  if (exportPipelinePromise !== null) {
+    return exportPipelinePromise;
+  }
+  const pending = Promise.all([
+    import('./export/export-css.js'),
+    import('./export/export-service.js'),
+    import('./export/pdf-export.js'),
+  ]).then(([css, service, pdf]) => ({
+    buildExportCss: css.buildExportCss,
+    exportHtml: service.exportActiveTabHtml,
+    exportPdf: service.exportActiveTabPdf,
+    printHtml: pdf.printViaMainWindow,
+    printPdfNative: pdf.printToPdfFile,
+  }));
+  exportPipelinePromise = pending;
+  void pending.catch(() => {
+    if (exportPipelinePromise === pending) {
+      exportPipelinePromise = null;
+    }
+  });
+  return pending;
+}
+
 // T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
 // src/export/ 下（可 headless 测试）。
 function activeExportSnapshot(): ExportTabSnapshot | null {
@@ -608,7 +683,9 @@ function activeExportSnapshot(): ExportTabSnapshot | null {
     title: tab.title,
     filePath: tab.filePath,
     sessionId: tab.syntheticId,
-    contentHtml: serializeEditorContent(tab.hostElement),
+    contentHtml:
+      tab.hostElement.querySelector<HTMLElement>('.ProseMirror')?.innerHTML ??
+      tab.hostElement.innerHTML,
   };
 }
 
@@ -617,50 +694,72 @@ function currentCustomThemeCss(): string {
   return document.getElementById('lightink-custom-theme')?.textContent ?? '';
 }
 
-const exportDeps: ExportServiceDeps = {
-  getActiveSnapshot: activeExportSnapshot,
-  getTheme: () => document.documentElement.getAttribute('data-theme') ?? 'warm-light',
-  getCssText: () => buildExportCss(currentCustomThemeCss()),
-  readImageBase64: (docPath, sessionId, relPath) =>
-    invoke<string>('read_image_base64', { docPath, sessionId, relPath }),
-  showHtmlSaveDialog: async (defaultPath) => {
-    const selected = await save({
-      defaultPath,
-      filters: [
-        { name: 'HTML', extensions: ['html', 'htm'] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
-    });
-    return typeof selected === 'string' ? selected : null;
-  },
-  writeFile,
-  // 主窗口 print：macOS/Linux WebKit 上 iframe.print 会静默失败（见 pdf-export）。
-    printHtml: (html) => printViaMainWindow(document, html),
-  showPdfSaveDialog: async (defaultPath) => {
-    const selected = await save({
-      defaultPath,
-      filters: [
-        { name: 'PDF', extensions: ['pdf'] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
-    });
-    return typeof selected === 'string' ? selected : null;
-  },
-  // 原生矢量 PDF（Windows WebView2 PrintToPdf）：含可选文字；失败回退 printHtml。
-  printPdfNative: (html, path) =>
-    printToPdfFile(document, html, () => invoke<void>('print_webview_to_pdf', { path })),
-  getUnsafeCssErrorMessage: () => i18n.t('error.exportUnsafeCss'),
-  reportError: (message, error) => {
-    // eslint-disable-next-line no-console
-    console.error(`[lightink/export] ${message}`, error);
-    // 导出是用户主动触发的动作：失败必须可见（不静默 console-only）。
-    const detail = error instanceof Error ? error.message : String(error ?? '');
-    void dialogMessage(`${message}\n${detail}`, {
-      title: i18n.t('error.exportFailed'),
-      kind: 'error',
-    });
-  },
-};
+function reportExportError(message: string, error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.error(`[lightink/export] ${message}`, error);
+  const detail = error instanceof Error ? error.message : String(error ?? '');
+  void dialogMessage(`${message}\n${detail}`, {
+    title: i18n.t('error.exportFailed'),
+    kind: 'error',
+  });
+}
+
+function createExportDeps(
+  pipeline: ExportPipeline,
+  snapshot: ExportTabSnapshot | null,
+): ExportServiceDeps {
+  return {
+    getActiveSnapshot: () => snapshot,
+    getTheme: () => document.documentElement.getAttribute('data-theme') ?? 'warm-light',
+    getCssText: () => pipeline.buildExportCss(currentCustomThemeCss()),
+    readImageBase64: (docPath, sessionId, relPath) =>
+      invoke<string>('read_image_base64', { docPath, sessionId, relPath }),
+    showHtmlSaveDialog: async (defaultPath) => {
+      const selected = await save({
+        defaultPath,
+        filters: [
+          { name: 'HTML', extensions: ['html', 'htm'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      return typeof selected === 'string' ? selected : null;
+    },
+    writeFile,
+    // macOS/Linux WebKit requires printing from the main window.
+    printHtml: (html) => pipeline.printHtml(document, html),
+    showPdfSaveDialog: async (defaultPath) => {
+      const selected = await save({
+        defaultPath,
+        filters: [
+          { name: 'PDF', extensions: ['pdf'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      return typeof selected === 'string' ? selected : null;
+    },
+    printPdfNative: (html, path) =>
+      pipeline.printPdfNative(document, html, () =>
+        invoke<void>('print_webview_to_pdf', { path }),
+      ),
+    getUnsafeCssErrorMessage: () => i18n.t('error.exportUnsafeCss'),
+    reportError: reportExportError,
+  };
+}
+
+async function runActiveExport(kind: 'html' | 'pdf'): Promise<void> {
+  const snapshot = activeExportSnapshot();
+  try {
+    const pipeline = await loadExportPipeline();
+    const deps = createExportDeps(pipeline, snapshot);
+    if (kind === 'html') {
+      await pipeline.exportHtml(deps);
+    } else {
+      await pipeline.exportPdf(deps);
+    }
+  } catch (error) {
+    reportExportError(i18n.t('error.exportFailed'), error);
+  }
+}
 
 shell = createAppShell(
   app,
@@ -708,11 +807,11 @@ shell = createAppShell(
     },
     onExportHtml: () => {
       commitActiveSourceMode();
-      void exportActiveTabHtml(exportDeps);
+      void runActiveExport('html');
     },
     onExportPdf: () => {
       commitActiveSourceMode();
-      void exportActiveTabPdf(exportDeps);
+      void runActiveExport('pdf');
     },
     onUndo: () => undoActiveEditor(),
     onRedo: () => redoActiveEditor(),
@@ -929,6 +1028,7 @@ manager = new TabManager({
   remoteImageLoadLabel: i18n.t('reader.remoteImageLoad'),
   mountEditor,
   mountReader: async (host) => {
+    const { createReaderView } = await import('./reader/reader-view.js');
     const reader = createReaderView(host, {
       readBytes: readReaderBytes,
       t: (key, vars) => i18n.t(key, vars),
