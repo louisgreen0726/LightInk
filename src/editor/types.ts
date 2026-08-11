@@ -80,6 +80,8 @@ export interface ParsedDocument {
 export interface MountOptions {
   /** Initial markdown to load into the editor. */
   readonly initialMarkdown?: string;
+  /** Called once for each document-changing transaction in this editor instance. */
+  readonly onContentChanged?: () => void;
   /** Whether the cursor-toggle behavior is on (default true). */
   readonly cursorToggle?: boolean;
   /**

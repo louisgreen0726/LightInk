@@ -826,6 +826,7 @@ export class TabManager {
     this.deps.attachHost(host);
     const editor = await this.deps.mountEditor(host, {
       initialMarkdown: args.initialMarkdown,
+      onContentChanged: () => this.handleContentChanged(id),
       // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
       // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
       // （sessionId = syntheticId），保存时由 saveTabAs 迁移。

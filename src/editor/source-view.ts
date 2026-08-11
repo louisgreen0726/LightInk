@@ -402,8 +402,8 @@ export class SourceView {
       this.codeEl.innerHTML = renderHighlightedSource(this.textarea.value);
     }
     this.syncSurfaceHeight();
-    // 即时同步（先于 host 的 handleContentChanged 冒泡）：让背后编辑器
-    // 跟随 textarea，使脏标记/崩溃快照/导出/大纲等所有读取 editor 的站点都读到最新源码。
+    // 即时同步到所属编辑器；实例级 onContentChanged 随事务更新脏标记、
+    // 崩溃快照和大纲，所有读取 editor 的站点都能看到最新源码。
     this.syncIfChanged();
   }
 

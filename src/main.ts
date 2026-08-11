@@ -22,7 +22,6 @@ import { setMermaidEditTitle } from './editor/plugins/mermaid.js';
 import { setSlashImageHandler, setSlashTranslate } from './editor/plugins/slash-menu.js';
 import { setAppDisplayName } from './ui/window-title.js';
 import { SourceView } from './editor/source-view.js';
-import { subscribeContentChange } from './editor/plugins/content-change.js';
 import {
   clearFindReplace,
   collectSourceMatches,
@@ -273,17 +272,14 @@ function insertElement(id: InsertElementId): void {
   const sourceView = sourceViews.get(tab.id);
   if (sourceView !== undefined && sourceView.isSourceMode) {
     sourceView.insertSnippetAtCursor(element.snippet());
-    manager.handleContentChanged(tab.id);
     return;
   }
   // Structured insert at caret (table/list/code as real nodes, not plain text).
   if (tab.editor.insertMarkdown(element.snippet())) {
-    manager.handleContentChanged(tab.id);
     return;
   }
   // Fallback: append as markdown blocks at end of document.
   tab.editor.setMarkdown(insertElementMarkdown(tab.editor.getMarkdown(), id));
-  manager.handleContentChanged(tab.id);
 }
 
 /** Insert → Link / shortcut: themed dialog for display text + URL. */
@@ -319,7 +315,6 @@ async function insertLinkViaDialog(): Promise<void> {
     // setLink wraps the current selection or inserts a linked run at the caret.
     tab.editor.setLink(result.href, result.text);
   }
-  manager.handleContentChanged(tab.id);
 }
 
 /**
@@ -351,7 +346,6 @@ async function importAndInsertImage(sourcePath: string): Promise<void> {
   } else {
     tab.editor.insertImage(relPath, alt);
   }
-  manager.handleContentChanged(tab.id);
 }
 
 /** 插入菜单「图片」：打开本地文件选择器，选中后走共享落盘/插入流程。 */
@@ -446,12 +440,11 @@ function undoActiveEditor(): void {
     if (sourceView !== undefined && sourceView.isSourceMode) {
       sourceView.focusEditor();
       document.execCommand('undo');
-      manager.handleContentChanged(tab.id);
+      sourceView.syncToEditor();
       return;
     }
     tab.editor.undo();
     tab.editor.focus();
-    manager.handleContentChanged(tab.id);
   });
 }
 
@@ -466,12 +459,11 @@ function redoActiveEditor(): void {
     if (sourceView !== undefined && sourceView.isSourceMode) {
       sourceView.focusEditor();
       document.execCommand('redo');
-      manager.handleContentChanged(tab.id);
+      sourceView.syncToEditor();
       return;
     }
     tab.editor.redo();
     tab.editor.focus();
-    manager.handleContentChanged(tab.id);
   });
 }
 
@@ -495,37 +487,14 @@ function runClipboardCommand(command: 'cut' | 'copy' | 'paste'): void {
             // Fallback for environments that still allow the paste command.
             document.execCommand('paste');
           }
-          // 延迟采样：insertText / 默认 paste 完成后才有正确字数与查找计数。
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const tab = manager?.activeTab ?? null;
-              if (tab !== null) {
-                manager.handleContentChanged(tab.id);
-              }
-            });
-          });
         })
         .catch(() => {
           focusActiveEditor();
           document.execCommand('paste');
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const tab = manager?.activeTab ?? null;
-              if (tab !== null) {
-                manager.handleContentChanged(tab.id);
-              }
-            });
-          });
         });
       return;
     }
     document.execCommand(command);
-    if (command === 'cut') {
-      const tab = manager?.activeTab ?? null;
-      if (tab !== null) {
-        manager.handleContentChanged(tab.id);
-      }
-    }
   });
 }
 
@@ -869,23 +838,6 @@ manager = new TabManager({
   },
   attachHost: (el) => {
     shell.editorArea.appendChild(el);
-    // 源码 textarea 的 input 仍走宿主监听；WYSIWYG 由 contentChangePlugin 广播。
-    const notifyHostContent = (): void => {
-      const id = el.dataset.tabId;
-      if (id !== undefined) {
-        manager.handleContentChanged(id);
-      }
-    };
-    el.addEventListener('input', notifyHostContent, true);
-    el.addEventListener(
-      'paste',
-      () => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(notifyHostContent);
-        });
-      },
-      true,
-    );
   },
   detachHost: (el) => {
     el.remove();
@@ -1063,10 +1015,6 @@ function showVersionsForActive(): void {
           currentContent,
         });
         tab?.editor.setMarkdown(content);
-        const activeId = manager.activeTabId;
-        if (activeId !== null) {
-          manager.handleContentChanged(activeId);
-        }
       },
       saveCurrent: () =>
         invoke('create_version', { filePath, content: tab?.editor.getMarkdown() ?? '' }),
@@ -1218,30 +1166,17 @@ function activeFindView(): ReturnType<typeof findReplaceViewForHost> {
   return findReplaceViewForHost(tab.hostElement);
 }
 
-/** 只接线一次：WYSIWYG 文档变更 + 查找状态 → 壳层刷新。 */
+/** 只接线一次：查找状态 → 壳层刷新。 */
 let contentObserversWired = false;
 
 /**
- * 文档变更 / 查找状态的全局观察者。
+ * 查找状态的全局观察者。文档变更由编辑器实例级回调直接绑定到所属标签。
  * 必须在应用启动时调用（不要等用户打开查找面板），否则字数栏与 1/N 不会动。
  * 注意：声明必须在调用点之前（避免 TDZ：contentObserversWired 未初始化就访问）。
  */
 function wireEditorContentObservers(): void {
   if (contentObserversWired) return;
   contentObserversWired = true;
-
-  // 可靠路径：PM 文档引用变化（键入/删除/粘贴/insert/替换）。
-  subscribeContentChange((view) => {
-    const tab = manager?.activeTab ?? null;
-    if (tab === null) return;
-    if (activeSourceTextarea() !== null) return;
-    // 只处理活动标签的 view（多标签各有一份插件）。
-    const activeView = findReplaceViewForHost(tab.hostElement);
-    if (activeView !== null && activeView !== view) return;
-    // 无 find view 时仍按 host 包含关系判定。
-    if (activeView === null && !tab.hostElement.contains(view.dom)) return;
-    manager.handleContentChanged(tab.id);
-  });
 
   // 查找插件状态变化（含 docChanged 后重收命中）：直接写面板计数。
   subscribeFindReplaceStatus((view, status) => {
@@ -1479,11 +1414,6 @@ function replaceSourceRange(
   }
 }
 
-function markActiveTabDirty(): void {
-  const id = manager?.activeTabId ?? null;
-  if (id !== null) manager.handleContentChanged(id);
-}
-
 function runReplaceCurrent(replacement: string): void {
   const query = findPanel?.getQuery() ?? '';
   const ta = activeSourceTextarea();
@@ -1504,14 +1434,11 @@ function runReplaceCurrent(replacement: string): void {
     const current = next[sourceFindActive];
     if (current !== undefined) selectSourceMatch(ta, current);
     syncFindPanelStatus(next.length, sourceFindActive);
-    markActiveTabDirty();
     return;
   }
   const view = activeFindView();
   if (view === null) return;
-  if (replaceCurrentMatch(view, replacement)) {
-    markActiveTabDirty();
-  }
+  replaceCurrentMatch(view, replacement);
   const state = readFindReplaceState(view);
   syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
 }
@@ -1526,15 +1453,13 @@ function runReplaceAll(replacement: string): void {
       const match = matches[i];
       if (match !== undefined) replaceSourceRange(ta, match.start, match.end, replacement);
     }
-    if (matches.length > 0) markActiveTabDirty();
     sourceFindActive = -1;
     syncFindPanelStatus(collectSourceMatches(ta.value, query).length, -1);
     return;
   }
   const view = activeFindView();
   if (view === null) return;
-  const count = replaceAllMatches(view, replacement);
-  if (count > 0) markActiveTabDirty();
+  replaceAllMatches(view, replacement);
   const state = readFindReplaceState(view);
   syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
 }

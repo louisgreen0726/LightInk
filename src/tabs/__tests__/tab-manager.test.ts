@@ -125,6 +125,27 @@ describe('新建与切换', () => {
     expect(snapshotKeyOf(tab)).toMatch(/^untitled-/);
   });
 
+  it('binds content changes to the editor instance instead of the active tab', async () => {
+    const mounted: Array<Parameters<TabManagerDeps['mountEditor']>[1]> = [];
+    const harness = makeHarness({
+      mountEditor: vi.fn(async (_host, options) => {
+        mounted.push(options);
+        const editor = makeFakeEditor(options.initialMarkdown ?? '');
+        harness.editors.push(editor);
+        return editor;
+      }),
+    });
+    const first = await harness.manager.newTab();
+    const second = await harness.manager.newTab();
+    expect(harness.manager.activeTabId).toBe(second.id);
+
+    first.editor.setMarkdown('background edit');
+    mounted[0]?.onContentChanged?.();
+
+    expect(first.dirty).toBe(true);
+    expect(second.dirty).toBe(false);
+  });
+
   it('newTab focuses the editor after ready so typing can start', async () => {
     const { manager, editors } = makeHarness();
     await manager.newTab('开始书写。');

@@ -207,7 +207,7 @@ export async function mountEditor(
         .use(findReplacePlugin)
         // 文档变更广播：壳层字数栏 / 脏标记 / 查找计数的可靠事实源
         // （不依赖 contenteditable 的 input 冒泡）。
-        .use(contentChangePlugin);
+        .use(contentChangePlugin(options.onContentChanged));
       // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {
         editor.use(
