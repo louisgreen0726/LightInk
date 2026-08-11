@@ -97,6 +97,11 @@ export interface MountOptions {
    * Production wires a themed modal (Ctrl+click only).
    */
   readonly confirmLinkOpen?: (href: string) => boolean | Promise<boolean>;
+  /**
+   * T4/R2：标题折叠态变化时回调（编辑器内点三角切换后通知宿主刷新大纲的折叠
+   * 指示）。经 mountEditor 选项注入，由 heading-fold 插件在折叠集合变化时触发。
+   */
+  readonly onFoldChanged?: () => void;
 }
 
 /** 当前选区的位置摘要（R7/R3 选区访问器）。 */
@@ -192,6 +197,16 @@ export interface EditorInstance {
   undo(): void;
   /** Redo the last undone change via ProseMirror history. */
   redo(): void;
+  /**
+   * T4/R2：切换第 `ordinal` 个标题（文档顺序，从 0 起，与大纲 anchor 同口径）的
+   * 折叠态。序号越界或编辑器未就绪时空操作。供大纲折叠标记点击联动。
+   */
+  toggleFoldAtOrdinal(ordinal: number): void;
+  /**
+   * T4/R2：当前已折叠标题的序号列表（与大纲 anchor 同口径），供大纲渲染折叠态。
+   * 折叠态不持久化（重开为空）。编辑器未就绪时返回空数组。
+   */
+  getFoldedOrdinals(): number[];
   /** Tear the editor down (removes DOM, nulls listeners). */
   destroy(): Promise<void>;
 }

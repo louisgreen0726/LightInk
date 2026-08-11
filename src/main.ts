@@ -945,6 +945,10 @@ manager = new TabManager({
     }
     editorScroller.scrollTop = manager.getScrollPosition(tab.id);
   },
+  // T4/R2：编辑器内点折叠三角切换后，立即刷新大纲的折叠标记态。
+  onFoldChanged: () => {
+    outline.refreshNow();
+  },
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
     // T5/R3：状态栏防抖刷新（内部在隐藏时短路不渲染）。
@@ -1032,6 +1036,11 @@ outline = createOutlineView({
     } catch {
       return null;
     }
+  },
+  // T4/R2：大纲↔编辑器折叠双向联动（序号口径与 buildOutline anchor 一致）。
+  getFoldedOrdinals: () => activeMarkdownTab()?.editor.getFoldedOrdinals() ?? [],
+  toggleFoldAtOrdinal: (ordinal) => {
+    activeMarkdownTab()?.editor.toggleFoldAtOrdinal(ordinal);
   },
   t: (key) => i18n.t(key),
 });

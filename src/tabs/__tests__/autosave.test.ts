@@ -178,6 +178,8 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
     selectAll: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
+    toggleFoldAtOrdinal: vi.fn(),
+    getFoldedOrdinals: vi.fn(() => []),
     destroy: vi.fn(async () => undefined),
   };
 }

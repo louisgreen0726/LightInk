@@ -59,6 +59,11 @@ import { taskCheckboxPlugin } from './plugins/task-checkbox.js';
 import { runTableOp, type TableOpId } from './plugins/table-ops.js';
 import { tableOpsPlugin } from './plugins/table-ops.js';
 import { tocPlugin } from './plugins/toc.js';
+import {
+  collectHeadings,
+  FOLD_PLUGIN_KEY,
+  headingFoldPlugin,
+} from './plugins/heading-fold.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
 import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
@@ -205,6 +210,9 @@ export async function mountEditor(
         // T4：查找与替换（R2）WYSIWYG 侧：decoration 高亮全部/当前命中，
         // 替换经单事务（可撤销）；面板与模式分派在壳层 main.ts。
         .use(findReplacePlugin)
+        // T4/R2：按标题折叠（PluginKey 态 + 区间 decoration；三角切换，大纲经
+        // toggleFoldAtOrdinal/getFoldedOrdinals 双向联动；折叠态不持久化、不影响导出）。
+        .use(headingFoldPlugin({ onFoldChanged: options.onFoldChanged }))
         // 文档变更广播：壳层字数栏 / 脏标记 / 查找计数的可靠事实源
         // （不依赖 contenteditable 的 input 冒泡）。
         .use(contentChangePlugin);
@@ -397,6 +405,29 @@ export async function mountEditor(
       const view = getView(state);
       if (view === null) return;
       redo(view.state, view.dispatch);
+    },
+    toggleFoldAtOrdinal(ordinal: number): void {
+      const view = getView(state);
+      if (view === null) return;
+      const heading = collectHeadings(view.state.doc)[ordinal];
+      if (heading === undefined) return;
+      view.dispatch(view.state.tr.setMeta(FOLD_PLUGIN_KEY, { toggle: heading.pos }));
+    },
+    getFoldedOrdinals(): number[] {
+      const view = getView(state);
+      if (view === null) return [];
+      const value = FOLD_PLUGIN_KEY.getState(view.state);
+      if (value === undefined) return [];
+      const posToOrdinal = new Map<number, number>();
+      collectHeadings(view.state.doc).forEach((h, i) => posToOrdinal.set(h.pos, i));
+      const out: number[] = [];
+      for (const pos of value.folded) {
+        const ordinal = posToOrdinal.get(pos);
+        if (ordinal !== undefined) {
+          out.push(ordinal);
+        }
+      }
+      return out;
     },
     async destroy(): Promise<void> {
       try {

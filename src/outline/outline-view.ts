@@ -41,6 +41,16 @@ export interface OutlineViewDeps {
   getActiveHost(): HTMLElement | null;
   /** 当前活动标签的 markdown（无活动标签或读取失败时返回 null）。 */
   getActiveMarkdown(): string | null;
+  /**
+   * T4/R2：当前活动 markdown 标签已折叠标题的序号列表（与 anchor 同口径）。无活动
+   * markdown 标签或缺省时视为「无折叠」。供大纲渲染折叠标记态。
+   */
+  getFoldedOrdinals?: () => number[];
+  /**
+   * T4/R2：切换第 ordinal 个标题的折叠态（点击大纲折叠标记 → 联动编辑器）。
+   * 缺省时大纲折叠标记不渲染为可点击。
+   */
+  toggleFoldAtOrdinal?: (ordinal: number) => void;
   /** DOM 创建入口（生产为全局 document，测试注入 fake）。 */
   doc?: Document;
   /** 重算防抖间隔（毫秒），默认 250。 */
@@ -255,14 +265,41 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
       renderEmpty(t('outline.empty'));
       return;
     }
+    const foldedOrdinals = new Set(deps.getFoldedOrdinals?.() ?? []);
     body.replaceChildren(
       ...items.map((item) => {
         const el = doc.createElement('button');
+        el.type = 'button';
         el.classList.add('lightink-outline-item');
         el.classList.add(`level-${Math.min(Math.max(item.level, 1), 6)}`);
         el.textContent = item.text;
         el.setAttribute('title', item.text);
         el.addEventListener('click', () => scrollToItem(item));
+        // T4/R2：折叠标记作为 item 的首个子 span（仅在注入了 toggleFoldAtOrdinal 时
+        // 渲染——测试不注入，故 body.children 仍是纯 item 按钮，既有断言不变）。
+        // 标记点击 stopPropagation 不触发条目跳转，单独联动编辑器折叠。
+        if (deps.toggleFoldAtOrdinal !== undefined) {
+          const isFolded = foldedOrdinals.has(item.anchor);
+          const marker = doc.createElement('span');
+          marker.className = 'lightink-outline-fold' + (isFolded ? ' is-folded' : '');
+          marker.textContent = isFolded ? '▾' : '▸';
+          marker.style.cssText =
+            'cursor:pointer;display:inline-block;width:1.2em;margin-right:2px;' +
+            'opacity:.6;font-size:.9em;';
+          marker.setAttribute('role', 'button');
+          marker.setAttribute('aria-label', isFolded ? '展开' : '折叠');
+          marker.addEventListener('mousedown', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          });
+          marker.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            deps.toggleFoldAtOrdinal!(item.anchor);
+            render(); // 立即反映新折叠态（编辑器 onFoldChanged 亦会触发 refreshNow）
+          });
+          el.insertBefore(marker, el.firstChild);
+        }
         return el;
       }),
     );

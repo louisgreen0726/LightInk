@@ -453,6 +453,8 @@ describe('createOutlineView + TabManager', () => {
       selectAll: () => undefined,
       undo: () => undefined,
       redo: () => undefined,
+      toggleFoldAtOrdinal: () => undefined,
+      getFoldedOrdinals: () => [],
       destroy: vi.fn(async () => undefined),
     };
   }

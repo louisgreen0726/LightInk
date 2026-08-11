@@ -143,6 +143,11 @@ export interface TabManagerDeps {
    * Optional confirm gate before opening a link (themed modal in main).
    */
   confirmLinkOpen?: (href: string) => boolean | Promise<boolean>;
+  /**
+   * T4/R2：活动标签标题折叠态变化时回调（编辑器内点三角切换后通知宿主刷新大纲
+   * 折叠指示）。经 createTab 注入 mountEditor，由 heading-fold 插件触发。
+   */
+  onFoldChanged?: () => void;
   /** 快照防抖间隔（毫秒），默认 1000。 */
   snapshotDebounceMs?: number;
   /**
@@ -187,6 +192,7 @@ type TabManagerOptionalUi =
   | 'onFileSaved'
   | 'onLinkNavigate'
   | 'confirmLinkOpen'
+  | 'onFoldChanged'
   | 'confirmExternalReload'
   | 'confirmExternalConflict'
   | 'notifyExternalUnreadable'
@@ -244,6 +250,7 @@ export class TabManager {
       onFileSaved: deps.onFileSaved,
       onLinkNavigate: deps.onLinkNavigate,
       confirmLinkOpen: deps.confirmLinkOpen,
+      onFoldChanged: deps.onFoldChanged,
       confirmExternalReload: deps.confirmExternalReload,
       confirmExternalConflict: deps.confirmExternalConflict,
       notifyExternalUnreadable: deps.notifyExternalUnreadable,
@@ -652,6 +659,7 @@ export class TabManager {
       onAssetError: (message, error) => this.deps.reportError(message, error),
       onLinkNavigate: this.deps.onLinkNavigate,
       confirmLinkOpen: this.deps.confirmLinkOpen,
+      onFoldChanged: this.deps.onFoldChanged,
     });
     const tab: MarkdownTabState = {
       kind: 'markdown',
