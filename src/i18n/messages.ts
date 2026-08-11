@@ -16,7 +16,7 @@ export const LOCALE_LABELS: Readonly<Record<LocaleId, string>> = {
 
 type Dict = Readonly<Record<string, string>>;
 
-const en: Dict = {
+const en = {
   // Menus
   'menu.file': 'File',
   'menu.edit': 'Edit',
@@ -292,9 +292,11 @@ const en: Dict = {
   'heading.default': 'Heading',
   'table.col1': 'Column 1',
   'table.col2': 'Column 2',
-};
+} as const satisfies Dict;
 
-const zhCN: Dict = {
+export type MessageKey = keyof typeof en;
+
+const zhCN = {
   'menu.file': '文件',
   'menu.edit': '编辑',
   'menu.insert': '插入',
@@ -561,23 +563,21 @@ const zhCN: Dict = {
   'heading.default': '标题',
   'table.col1': '列1',
   'table.col2': '列2',
-};
+} as const satisfies Readonly<Record<MessageKey, string>>;
 
-const CATALOG: Readonly<Record<LocaleId, Dict>> = {
+const CATALOG: Readonly<Record<LocaleId, Readonly<Record<MessageKey, string>>>> = {
   en,
   'zh-CN': zhCN,
 };
 
-export type MessageKey = keyof typeof en;
-
 export function translate(
   locale: LocaleId,
-  key: string,
+  key: MessageKey,
   vars?: Readonly<Record<string, string>>,
 ): string {
   const dict = CATALOG[locale] ?? CATALOG[DEFAULT_LOCALE];
   const fallback = CATALOG.en;
-  let text = dict[key] ?? fallback[key] ?? key;
+  let text: string = dict[key] ?? fallback[key] ?? key;
   if (vars !== undefined) {
     for (const [k, v] of Object.entries(vars)) {
       text = text.split(`{${k}}`).join(v);

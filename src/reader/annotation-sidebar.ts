@@ -6,9 +6,10 @@
  */
 
 import type { Annotation } from './annotations.js';
+import type { MessageKey } from '../i18n/messages.js';
 
 export interface AnnotationSidebarDeps {
-  t: (key: string, vars?: Readonly<Record<string, string>>) => string;
+  t: (key: MessageKey, vars?: Readonly<Record<string, string>>) => string;
   /** 点击某条标注时跳转到其位置（由 reader-view 实现滚动/翻页）。 */
   onJump: (annotation: Annotation) => void;
   /** 可选：移除标注（由 reader-view 实现删除+保存）。 */

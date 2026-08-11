@@ -8,6 +8,7 @@
  */
 
 import './reader.css';
+import type { MessageKey } from '../i18n/messages.js';
 import { parseReaderContent } from './formats/index.js';
 import type { ReaderChapter, ReaderContent } from './formats/types.js';
 import { ParseError } from './formats/types.js';
@@ -104,7 +105,7 @@ export interface ReaderViewDeps {
   /** 读取文件原始字节（生产为 invoke read_file_bytes → base64 → Uint8Array）。 */
   readBytes?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
   /** 翻译 i18n key（生产为 i18n.t）。 */
-  t?: (key: string, vars?: Readonly<Record<string, string>>) => string;
+  t?: (key: MessageKey, vars?: Readonly<Record<string, string>>) => string;
   /** 文件内容哈希（Rust content_hash）；缺省则不启用标注。 */
   getContentHash?: (filePath: string) => Promise<string>;
   /** 读标注 JSON（Rust read_annotations）。 */
@@ -127,7 +128,7 @@ export interface ReaderViewDeps {
  * 在宿主元素内创建阅读视图并返回 ReaderInstance。
  */
 export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): ReaderInstance {
-  const t = deps.t ?? ((key: string) => key);
+  const t = deps.t ?? ((key: MessageKey) => key);
   const root = document.createElement('div');
   root.className = 'lightink-reader';
   root.setAttribute('role', 'document');

@@ -9,6 +9,7 @@
 
 import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
+import type { MessageKey } from '../i18n/messages.js';
 import { BUILTIN_THEMES, type BuiltinThemeId } from '../theme/theme-service.js';
 import { createChromeController, type ChromeController } from './chrome-controller.js';
 import {
@@ -127,7 +128,7 @@ export interface AppShellActions {
   /** Current font scale label (e.g. `100%`) for the menu. */
   getFontScaleLabel(): string;
   /** Translate UI string (en / zh-CN). */
-  t(key: string, vars?: Readonly<Record<string, string>>): string;
+  t(key: MessageKey, vars?: Readonly<Record<string, string>>): string;
   /** Format shortcut for current OS (⌘ on macOS). */
   formatShortcut(combo: string): string;
   /** Current UI locale. */
@@ -257,7 +258,7 @@ export interface RecentsMenuActions {
 export function buildRecentsMenuItems(
   paths: readonly string[],
   actions: RecentsMenuActions,
-  t: (key: string) => string = (k) => k,
+  t: (key: MessageKey) => string = (k) => k,
 ): MenuItem[] {
   if (paths.length === 0) {
     return [
@@ -290,7 +291,7 @@ function sc(actions: AppShellActions, combo: string): string {
 }
 
 export function buildMenus(actions: AppShellActions): Menu[] {
-  const t = (key: string) => actions.t(key);
+  const t = (key: MessageKey) => actions.t(key);
   const insertItems: MenuItem[] = INSERT_ELEMENTS.map((element) =>
     menuItem(
       `insert-${element.id}`,
