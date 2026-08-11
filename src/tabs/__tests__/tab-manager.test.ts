@@ -486,6 +486,93 @@ describe('关闭未保存标签', () => {
   });
 });
 
+describe('应用退出批量关闭', () => {
+  it('Save All 全部保存成功后才统一销毁标签', async () => {
+    const harness = makeHarness();
+    const first = await harness.manager.openFile('C:\\first.md');
+    const second = await harness.manager.openFile('C:\\second.md');
+    first!.editor.setMarkdown('first edit');
+    second!.editor.setMarkdown('second edit');
+    harness.manager.handleContentChanged(first!.id);
+    harness.manager.handleContentChanged(second!.id);
+
+    await expect(harness.manager.closeAllTabs('save')).resolves.toBe(true);
+
+    expect(harness.roundtrip.writeFile).toHaveBeenNthCalledWith(
+      1,
+      'C:\\first.md',
+      'first edit',
+    );
+    expect(harness.roundtrip.writeFile).toHaveBeenNthCalledWith(
+      2,
+      'C:\\second.md',
+      'second edit',
+    );
+    expect(harness.manager.tabList).toHaveLength(0);
+    expect(first!.editor.destroy).toHaveBeenCalledOnce();
+    expect(second!.editor.destroy).toHaveBeenCalledOnce();
+    expect(harness.confirmClose).not.toHaveBeenCalled();
+  });
+
+  it('Save All 任一保存取消时保留全部标签', async () => {
+    const harness = makeHarness();
+    const saved = await harness.manager.openFile('C:\\saved.md');
+    const untitled = await harness.manager.newTab();
+    saved!.editor.setMarkdown('saved edit');
+    untitled.editor.setMarkdown('untitled edit');
+    harness.manager.handleContentChanged(saved!.id);
+    harness.manager.handleContentChanged(untitled.id);
+    (harness.roundtrip.showSaveDialog as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+    await expect(harness.manager.closeAllTabs('save')).resolves.toBe(false);
+
+    expect(harness.manager.tabList).toEqual([saved, untitled]);
+    expect(saved!.editor.destroy).not.toHaveBeenCalled();
+    expect(untitled.editor.destroy).not.toHaveBeenCalled();
+    expect(harness.deps.detachHost).not.toHaveBeenCalled();
+  });
+
+  it('Save All 保存期间出现新编辑时中止退出', async () => {
+    const harness = makeHarness();
+    let releaseWrite: (() => void) | undefined;
+    const pendingWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    (harness.roundtrip.writeFile as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => pendingWrite,
+    );
+    const tab = await harness.manager.openFile('C:\\draft.md');
+    tab!.editor.setMarkdown('version one');
+    harness.manager.handleContentChanged(tab!.id);
+
+    const closing = harness.manager.closeAllTabs('save');
+    await vi.waitFor(() => expect(harness.roundtrip.writeFile).toHaveBeenCalledOnce());
+    tab!.editor.setMarkdown('version two');
+    harness.manager.handleContentChanged(tab!.id);
+    releaseWrite!();
+
+    await expect(closing).resolves.toBe(false);
+    expect(harness.manager.tabList).toEqual([tab]);
+    expect(tab!.dirty).toBe(true);
+    expect(tab!.editor.destroy).not.toHaveBeenCalled();
+  });
+
+  it('Discard All 不逐标签确认并清空工作区', async () => {
+    const harness = makeHarness();
+    const first = await harness.manager.newTab();
+    const second = await harness.manager.newTab();
+    first.editor.setMarkdown('first edit');
+    second.editor.setMarkdown('second edit');
+    harness.manager.handleContentChanged(first.id);
+    harness.manager.handleContentChanged(second.id);
+
+    await expect(harness.manager.closeAllTabs('discard')).resolves.toBe(true);
+
+    expect(harness.manager.tabList).toHaveLength(0);
+    expect(harness.confirmClose).not.toHaveBeenCalled();
+  });
+});
+
 describe('崩溃快照', () => {
   beforeEach(() => {
     vi.useFakeTimers();

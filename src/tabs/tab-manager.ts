@@ -47,7 +47,13 @@ import {
   type ExternalConflictChoice,
   type ExternalReloadChoice,
 } from '../file/external-change.js';
-import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './types.js';
+import type {
+  CloseAllAction,
+  CloseChoice,
+  MarkdownTabState,
+  ReaderTabState,
+  TabState,
+} from './types.js';
 
 /** reader 标签判别：reader 标签豁免全部可写编辑器路径。 */
 export function isMarkdownTab(tab: TabState): tab is MarkdownTabState {
@@ -201,6 +207,8 @@ export class TabManager {
   private saveQueues = new Map<string, Promise<void>>();
   /** 同一标签的重复关闭请求共享一个操作，避免重复确认、销毁或数组删除。 */
   private closingTabs = new Map<string, Promise<boolean>>();
+  /** 应用退出期间共享同一个批量关闭操作，避免与单标签关闭交错。 */
+  private closingAll: Promise<boolean> | null = null;
   /** 编辑器内容每次成功变更后递增；用于约束异步保存完成时的快照清理。 */
   private contentRevisions = new Map<string, number>();
   /** R13：外部变更弹窗进行中标志，避免轮询/保存前重复堆叠弹窗。 */
@@ -554,6 +562,9 @@ export class TabManager {
    * 返回 true 表示标签已关闭。
    */
   closeTab(id: string): Promise<boolean> {
+    if (this.closingAll !== null) {
+      return Promise.resolve(false);
+    }
     const existing = this.closingTabs.get(id);
     if (existing !== undefined) {
       return existing;
@@ -571,6 +582,106 @@ export class TabManager {
     if (this.closingTabs.get(id) === pending) {
       this.closingTabs.delete(id);
     }
+  }
+
+  /**
+   * Close every tab after the exit UI has selected Save All or Discard All.
+   * Save All persists every dirty document before any editor is destroyed, so
+   * a cancelled Save As, failed write, or newer edit leaves the full workspace
+   * available. The confirmation UI intentionally remains outside TabManager.
+   */
+  closeAllTabs(action: CloseAllAction): Promise<boolean> {
+    if (this.closingAll !== null) {
+      return this.closingAll;
+    }
+    if (this.closingTabs.size > 0) {
+      return Promise.resolve(false);
+    }
+    const pending = this.performCloseAllTabs(action);
+    this.closingAll = pending;
+    void pending.then(
+      () => this.clearCloseAllOperation(pending),
+      () => this.clearCloseAllOperation(pending),
+    );
+    return pending;
+  }
+
+  private clearCloseAllOperation(pending: Promise<boolean>): void {
+    if (this.closingAll === pending) {
+      this.closingAll = null;
+    }
+  }
+
+  private async performCloseAllTabs(action: CloseAllAction): Promise<boolean> {
+    const targets = [...this.tabs];
+    if (action === 'save') {
+      for (const tab of targets) {
+        if (tab.kind !== 'markdown' || !tab.dirty) continue;
+        const saved = await this.enqueueSave(tab.id, () => this.performSaveTab(tab.id));
+        if (!saved) {
+          return false;
+        }
+      }
+    }
+
+    // A tab created or individually removed while native dialogs were open
+    // invalidates the preflight. Keep the current workspace instead of
+    // applying an exit decision to a different set of documents.
+    if (
+      this.tabs.length !== targets.length ||
+      targets.some((tab, index) => this.tabs[index] !== tab)
+    ) {
+      return false;
+    }
+
+    const inertStates = targets.map((tab) => tab.hostElement.inert);
+    for (const tab of targets) {
+      tab.hostElement.inert = true;
+    }
+    if (action === 'save') {
+      const hasNewerEdits = targets.some((tab) => {
+        if (tab.kind !== 'markdown') return false;
+        const current = this.readMarkdown(tab);
+        tab.dirty = current === null || current !== tab.lastSavedMarkdown;
+        return tab.dirty;
+      });
+      if (hasNewerEdits) {
+        targets.forEach((tab, index) => {
+          tab.hostElement.inert = inertStates[index] ?? false;
+        });
+        this.notifyChanged();
+        return false;
+      }
+    }
+
+    for (const tab of targets) {
+      this.cancelPendingSnapshot(tab.id);
+      await this.snapshotWrites.get(tab.id)?.catch(() => undefined);
+      await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
+        this.deps.reportError('清除快照失败', error);
+      });
+    }
+    for (const tab of targets) {
+      const destroy = tab.kind === 'markdown' ? tab.editor.destroy() : tab.reader.destroy();
+      await destroy.catch((error: unknown) => {
+        this.deps.reportError('销毁标签内容失败', error);
+      });
+    }
+
+    for (const tab of targets) {
+      this.deps.detachHost(tab.hostElement);
+    }
+    this.tabs = [];
+    this.activeId = null;
+    this.snapshotTimers.clear();
+    this.snapshotWrites.clear();
+    this.saveQueues.clear();
+    this.contentRevisions.clear();
+    this.autosaveConflictPrompted.clear();
+    this.externalUnreadableNotified.clear();
+    this.notifyChanged();
+    this.notifyActiveContentChanged();
+    return true;
   }
 
   private async performCloseTab(id: string): Promise<boolean> {
@@ -689,6 +800,15 @@ export class TabManager {
       const tab = this.tabs.find((t) => t.id === id);
       if (tab !== undefined && tab.dirty) {
         this.writeSnapshotNow(tab);
+      }
+    }
+  }
+
+  /** Flush every dirty document's pending recovery snapshot after exit cancellation. */
+  flushDirtySnapshots(): void {
+    for (const tab of this.tabs) {
+      if (tab.kind === 'markdown' && tab.dirty) {
+        this.flushSnapshot(tab.id);
       }
     }
   }

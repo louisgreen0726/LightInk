@@ -63,3 +63,6 @@ export type TabState = MarkdownTabState | ReaderTabState;
 
 /** 关闭未保存标签时用户的三选一。 */
 export type CloseChoice = 'save' | 'discard' | 'cancel';
+
+/** Application-exit action after the confirmation UI has resolved cancellation. */
+export type CloseAllAction = Exclude<CloseChoice, 'cancel'>;
