@@ -6,11 +6,34 @@
  * 永不进入 dirty / autosave / 崩溃快照 / 外部变更检测等可写路径
  * （见 tab-manager 各方法的 kind 守卫）。
  *
- * 本接口当前只定义生命周期契约：由 TabManager 依赖注入的 `mountReader`
- * 创建，`closeTab` 时 `destroy`。格式渲染、目录导航与标注方法由后续任务
- * （reader-view / formats / annotations）在此接口上扩展——届时直接给
- * `ReaderInstance` 增加方法，不改既有签名。
+ * 实例还提供只读状态快照，供状态栏等应用 chrome 展示加载、阅读位置和缩放；
+ * 订阅只观察状态，不参与格式渲染生命周期。
  */
+
+export type ReaderPhase =
+  | 'empty'
+  | 'loading'
+  | 'ready'
+  | 'cancelled'
+  | 'error'
+  | 'destroyed';
+
+export type ReaderLocationKind = 'page' | 'chapter' | null;
+
+/** Immutable, format-neutral reading progress snapshot. */
+export interface ReaderState {
+  readonly phase: ReaderPhase;
+  /** One-based page/chapter when content is available, otherwise 0. */
+  readonly current: number;
+  readonly total: number;
+  /** Overall reading progress normalized to the inclusive 0..1 range. */
+  readonly progress: number;
+  /** Renderer-owned scale. Application-wide reading scale is applied separately. */
+  readonly scale: number;
+  readonly locationKind: ReaderLocationKind;
+}
+
+export type ReaderStateListener = (state: ReaderState) => void;
 
 /**
  * 只读阅读视图实例。生命周期由 TabManager 管理（mountReader 创建、
@@ -18,6 +41,10 @@
  * 活动时，所有编辑器动作（菜单 / 快捷键 / 右键菜单）系统性空转或禁用。
  */
 export interface ReaderInstance {
+  /** Latest immutable state snapshot. */
+  readonly state: ReaderState;
+  /** Subscribe to state changes; the current snapshot is delivered immediately. */
+  subscribeState(listener: ReaderStateListener): () => void;
   /**
    * 读取并解析文件，把章节渲染进阅读视图（T4 接入流式格式）。
    * 解析失败（DRM、损坏、不支持）reject，由调用方负责 i18n 错误提示。

@@ -2,6 +2,7 @@
 
 import { computeWordStats, type WordStats } from '../editor/word-stats.js';
 import type { CursorPosition } from '../editor/types.js';
+import type { ReaderPhase, ReaderState } from '../reader/types.js';
 import type { DocumentSaveStatus } from '../tabs/types.js';
 import type { StorageLike } from './chrome-prefs.js';
 
@@ -40,6 +41,13 @@ export interface StatusBarLabels {
   column: string;
   encoding: string;
   save: Readonly<Record<DocumentSaveStatus, string>>;
+  reader: {
+    readonly phase: Readonly<Record<ReaderPhase, string>>;
+    readonly page: string;
+    readonly chapter: string;
+    readonly progress: string;
+    readonly zoom: string;
+  };
 }
 
 export interface MarkdownStatusSnapshot {
@@ -49,7 +57,14 @@ export interface MarkdownStatusSnapshot {
   readonly cursor: CursorPosition;
 }
 
-export type StatusBarSnapshot = MarkdownStatusSnapshot | null;
+export interface ReaderStatusSnapshot {
+  readonly kind: 'reader';
+  readonly state: ReaderState;
+  /** Renderer scale combined with the application-wide reading scale. */
+  readonly displayScale: number;
+}
+
+export type StatusBarSnapshot = MarkdownStatusSnapshot | ReaderStatusSnapshot | null;
 
 export function formatWordStats(stats: WordStats, labels: StatusBarLabels): string {
   return `${labels.words} ${formatCount(stats.words)} · ${labels.characters} ${formatCount(stats.characters)}`;
@@ -57,6 +72,16 @@ export function formatWordStats(stats: WordStats, labels: StatusBarLabels): stri
 
 function formatCount(n: number): string {
   return n.toLocaleString('en-US');
+}
+
+function formatPercent(value: number): string {
+  const normalized = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+  return `${Math.round(normalized * 100)}%`;
+}
+
+function formatScale(value: number): string {
+  const normalized = Number.isFinite(value) ? Math.max(0, value) : 1;
+  return `${Math.round(normalized * 100)}%`;
 }
 
 /** Convert a UTF-16 textarea offset to a one-based Unicode code-point position. */
@@ -110,11 +135,12 @@ export function createStatusBar(
   const element = doc.createElement('div') as HTMLDivElement;
   element.id = 'lightink-status-bar';
   element.className = 'lightink-status-bar';
-  element.setAttribute('role', 'status');
-  element.setAttribute('aria-live', 'polite');
 
   const persistence = doc.createElement('span') as HTMLSpanElement;
   persistence.className = 'lightink-status-save';
+  persistence.setAttribute('role', 'status');
+  persistence.setAttribute('aria-live', 'polite');
+  persistence.setAttribute('aria-atomic', 'true');
   const details = doc.createElement('span') as HTMLSpanElement;
   details.className = 'lightink-status-details';
   const position = doc.createElement('span') as HTMLSpanElement;
@@ -146,17 +172,45 @@ export function createStatusBar(
     if (snapshot === null) {
       element.hidden = true;
       delete element.dataset.saveStatus;
+      delete element.dataset.readerPhase;
+      delete element.dataset.statusKind;
       return;
     }
 
     const labels = options.labels();
     element.hidden = false;
     element.dataset.statusKind = snapshot.kind;
-    element.dataset.saveStatus = snapshot.saveStatus;
-    persistence.textContent = labels.save[snapshot.saveStatus];
-    position.textContent = `${labels.line} ${snapshot.cursor.line}, ${labels.column} ${snapshot.cursor.column}`;
-    encoding.textContent = labels.encoding;
-    counts.textContent = formatWordStats(computeWordStats(snapshot.markdown), labels);
+    if (snapshot.kind === 'markdown') {
+      delete element.dataset.readerPhase;
+      element.dataset.saveStatus = snapshot.saveStatus;
+      persistence.textContent = labels.save[snapshot.saveStatus];
+      position.hidden = false;
+      position.textContent = `${labels.line} ${snapshot.cursor.line}, ${labels.column} ${snapshot.cursor.column}`;
+      encoding.hidden = false;
+      encoding.textContent = labels.encoding;
+      counts.hidden = false;
+      counts.textContent = formatWordStats(computeWordStats(snapshot.markdown), labels);
+      return;
+    }
+
+    delete element.dataset.saveStatus;
+    element.dataset.readerPhase = snapshot.state.phase;
+    persistence.textContent = labels.reader.phase[snapshot.state.phase];
+    const hasPosition = snapshot.state.phase === 'ready' && snapshot.state.total > 0;
+    position.hidden = !hasPosition;
+    encoding.hidden = !hasPosition;
+    counts.hidden = !hasPosition;
+    if (!hasPosition) {
+      position.textContent = '';
+      encoding.textContent = '';
+      counts.textContent = '';
+      return;
+    }
+    const locationLabel =
+      snapshot.state.locationKind === 'chapter' ? labels.reader.chapter : labels.reader.page;
+    position.textContent = `${locationLabel} ${snapshot.state.current}/${snapshot.state.total}`;
+    encoding.textContent = `${labels.reader.progress} ${formatPercent(snapshot.state.progress)}`;
+    counts.textContent = `${labels.reader.zoom} ${formatScale(snapshot.displayScale)}`;
   }
 
   function cancelTimer(): void {

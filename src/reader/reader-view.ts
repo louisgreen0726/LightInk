@@ -28,7 +28,13 @@ import {
   resolveTextQuoteRange,
 } from './annotation-locator.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
-import type { ReaderInstance, ReaderLoadOptions } from './types.js';
+import type {
+  ReaderInstance,
+  ReaderLoadOptions,
+  ReaderPhase,
+  ReaderState,
+  ReaderStateListener,
+} from './types.js';
 import {
   isReaderLoadCancelled,
   throwIfReaderLoadCancelled,
@@ -176,28 +182,70 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
 
-  const setReaderState = (
-    state: 'empty' | 'loading' | 'ready' | 'cancelled' | 'error' | 'destroyed',
-  ): void => {
-    root.dataset.readerState = state;
-    root.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+  const stateListeners = new Set<ReaderStateListener>();
+  let readerState: ReaderState = Object.freeze({
+    phase: 'empty',
+    current: 0,
+    total: 0,
+    progress: 0,
+    scale: 1,
+    locationKind: null,
+  });
+
+  const applyStateToDom = (state: ReaderState): void => {
+    root.dataset.readerState = state.phase;
+    root.setAttribute('aria-busy', state.phase === 'loading' ? 'true' : 'false');
     const messageKey =
-      state === 'loading'
+      state.phase === 'loading'
         ? 'reader.loading'
-        : state === 'cancelled'
+        : state.phase === 'cancelled'
           ? 'reader.cancelled'
-          : state === 'error'
+          : state.phase === 'error'
             ? 'reader.failed'
             : null;
     status.hidden = messageKey === null;
     status.textContent = messageKey === null ? '' : t(messageKey);
   };
 
+  const setReaderState = (next: ReaderState): void => {
+    const changed =
+      readerState.phase !== next.phase ||
+      readerState.current !== next.current ||
+      readerState.total !== next.total ||
+      readerState.progress !== next.progress ||
+      readerState.scale !== next.scale ||
+      readerState.locationKind !== next.locationKind;
+    if (changed) {
+      readerState = Object.freeze({ ...next });
+    }
+    applyStateToDom(readerState);
+    if (!changed) return;
+    for (const listener of stateListeners) {
+      try {
+        listener(readerState);
+      } catch {
+        // Application chrome must not be able to interrupt reader rendering.
+      }
+    }
+  };
+
+  const updateReaderState = (patch: Partial<ReaderState>): void => {
+    setReaderState({ ...readerState, ...patch });
+  };
+
+  const setReaderPhase = (phase: ReaderPhase, resetMetrics = false): void => {
+    setReaderState(
+      resetMetrics
+        ? { phase, current: 0, total: 0, progress: 0, scale: 1, locationKind: null }
+        : { ...readerState, phase },
+    );
+  };
+
   const clearFlowBindings = (): void => {
     flowRenderGeneration += 1;
     releaseRemoteImages.splice(0).forEach((release) => release());
   };
-  setReaderState('empty');
+  applyStateToDom(readerState);
 
   const saveAnnotations = async (): Promise<void> => {
     if (contentHash === null || deps.writeAnnotations === undefined) {
@@ -270,6 +318,39 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     return best;
   };
 
+  const syncFlowState = (): void => {
+    if (destroyed || pdfHandle !== null || cbzHandle !== null || PAGE_EXTS.has(loadedExt)) {
+      return;
+    }
+    const total = scrollHost.querySelectorAll('.lightink-reader-chapter').length;
+    if (total === 0) {
+      updateReaderState({ current: 0, total: 0, progress: 0, scale: 1, locationKind: null });
+      return;
+    }
+    const current = Math.min(total, firstVisibleChapter() + 1);
+    const maxScroll = Math.max(0, scrollHost.scrollHeight - scrollHost.clientHeight);
+    const progress =
+      maxScroll === 0 ? 1 : Math.min(1, Math.max(0, scrollHost.scrollTop / maxScroll));
+    updateReaderState({ current, total, progress, scale: 1, locationKind: 'chapter' });
+  };
+
+  const syncPageState = (): void => {
+    const current = pdfHandle?.controller.page ?? cbzHandle?.currentPage ?? 0;
+    const total = pdfHandle?.controller.totalPages ?? cbzHandle?.totalPages ?? 0;
+    const scale = pdfHandle?.controller.scale ?? 1;
+    updateReaderState({
+      current,
+      total,
+      progress: total === 0 ? 0 : Math.min(1, Math.max(0, current / total)),
+      scale,
+      locationKind: total === 0 ? null : 'page',
+    });
+  };
+
+  const onFlowScroll = (): void => syncFlowState();
+  const onPageScroll = (): void => syncPageState();
+  scrollHost.addEventListener('scroll', onFlowScroll, { passive: true });
+
   /** 添加书签或笔记（笔记经 window.prompt 取文本）。 */
   const addAnnotation = (kind: AnnotationKind): void => {
     let note: string | undefined;
@@ -315,10 +396,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         const loc = annotation.locator;
         if (loc.format === 'pdf' && pdfHandle !== null) {
           pdfHandle.scrollToPage(loc.page);
+          syncPageState();
           return;
         }
         if (loc.format === 'cbz') {
           cbzHandle?.scrollToPage(loc.page);
+          syncPageState();
           return;
         }
         // flow / text：优先定位到该条高亮的 <mark>，否则到章节。
@@ -487,6 +570,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const renderChapters = (chapters: ReaderChapter[]): void => {
     clearFlowBindings();
+    pageHost.removeEventListener('scroll', onPageScroll);
     const renderGeneration = flowRenderGeneration;
     scrollHost.hidden = false;
     pageHost.hidden = true;
@@ -525,6 +609,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
         const syncHeight = (): void => {
           frame.style.height = `${Math.max(1, frameDocument.documentElement.scrollHeight)}px`;
+          syncFlowState();
         };
         const onClick = (event: MouseEvent): void => {
           const target = event.target;
@@ -593,6 +678,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       scrollHost.appendChild(article);
       chapterIndex += 1;
     }
+    syncFlowState();
   };
 
   const stagePages = async (
@@ -633,9 +719,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     const previousCbz = cbzHandle;
     pdfHandle = staged.pdf;
     cbzHandle = staged.cbz;
+    pageHost.removeEventListener('scroll', onPageScroll);
     pageHost.replaceWith(staged.host);
     pageHost = staged.host;
+    pageHost.addEventListener('scroll', onPageScroll, { passive: true });
     scrollHost.hidden = true;
+    syncPageState();
     void previousPdf?.destroy().catch(() => undefined);
     void previousCbz?.destroy().catch(() => undefined);
     previousFlowDispose?.();
@@ -690,23 +779,28 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
       handle.scrollToPage(handle.controller.page - 1);
+      syncPageState();
       event.preventDefault();
     } else if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
       handle.scrollToPage(handle.controller.page + 1);
+      syncPageState();
       event.preventDefault();
     } else if (event.key === '+' || event.key === '=') {
       if (handle.controller.zoomIn()) {
         event.preventDefault();
+        syncPageState();
         void handle.rerender();
       }
     } else if (event.key === '-' || event.key === '_') {
       if (handle.controller.zoomOut()) {
         event.preventDefault();
+        syncPageState();
         void handle.rerender();
       }
     } else if (event.key === '0') {
       if (handle.controller.resetScale()) {
         event.preventDefault();
+        syncPageState();
         void handle.rerender();
       }
     }
@@ -715,6 +809,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   // 书签 / 笔记改由菜单触发（见 ReaderInstance.addBookmark/addNote），不再挂浮动工具栏。
 
   return {
+    get state() {
+      return readerState;
+    },
+    subscribeState(listener) {
+      stateListeners.add(listener);
+      try {
+        listener(readerState);
+      } catch {
+        // Keep subscription setup isolated from application chrome failures.
+      }
+      return () => {
+        stateListeners.delete(listener);
+      };
+    },
     async load(filePath: string, options: ReaderLoadOptions = {}): Promise<void> {
       const readBytes = deps.readBytes;
       if (readBytes === undefined) {
@@ -740,7 +848,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         !destroyed && !controller.signal.aborted && generation === loadGeneration;
       let completed = false;
 
-      setReaderState('loading');
+      setReaderPhase('loading', true);
       try {
         const bytes = await readBytes(filePath, controller.signal);
         throwIfReaderLoadCancelled(controller.signal);
@@ -807,20 +915,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         await loadAnnotations(filePath, generation, controller.signal);
         throwIfReaderLoadCancelled(controller.signal);
         if (isCurrent()) {
-          setReaderState('ready');
+          setReaderPhase('ready');
           completed = true;
         }
       } catch (error) {
         if (isReaderLoadCancelled(error, controller.signal)) {
           if (!destroyed && generation === loadGeneration) {
-            setReaderState('cancelled');
+            setReaderPhase('cancelled');
           }
           return;
         }
         if (!isCurrent()) {
           return;
         }
-        setReaderState('error');
+        setReaderPhase('error');
         throw error;
       } finally {
         options.signal?.removeEventListener('abort', cancelFromCaller);
@@ -849,7 +957,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       sidebar = null;
       sidebarBackdrop?.remove();
       sidebarBackdrop = null;
-      setReaderState('destroyed');
+      scrollHost.removeEventListener('scroll', onFlowScroll);
+      pageHost.removeEventListener('scroll', onPageScroll);
+      setReaderPhase('destroyed', true);
+      stateListeners.clear();
       root.remove();
       disposeFlowContent?.();
       await handle?.destroy().catch(() => undefined);

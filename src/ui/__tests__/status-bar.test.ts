@@ -100,6 +100,20 @@ const zhLabels = (): StatusBarLabels => ({
     error: '保存失败',
     conflict: '外部冲突',
   },
+  reader: {
+    phase: {
+      empty: '阅读器',
+      loading: '正在加载',
+      ready: '阅读中',
+      cancelled: '加载已取消',
+      error: '加载失败',
+      destroyed: '阅读器已关闭',
+    },
+    page: '页',
+    chapter: '章',
+    progress: '进度',
+    zoom: '缩放',
+  },
 });
 
 function snapshot(
@@ -205,6 +219,47 @@ describe('渲染与显隐', () => {
       throw new Error('editor gone');
     });
     expect((bar.element as unknown as FakeEl).hidden).toBe(true);
+  });
+
+  it('渲染 Reader 章节进度和有效缩放，并在加载时隐藏位置详情', () => {
+    const host = new FakeEl('div');
+    const bar = makeBar(host, { storage: null, initiallyVisible: true });
+    bar.refresh(() => ({
+      kind: 'reader',
+      state: {
+        phase: 'ready',
+        current: 2,
+        total: 4,
+        progress: 0.5,
+        scale: 1,
+        locationKind: 'chapter',
+      },
+      displayScale: 1.5,
+    }));
+
+    const root = bar.element as unknown as FakeEl;
+    expect(root.dataset.statusKind).toBe('reader');
+    expect(root.dataset.readerPhase).toBe('ready');
+    expect(root.dataset.saveStatus).toBeUndefined();
+    expect(childByClass(root, 'lightink-status-save').textContent).toBe('阅读中');
+    expect(childByClass(root, 'lightink-status-position').textContent).toBe('章 2/4');
+    expect(childByClass(root, 'lightink-status-encoding').textContent).toBe('进度 50%');
+    expect(childByClass(root, 'lightink-status-counts').textContent).toBe('缩放 150%');
+
+    bar.refresh(() => ({
+      kind: 'reader',
+      state: {
+        phase: 'loading',
+        current: 0,
+        total: 0,
+        progress: 0,
+        scale: 1,
+        locationKind: null,
+      },
+      displayScale: 1,
+    }));
+    expect(childByClass(root, 'lightink-status-save').textContent).toBe('正在加载');
+    expect(childByClass(root, 'lightink-status-position').hidden).toBe(true);
   });
 
   it('关闭后从 DOM 移除；重新打开立即按当前文档重绘（不等编辑）', () => {

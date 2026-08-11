@@ -82,8 +82,8 @@ import { showExitConfirmation } from './ui/exit-confirmation.js';
 import {
   createStatusBar,
   cursorPositionFromOffset,
-  type MarkdownStatusSnapshot,
   type StatusBar,
+  type StatusBarSnapshot,
 } from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
@@ -772,13 +772,13 @@ shell = createAppShell(
       toggleChromePinnedWithOutline();
     },
     onZoomIn: () => {
-      fontScale.zoomIn();
+      changeReadingScale('in');
     },
     onZoomOut: () => {
-      fontScale.zoomOut();
+      changeReadingScale('out');
     },
     onZoomReset: () => {
-      fontScale.reset();
+      changeReadingScale('reset');
     },
     getFontScaleLabel: () => fontScale.label,
     // ---- reader 标签专用：阅读态菜单「标注」 ----
@@ -943,8 +943,8 @@ manager = new TabManager({
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
   remoteImageLoadLabel: i18n.t('reader.remoteImageLoad'),
   mountEditor,
-  mountReader: async (host) =>
-    createReaderView(host, {
+  mountReader: async (host) => {
+    const reader = createReaderView(host, {
       readBytes: readReaderBytes,
       t: (key, vars) => i18n.t(key, vars),
       getContentHash: (path) => invoke<string>('content_hash', { path }),
@@ -954,7 +954,15 @@ manager = new TabManager({
       notify: (message) => {
         void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
       },
-    }),
+    });
+    reader.subscribeState(() => {
+      const active = manager?.activeTab;
+      if (active?.kind === 'reader' && active.reader === reader) {
+        statusBar?.refresh(getActiveStatusSnapshot);
+      }
+    });
+    return reader;
+  },
   createHostElement: (tabId) => {
     const el = document.createElement('div');
     el.className = 'lightink-tab-host';
@@ -1108,13 +1116,34 @@ statusBar = createStatusBar(document, shell.statusBarHost, {
       error: i18n.t('status.save.error'),
       conflict: i18n.t('status.save.conflict'),
     },
+    reader: {
+      phase: {
+        empty: i18n.t('status.reader.empty'),
+        loading: i18n.t('status.reader.loading'),
+        ready: i18n.t('status.reader.ready'),
+        cancelled: i18n.t('status.reader.cancelled'),
+        error: i18n.t('status.reader.error'),
+        destroyed: i18n.t('status.reader.destroyed'),
+      },
+      page: i18n.t('status.reader.page'),
+      chapter: i18n.t('status.reader.chapter'),
+      progress: i18n.t('status.reader.progress'),
+      zoom: i18n.t('status.reader.zoom'),
+    },
   }),
 });
 
-/** Build the current Markdown status from editor/source-mode facts. */
-function getActiveStatusSnapshot(): MarkdownStatusSnapshot | null {
-  const tab = activeMarkdownTab();
+/** Build the active editor or Reader status from its owning instance. */
+function getActiveStatusSnapshot(): StatusBarSnapshot {
+  const tab = manager.activeTab;
   if (tab === null) return null;
+  if (tab.kind === 'reader') {
+    return {
+      kind: 'reader',
+      state: tab.reader.state,
+      displayScale: tab.reader.state.scale * fontScale.scale,
+    };
+  }
   try {
     const markdown = tab.editor.getMarkdown();
     const source = sourceViews.get(tab.id);
@@ -1135,6 +1164,17 @@ function getActiveStatusSnapshot(): MarkdownStatusSnapshot | null {
   } catch {
     return null;
   }
+}
+
+function changeReadingScale(action: 'in' | 'out' | 'reset'): void {
+  if (action === 'in') {
+    fontScale.zoomIn();
+  } else if (action === 'out') {
+    fontScale.zoomOut();
+  } else {
+    fontScale.reset();
+  }
+  statusBar?.refresh(getActiveStatusSnapshot);
 }
 
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
@@ -1747,13 +1787,13 @@ const shortcuts = new ShortcutRegistry({
   'next-tab': () => cycleActiveTab(1),
   'prev-tab': () => cycleActiveTab(-1),
   'zoom-in': () => {
-    fontScale.zoomIn();
+    changeReadingScale('in');
   },
   'zoom-out': () => {
-    fontScale.zoomOut();
+    changeReadingScale('out');
   },
   'zoom-reset': () => {
-    fontScale.reset();
+    changeReadingScale('reset');
   },
 });
 shortcuts.attach(document);

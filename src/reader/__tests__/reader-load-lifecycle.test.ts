@@ -29,6 +29,54 @@ afterEach(() => {
 });
 
 describe('Reader load lifecycle', () => {
+  it('publishes immutable phase, chapter, progress, and scale snapshots', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => bytes('unused'),
+      parseContent: async () => ({
+        chapters: [
+          { title: 'One', html: '<p>one</p>' },
+          { title: 'Two', html: '<p>two</p>' },
+        ],
+      }),
+    });
+    const states: Array<typeof view.state> = [];
+    const unsubscribe = view.subscribeState((state) => states.push(state));
+
+    expect(states).toHaveLength(1);
+    expect(states[0]).toMatchObject({ phase: 'empty', current: 0, total: 0 });
+    expect(Object.isFrozen(states[0])).toBe(true);
+
+    const loading = view.load('book.epub');
+    expect(view.state.phase).toBe('loading');
+    await loading;
+    expect(view.state).toMatchObject({
+      phase: 'ready',
+      current: 1,
+      total: 2,
+      scale: 1,
+      locationKind: 'chapter',
+    });
+
+    const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
+    const chapters = scroll.querySelectorAll<HTMLElement>('.lightink-reader-chapter');
+    vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue({ top: 0 } as DOMRect);
+    vi.spyOn(chapters[0]!, 'getBoundingClientRect').mockReturnValue({ top: -400 } as DOMRect);
+    vi.spyOn(chapters[1]!, 'getBoundingClientRect').mockReturnValue({ top: 10 } as DOMRect);
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 250 });
+    scroll.scrollTop = 375;
+    scroll.dispatchEvent(new Event('scroll'));
+
+    expect(view.state).toMatchObject({ current: 2, total: 2, progress: 0.5 });
+    expect(states.some((state) => state.phase === 'loading')).toBe(true);
+    unsubscribe();
+    const countBeforeDestroy = states.length;
+    await view.destroy();
+    expect(states).toHaveLength(countBeforeDestroy);
+  });
+
   it('lets the newest load win when byte reads resolve out of order', async () => {
     const pendingA = deferred<Uint8Array>();
     const pendingB = deferred<Uint8Array>();

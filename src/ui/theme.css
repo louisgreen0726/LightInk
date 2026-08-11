@@ -206,6 +206,18 @@ html[data-display='xuhd'] {
   color: var(--lightink-danger);
 }
 
+.lightink-status-bar[data-status-kind='reader'][data-reader-phase='ready']
+  .lightink-status-save,
+.lightink-status-bar[data-status-kind='reader'][data-reader-phase='loading']
+  .lightink-status-save {
+  color: var(--lightink-accent);
+}
+
+.lightink-status-bar[data-status-kind='reader'][data-reader-phase='error']
+  .lightink-status-save {
+  color: var(--lightink-danger);
+}
+
 .lightink-status-details {
   justify-content: flex-end;
   gap: 8px;
@@ -2540,6 +2552,11 @@ body.lightink-outline-resizing * {
   .lightink-status-encoding,
   .lightink-status-counts {
     display: none;
+  }
+
+  .lightink-status-bar[data-status-kind='reader'] .lightink-status-encoding,
+  .lightink-status-bar[data-status-kind='reader'] .lightink-status-counts {
+    display: inline;
   }
 }
 

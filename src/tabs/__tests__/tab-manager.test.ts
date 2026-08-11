@@ -1089,6 +1089,15 @@ describe('reader 标签（只读，豁免可写路径）', () => {
       readerDestroy,
       readerLoad,
       mountReader: vi.fn(async () => ({
+        state: {
+          phase: 'empty' as const,
+          current: 0,
+          total: 0,
+          progress: 0,
+          scale: 1,
+          locationKind: null,
+        },
+        subscribeState: vi.fn(() => () => undefined),
         load: readerLoad,
         destroy: readerDestroy,
         // ReaderInstance 扩展的标注/侧栏方法（reader-view 实现；此处仅需满足类型）。
