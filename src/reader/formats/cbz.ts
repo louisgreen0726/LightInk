@@ -2,11 +2,12 @@
  * `cbz` — Comic Book ZIP 解析（ebook-reader T5）。
  *
  * CBZ 是图片 zip：按自然序（page2 < page10）取出图片条目，逐页作为 <img> 渲染。
- * `listImageEntries` 是纯函数（过滤图片 + 自然排序），node 可测；`renderCbzInto`
- * 懒加载 jszip 并把图片以 data URL 插入容器（DOM，真实渲染留手工验证）。
+ * `listImageEntries` is pure and headless-testable. Archive metadata is validated before
+ * `renderCbzInto` decompresses image data.
  */
 
 import { ParseError } from './types.js';
+import { openSafeArchive } from './safe-archive.js';
 
 const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 
@@ -70,30 +71,32 @@ export function listImageEntries(names: readonly string[]): string[] {
  * 空图片集抛 ParseError。DOM 渲染为手工验证（无 jsdom/canvas）。
  */
 export async function renderCbzInto(bytes: Uint8Array, container: HTMLElement): Promise<void> {
-  const JSZip = (await import('jszip')).default;
-  let zip;
+  const archive = await openSafeArchive(bytes, 'CBZ');
   try {
-    zip = await JSZip.loadAsync(bytes);
-  } catch {
-    throw new ParseError('CBZ 文件损坏或不是有效的 zip 容器');
-  }
-  const images = listImageEntries(Object.keys(zip.files));
-  if (images.length === 0) {
-    throw new ParseError('CBZ 未找到图片页');
-  }
-  container.replaceChildren();
-  for (const name of images) {
-    const file = zip.file(name);
-    if (file === null) {
-      continue;
+    const images = listImageEntries(archive.entries.map((entry) => entry.filename));
+    if (images.length === 0) {
+      throw new ParseError('CBZ 未找到图片页');
     }
-    const data = await file.async('base64');
-    const ext = extOf(name);
-    const mime = ext === 'jpg' ? 'jpeg' : ext;
-    const img = document.createElement('img');
-    img.className = 'lightink-reader-page';
-    img.alt = name;
-    img.src = `data:image/${mime};base64,${data}`;
-    container.appendChild(img);
+    container.replaceChildren();
+    for (const name of images) {
+      const file = archive.file(name);
+      if (file === null) {
+        continue;
+      }
+      const data = await file.readBytes();
+      let binary = '';
+      for (let offset = 0; offset < data.length; offset += 0x8000) {
+        binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000));
+      }
+      const ext = extOf(name);
+      const mime = ext === 'jpg' ? 'jpeg' : ext;
+      const img = document.createElement('img');
+      img.className = 'lightink-reader-page';
+      img.alt = name;
+      img.src = `data:image/${mime};base64,${btoa(binary)}`;
+      container.appendChild(img);
+    }
+  } finally {
+    await archive.close().catch(() => undefined);
   }
 }

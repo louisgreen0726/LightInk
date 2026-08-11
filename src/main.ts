@@ -68,6 +68,7 @@ import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
 import { createReaderView } from './reader/reader-view.js';
 import { decodeReaderFileBase64, ReaderFileTooLargeError } from './reader/file-bytes.js';
+import { ReaderLimitError } from './reader/formats/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
@@ -260,7 +261,15 @@ async function openPathByKind(path: string): Promise<TabState | null> {
     await tab.reader.load(path);
   } catch (error) {
     await manager.closeTab(tab.id).catch(() => false);
-    const detail = error instanceof Error ? error.message : String(error ?? '');
+    const detail =
+      error instanceof ReaderLimitError
+        ? i18n.t(`reader.limit.${error.kind}`, {
+            actual: String(error.actual),
+            limit: String(error.limit),
+          })
+        : error instanceof Error
+          ? error.message
+          : String(error ?? '');
     void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
       title: i18n.t('app.name'),
       kind: 'error',

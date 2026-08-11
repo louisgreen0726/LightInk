@@ -109,6 +109,14 @@ const en: Dict = {
   'reader.chapter': 'Chapter {n}',
   'reader.loadFailed': 'Could not open this eBook:\n{detail}',
   'reader.fileTooLarge': 'File is too large ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.archiveEntries':
+    'Archive has too many entries ({actual}; limit {limit}).',
+  'reader.limit.archiveTotalBytes':
+    'Archive expands beyond the total size limit ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.archiveEntryBytes':
+    'An archive entry is too large ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.archiveCompressionRatio':
+    'An archive entry has an unsafe compression ratio ({actual}:1; limit {limit}:1).',
   'reader.remoteImageLoad': 'Load remote image',
   'annotation.sidebar': 'Annotations',
   'annotation.empty': 'No annotations yet. Select text to highlight.',
@@ -334,6 +342,13 @@ const zhCN: Dict = {
   'reader.chapter': '第 {n} 章',
   'reader.loadFailed': '无法打开此电子书：\n{detail}',
   'reader.fileTooLarge': '文件过大（{actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.archiveEntries': '压缩包条目过多（实际 {actual}；上限 {limit}）。',
+  'reader.limit.archiveTotalBytes':
+    '压缩包展开后的总大小超限（实际 {actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.archiveEntryBytes':
+    '压缩包中的单个条目过大（实际 {actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.archiveCompressionRatio':
+    '压缩包中的条目压缩比不安全（实际 {actual}:1；上限 {limit}:1）。',
   'reader.remoteImageLoad': '加载远程图片',
   'annotation.sidebar': '标注',
   'annotation.empty': '暂无标注。选中正文即可添加高亮。',

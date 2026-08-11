@@ -7,7 +7,7 @@
  * 最小 epub）、MOBI（合成最小 PalmDOC，含 DRM 报错）。
  */
 import { describe, expect, it } from 'vitest';
-import JSZip from 'jszip';
+import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js';
 
 import { sanitizeHtml } from '../sanitize.js';
 import { parseEpub } from '../formats/epub.js';
@@ -145,33 +145,49 @@ describe('parseFb2', () => {
 
 describe('parseEpub', () => {
   async function buildEpub(): Promise<Uint8Array> {
-    const zip = new JSZip();
-    zip.file(
+    const zip = new ZipWriter(new Uint8ArrayWriter());
+    await zip.add(
       'META-INF/container.xml',
-      '<?xml version="1.0"?><container><rootfiles>' +
-        '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>' +
-        '</rootfiles></container>',
+      new Uint8ArrayReader(
+        enc(
+          '<?xml version="1.0"?><container><rootfiles>' +
+            '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>' +
+            '</rootfiles></container>',
+        ),
+      ),
     );
-    zip.file(
+    await zip.add(
       'OEBPS/content.opf',
-      '<?xml version="1.0"?><package>' +
-        '<metadata><dc:title>EPUB 书名</dc:title></metadata>' +
-        '<manifest>' +
-        '<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>' +
-        '<item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>' +
-        '</manifest>' +
-        '<spine><itemref idref="ch1"/><itemref idref="ch2"/></spine>' +
-        '</package>',
+      new Uint8ArrayReader(
+        enc(
+          '<?xml version="1.0"?><package>' +
+            '<metadata><dc:title>EPUB 书名</dc:title></metadata>' +
+            '<manifest>' +
+            '<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>' +
+            '<item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>' +
+            '</manifest>' +
+            '<spine><itemref idref="ch1"/><itemref idref="ch2"/></spine>' +
+            '</package>',
+        ),
+      ),
     );
-    zip.file(
+    await zip.add(
       'OEBPS/ch1.xhtml',
-      '<html><head><title>第一章</title></head><body><h1>一</h1><p>甲</p></body></html>',
+      new Uint8ArrayReader(
+        enc(
+          '<html><head><title>第一章</title></head><body><h1>一</h1><p>甲</p></body></html>',
+        ),
+      ),
     );
-    zip.file(
+    await zip.add(
       'OEBPS/ch2.xhtml',
-      '<html><head><title>第二章</title></head><body><h1>二</h1><p>乙</p></body></html>',
+      new Uint8ArrayReader(
+        enc(
+          '<html><head><title>第二章</title></head><body><h1>二</h1><p>乙</p></body></html>',
+        ),
+      ),
     );
-    return zip.generateAsync({ type: 'uint8array' });
+    return zip.close();
   }
 
   it('按 spine 顺序解析章节并消毒', async () => {

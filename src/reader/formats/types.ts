@@ -25,3 +25,23 @@ export class ParseError extends Error {
     this.name = 'ParseError';
   }
 }
+
+export type ReaderLimitKind =
+  | 'archiveEntries'
+  | 'archiveTotalBytes'
+  | 'archiveEntryBytes'
+  | 'archiveCompressionRatio'
+  | 'pdfPages'
+  | 'cbzPages';
+
+/** Structured reader budget failure, localized only at the application boundary. */
+export class ReaderLimitError extends ParseError {
+  constructor(
+    readonly kind: ReaderLimitKind,
+    readonly actual: number,
+    readonly limit: number,
+  ) {
+    super(`READER_LIMIT:${kind}:${actual}:${limit}`);
+    this.name = 'ReaderLimitError';
+  }
+}
