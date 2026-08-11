@@ -24,6 +24,7 @@ class FakeEl {
   id = '';
   tabIndex = 0;
   title = '';
+  focused = false;
   dataset: Record<string, string> = {};
   style: Record<string, string> = {};
   children: FakeEl[] = [];
@@ -56,7 +57,7 @@ class FakeEl {
   }
 
   focus(): void {
-    /* focus state is asserted through tabIndex in this fake */
+    this.focused = true;
   }
 
   get textContent(): string {
@@ -322,6 +323,10 @@ function panelByMenuId(bar: { element: HTMLDivElement }, menuId: string): FakeEl
   return wrap.children[1];
 }
 
+function overflowPanel(bar: { element: HTMLDivElement }): FakeEl {
+  return panelByMenuId(bar, 'overflow');
+}
+
 function flyoutOf(bar: { element: HTMLDivElement }, menuId: string): FakeEl | undefined {
   return panelByMenuId(bar, menuId).children.find((c) =>
     c.classList.contains('lightink-menu-flyout'),
@@ -394,5 +399,47 @@ describe('菜单栏悬停跟踪（VS Code 式）', () => {
     const editTrigger = asEl(bar.element).children[1].children[0];
     editTrigger.fire('mouseenter');
     expect(panelByMenuId(bar, 'edit').hidden).toBe(true);
+  });
+});
+
+describe('narrow-window overflow menu', () => {
+  it('routes a category to the original menu panel', () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(
+      { ...specObj, overflowLabel: 'More commands' },
+      new FakeDoc() as unknown as Document,
+    );
+    const wrappers = asEl(bar.element).children;
+    const overflowWrap = wrappers[wrappers.length - 1]!;
+    expect(overflowWrap.classList.contains('lightink-menu--overflow')).toBe(true);
+    expect(overflowWrap.children[0]?.getAttribute('aria-label')).toBe('More commands');
+    expect(overflowWrap.children[0]?.tabIndex).toBe(0);
+
+    overflowWrap.children[0]?.click();
+    const fileCategory = overflowPanel(bar).children.find(
+      (child) => child.dataset.itemId === 'overflow-file',
+    );
+    fileCategory?.click();
+    expect(panelByMenuId(bar, 'file').hidden).toBe(false);
+    expect(overflowPanel(bar).hidden).toBe(true);
+  });
+
+  it('returns focus to the overflow trigger after closing a routed menu', () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    const wrappers = asEl(bar.element).children;
+    const overflowTrigger = wrappers[wrappers.length - 1]!.children[0]!;
+
+    overflowTrigger.click();
+    overflowPanel(bar).children.find(
+      (child) => child.dataset.itemId === 'overflow-file',
+    )?.click();
+    panelByMenuId(bar, 'file').children.find(
+      (child) => child.dataset.itemId === 'new',
+    )?.fire('keydown', { key: 'Escape' });
+
+    expect(panelByMenuId(bar, 'file').hidden).toBe(true);
+    expect(overflowTrigger.focused).toBe(true);
+    expect(overflowTrigger.tabIndex).toBe(0);
   });
 });

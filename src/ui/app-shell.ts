@@ -640,6 +640,7 @@ export function createAppShell(
   const menuBar = createMenuBar({
     menus: initialMenus,
     loadingLabel: () => actions.t('menu.loading'),
+    overflowLabel: () => actions.t('menu.more'),
     onOpenChange: (openMenuId) => {
       const hold = openMenuId !== null;
       chrome.setHold('menu', hold);
@@ -656,7 +657,10 @@ export function createAppShell(
   function rebuildMenus(): void {
     const next = buildMenus(actions);
     wireHelpCheatsheet(next);
-    menuBar.rebuild(next, { loadingLabel: () => actions.t('menu.loading') });
+    menuBar.rebuild(next, {
+      loadingLabel: () => actions.t('menu.loading'),
+      overflowLabel: () => actions.t('menu.more'),
+    });
   }
 
   chromeHost.replaceChildren(menuTrigger, toolbar);

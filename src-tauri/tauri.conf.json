@@ -16,6 +16,8 @@
         "title": "轻墨 LightInk",
         "width": 1024,
         "height": 768,
+        "minWidth": 480,
+        "minHeight": 360,
         "resizable": true
       }
     ],

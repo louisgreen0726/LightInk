@@ -1441,6 +1441,10 @@ body.lightink-outline-resizing * {
   display: inline-flex;
 }
 
+.lightink-menu--overflow {
+  display: none;
+}
+
 .lightink-menu-trigger {
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2404,6 +2408,71 @@ body.lightink-outline-resizing * {
 .lightink-remote-image-load:focus-visible {
   outline: 2px solid var(--lightink-accent);
   outline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  #lightink-toolbar {
+    min-height: 36px;
+  }
+
+  .lightink-menu:not(.lightink-menu--overflow) > .lightink-menu-trigger {
+    display: none;
+  }
+
+  .lightink-menu:not(.lightink-menu--overflow) {
+    width: 0;
+  }
+
+  .lightink-menu--overflow {
+    display: inline-flex;
+  }
+
+  .lightink-menu--overflow > .lightink-menu-trigger {
+    width: 32px;
+    height: 28px;
+    padding: 0;
+    font-size: 18px;
+  }
+
+  .lightink-modal-dialog {
+    box-sizing: border-box;
+    min-width: 0;
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    padding: 14px;
+  }
+
+  .lightink-confirm-dialog,
+  .lightink-link-dialog {
+    min-width: 0;
+  }
+
+  .lightink-modal-actions {
+    flex-wrap: wrap;
+  }
+
+  .lightink-modal-btn {
+    flex: 1 1 auto;
+    min-width: min(8rem, 100%);
+    padding-inline: 10px;
+  }
+
+  .lightink-versions-body {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .lightink-versions-list {
+    box-sizing: border-box;
+    width: 100%;
+    max-height: 28vh;
+  }
+
+  .lightink-versions-preview {
+    min-height: 8rem;
+    max-height: 32vh;
+  }
 }
 
 /* Platform accessibility preferences apply to every application-owned surface. */

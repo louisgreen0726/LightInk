@@ -54,6 +54,8 @@ export interface MenuBarSpec {
   onOpenChange?: (openMenuId: string | null) => void;
   /** Localized “Loading…” placeholder for async submenus (defaults to Chinese). */
   loadingLabel?: string | (() => string);
+  /** Accessible label for the narrow-window overflow trigger. */
+  overflowLabel?: string | (() => string);
 }
 
 export interface MenuBar {
@@ -72,7 +74,13 @@ export interface MenuBar {
    * + panels in place. Keeps the same root element.
    * Optional loadingLabel updates the async-submenu placeholder.
    */
-  rebuild(menus: Menu[], options?: { loadingLabel?: string | (() => string) }): void;
+  rebuild(
+    menus: Menu[],
+    options?: {
+      loadingLabel?: string | (() => string);
+      overflowLabel?: string | (() => string);
+    },
+  ): void;
 }
 
 let nextMenuBarId = 0;
@@ -83,7 +91,9 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
   element.setAttribute('role', 'menubar');
   let menus = [...spec.menus];
   let loadingLabel: string | (() => string) = spec.loadingLabel ?? '加载中…';
+  let overflowLabel: string | (() => string) = spec.overflowLabel ?? 'More';
   let openMenuId: string | null = null;
+  let returnFocusTriggerId: string | null = null;
   const panels = new Map<string, HTMLDivElement>();
   const itemButtons = new Map<string, HTMLButtonElement>();
   const triggers = new Map<string, HTMLButtonElement>();
@@ -100,6 +110,10 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
       for (const trigger of triggers.values()) {
         trigger.tabIndex = trigger === button ? 0 : -1;
       }
+      // The overflow trigger is the only visible menubar entry below the
+      // responsive breakpoint, so it must remain in the tab order.
+      const overflowTrigger = triggers.get('overflow');
+      if (overflowTrigger !== undefined) overflowTrigger.tabIndex = 0;
       button.focus();
       return;
     }
@@ -157,6 +171,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
       panel.hidden = true;
       triggers.get(menuId)?.setAttribute('aria-expanded', 'false');
     }
+    returnFocusTriggerId = null;
     notifyOpenChange(null);
   }
 
@@ -409,8 +424,8 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
       if (next !== undefined) openMenu(next.id, 'first');
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      const trigger = triggers.get(returnFocusTriggerId ?? menu.id);
       closeAll();
-      const trigger = triggers.get(menu.id);
       if (trigger !== undefined) focusButton(trigger);
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
@@ -456,7 +471,21 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     element.replaceChildren();
     menus = [...nextMenus];
 
-    for (const menu of menus) {
+    const overflowMenu: Menu = {
+      id: 'overflow',
+      label: '⋯',
+      items: menus.map((menu) => ({
+        id: `overflow-${menu.id}`,
+        label: menu.label,
+        action: () => {
+          returnFocusTriggerId = 'overflow';
+          openMenu(menu.id, 'first');
+        },
+      })),
+    };
+
+    for (const menu of [...menus, overflowMenu]) {
+      const isOverflow = menu.id === overflowMenu.id;
       const trigger = doc.createElement('button');
       trigger.type = 'button';
       trigger.className = 'lightink-menu-trigger';
@@ -465,8 +494,13 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
       trigger.setAttribute('role', 'menuitem');
       trigger.setAttribute('aria-haspopup', 'menu');
       trigger.setAttribute('aria-expanded', 'false');
-      trigger.tabIndex = element.children.length === 0 ? 0 : -1;
+      trigger.tabIndex = element.children.length === 0 || isOverflow ? 0 : -1;
       trigger.textContent = resolveMenuLabel(menu.label);
+      if (isOverflow) {
+        const label = resolveMenuLabel(overflowLabel);
+        trigger.setAttribute('aria-label', label);
+        trigger.setAttribute('title', label);
+      }
       trigger.addEventListener('click', (event) => {
         event.stopPropagation();
         if (openMenuId === menu.id) {
@@ -504,7 +538,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
           panel.appendChild(sep);
           continue;
         }
-        const btn = createItemButton(item, () => closeAll());
+        const btn = createItemButton(item, isOverflow ? () => undefined : () => closeAll());
         btn.addEventListener('keydown', (event) => {
           handlePanelKeyDown(event, menu, item, btn, panel);
         });
@@ -530,6 +564,7 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
 
       const wrap = doc.createElement('div');
       wrap.className = 'lightink-menu';
+      if (isOverflow) wrap.classList.add('lightink-menu--overflow');
       wrap.setAttribute('role', 'none');
       wrap.append(trigger, panel);
       element.appendChild(wrap);
@@ -558,9 +593,18 @@ export function createMenuBar(spec: MenuBarSpec, doc: Document = document): Menu
     element,
     openMenu,
     closeAll,
-    rebuild(nextMenus: Menu[], options?: { loadingLabel?: string | (() => string) }): void {
+    rebuild(
+      nextMenus: Menu[],
+      options?: {
+        loadingLabel?: string | (() => string);
+        overflowLabel?: string | (() => string);
+      },
+    ): void {
       if (options?.loadingLabel !== undefined) {
         loadingLabel = options.loadingLabel;
+      }
+      if (options?.overflowLabel !== undefined) {
+        overflowLabel = options.overflowLabel;
       }
       renderMenus(nextMenus);
     },

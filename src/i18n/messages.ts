@@ -23,6 +23,7 @@ const en: Dict = {
   'menu.insert': 'Insert',
   'menu.view': 'View',
   'menu.help': 'Help',
+  'menu.more': 'More commands',
 
   'file.new': 'New',
   'file.open': 'Open',
@@ -277,6 +278,7 @@ const zhCN: Dict = {
   'menu.insert': '插入',
   'menu.view': '视图',
   'menu.help': '帮助',
+  'menu.more': '更多命令',
 
   'file.new': '新建',
   'file.open': '打开',
