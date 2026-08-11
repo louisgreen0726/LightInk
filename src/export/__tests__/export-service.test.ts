@@ -173,17 +173,55 @@ describe('exportActiveTabPdf', () => {
     expect(deps.printHtml).not.toHaveBeenCalled();
   });
 
-  it('原生失败 → 回退到 printHtml（打印对话框）', async () => {
+  it('非 macOS 原生失败 → 回退到 printHtml（打印对话框）', async () => {
     const printPdfNative = vi.fn(async () => {
       throw new Error('unsupported');
     });
     const deps = makeDeps({
       printPdfNative,
       showPdfSaveDialog: vi.fn(async () => 'C:\\out\\笔记.pdf'),
+      isMacOS: () => false,
     });
     await expect(exportActiveTabPdf(deps)).resolves.toBe(true);
     expect(printPdfNative).toHaveBeenCalled();
     expect(deps.printHtml).toHaveBeenCalledTimes(1); // 回退
     expect(deps.reportError).toHaveBeenCalled();
+  });
+
+  it('macOS 原生成功 → 一次保存框直接得 PDF，不触发 printHtml（R1/T6）', async () => {
+    const printPdfNative = vi.fn(async () => undefined);
+    const showPdfSaveDialog = vi.fn(async () => '/Users/me/笔记.pdf');
+    const deps = makeDeps({
+      printPdfNative,
+      showPdfSaveDialog,
+      isMacOS: () => true,
+    });
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(true);
+    expect(showPdfSaveDialog).toHaveBeenCalledWith('笔记.pdf');
+    expect(printPdfNative).toHaveBeenCalledTimes(1);
+    expect(deps.printHtml).not.toHaveBeenCalled(); // 不回退 window.print
+    expect(deps.reportError).not.toHaveBeenCalled(); // 无错误框
+  });
+
+  it('macOS 原生失败 → 上报一次并返回 false，不回退 window.print（R1/T6）', async () => {
+    const printPdfNative = vi.fn(async () => {
+      throw new Error('wkwebview createPDF failed');
+    });
+    const deps = makeDeps({
+      printPdfNative,
+      showPdfSaveDialog: vi.fn(async () => '/Users/me/笔记.pdf'),
+      isMacOS: () => true,
+    });
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(false);
+    expect(printPdfNative).toHaveBeenCalledTimes(1);
+    expect(deps.printHtml).not.toHaveBeenCalled(); // 关键：macOS 不回退打印对话框
+    expect(deps.reportError).toHaveBeenCalledTimes(1); // 一次明确提示，不连锁弹多框
+  });
+
+  it('macOS 未注入原生导出 → 上报并返回 false，不回退 window.print', async () => {
+    const deps = makeDeps({ isMacOS: () => true }); // 无 printPdfNative/showPdfSaveDialog
+    await expect(exportActiveTabPdf(deps)).resolves.toBe(false);
+    expect(deps.printHtml).not.toHaveBeenCalled();
+    expect(deps.reportError).toHaveBeenCalledTimes(1);
   });
 });

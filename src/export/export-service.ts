@@ -56,6 +56,13 @@ export interface ExportServiceDeps {
    * 可选：提供时优先走原生路径（含可选文字）；失败/缺省回退到 printHtml。
    */
   readonly printPdfNative?: (html: string, path: string) => Promise<void>;
+  /**
+   * R1/T6：是否 macOS（生产为 isMacPlatform()）。macOS 上原生 createPDF 是唯一
+   * 可靠 PDF 路径——原生失败不回退 window.print（WKWebView 打印 bug + 系统打印
+   * 对话框，见 pdf-export.ts 注释）。缺省视为非 macOS（保留 printHtml 回退，
+   * Windows/Linux 行为不变）。
+   */
+  readonly isMacOS?: () => boolean;
   readonly reportError: (message: string, error: unknown) => void;
 }
 
@@ -147,9 +154,10 @@ export async function exportActiveTabHtml(deps: ExportServiceDeps): Promise<bool
 }
 
 /**
- * 导出 PDF：装配 → 打印管线（隐藏 iframe + window.print → 系统打印
- * 对话框「另存为 PDF」）。无活动标签返回 false；打印触发后返回 true
- * （实际 PDF 生成在系统对话框中完成，见 pdf-export.ts 注释）。
+ * 导出 PDF：装配 → 原生矢量 PDF（Windows WebView2 PrintToPdf / macOS WKWebView
+ * createPDF），失败时非 macOS 回退 window.print 系统打印对话框。macOS（R1/T6）
+ * 以原生为唯一路径：原生失败只 reportError 一次并返回 false，不回退 window.print
+ * （WKWebView 打印 bug + 系统打印对话框）。无活动标签返回 false。
  */
 export async function exportActiveTabPdf(deps: ExportServiceDeps): Promise<boolean> {
   const assembled = await assembleActiveTab(deps);
@@ -158,8 +166,10 @@ export async function exportActiveTabPdf(deps: ExportServiceDeps): Promise<boole
     return false;
   }
   const html = buildPrintHtml(assembled.options);
+  const isMac = deps.isMacOS?.() === true;
 
-  // 优先原生矢量 PDF（Windows WebView2 PrintToPdf）：含可选文字、保真度最高。
+  // 优先原生矢量 PDF（Windows WebView2 PrintToPdf / macOS WKWebView createPDF）：
+  // 含可选文字、保真度最高。
   if (deps.showPdfSaveDialog !== undefined && deps.printPdfNative !== undefined) {
     const target = await deps.showPdfSaveDialog(
       defaultExportFileName(assembled.options.title).replace(/\.html$/i, '.pdf'),
@@ -171,12 +181,22 @@ export async function exportActiveTabPdf(deps: ExportServiceDeps): Promise<boole
       await deps.printPdfNative(html, target);
       return true;
     } catch (error) {
-      // 原生失败（平台不支持 / 运行时缺接口）→ 回退到打印对话框。
+      if (isMac) {
+        // R1/T6：macOS 原生 createPDF 是唯一可靠路径（window.print 在 WKWebView
+        // 因 Apple 打印 bug 不可靠，且会弹系统打印对话框）。失败只上报一次，不回退。
+        deps.reportError('导出 PDF 失败', error);
+        return false;
+      }
+      // 非 macOS：原生失败（平台不支持 / 运行时缺接口）→ 回退到打印对话框。
       deps.reportError('原生 PDF 导出失败，改用打印对话框', error);
     }
+  } else if (isMac) {
+    // macOS 但原生导出未注入（不应发生，main.ts 总注入）：防御性上报，不回退 window.print。
+    deps.reportError('导出 PDF 失败：原生导出未配置', null);
+    return false;
   }
 
-  // 回退：window.print() 系统对话框（Linux/macOS 主路径；Windows 兜底）。
+  // 回退：window.print() 系统对话框（Linux 主路径；Windows 兜底；macOS 不达此分支）。
   runPrint(html, deps.printHtml);
   return true;
 }

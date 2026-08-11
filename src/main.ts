@@ -608,9 +608,12 @@ const exportDeps: ExportServiceDeps = {
     });
     return typeof selected === 'string' ? selected : null;
   },
-  // 原生矢量 PDF（Windows WebView2 PrintToPdf）：含可选文字；失败回退 printHtml。
+  // 原生矢量 PDF（Windows WebView2 PrintToPdf / macOS WKWebView createPDF）：含可选
+  // 文字；非 macOS 失败回退 printHtml。macOS（R1/T6）以原生为唯一路径，不回退。
   printPdfNative: (html, path) =>
     printToPdfFile(document, html, () => invoke<void>('print_webview_to_pdf', { path })),
+  // R1/T6：macOS 平台判断——原生 createPDF 失败时不回退 window.print。
+  isMacOS: () => isMac,
   reportError: (message, error) => {
     // eslint-disable-next-line no-console
     console.error(`[lightink/export] ${message}`, error);
