@@ -106,6 +106,9 @@ const en: Dict = {
   'error.unsupportedType':
     'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
   'reader.empty': 'Open an eBook to start reading.',
+  'reader.loading': 'Loading document…',
+  'reader.cancelled': 'Document loading was cancelled.',
+  'reader.failed': 'Document loading failed.',
   'reader.chapter': 'Chapter {n}',
   'reader.loadFailed': 'Could not open this eBook:\n{detail}',
   'reader.fileTooLarge': 'File is too large ({actual} bytes; limit {limit} bytes).',
@@ -341,6 +344,9 @@ const zhCN: Dict = {
   'error.unsupportedType':
     '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
   'reader.empty': '打开一本电子书开始阅读。',
+  'reader.loading': '正在加载文档…',
+  'reader.cancelled': '文档加载已取消。',
+  'reader.failed': '文档加载失败。',
   'reader.chapter': '第 {n} 章',
   'reader.loadFailed': '无法打开此电子书：\n{detail}',
   'reader.fileTooLarge': '文件过大（{actual} 字节；上限 {limit} 字节）。',

@@ -34,6 +34,36 @@ import {
 
 const PAGE_EXTS = new Set(['pdf', 'cbz']);
 
+const FLOW_FRAME_CSP = [
+  "default-src 'none'",
+  "img-src data: blob: http: https:",
+  "style-src 'unsafe-inline'",
+  "font-src data:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join('; ');
+
+const FLOW_FRAME_CSS = `
+:root { color-scheme: light dark; }
+body { margin: 0; overflow: hidden; color: inherit; background: transparent; font: inherit; line-height: 1.7; }
+img { max-width: 100%; height: auto; }
+table { max-width: 100%; border-collapse: collapse; }
+th, td { padding: 0.35rem 0.5rem; border: 1px solid currentColor; }
+pre { overflow-x: auto; white-space: pre-wrap; }
+a { color: inherit; text-decoration: underline; }
+mark.lightink-reader-highlight { background: #f2d675; color: #111; }
+.lightink-remote-image-placeholder { display: flex; align-items: center; min-height: 2.5rem; }
+`;
+
+function flowFrameSource(html: string): string {
+  return (
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    `<meta http-equiv="Content-Security-Policy" content="${FLOW_FRAME_CSP}">` +
+    `<style>${FLOW_FRAME_CSS}</style></head><body>${html}</body></html>`
+  );
+}
+
 function extOfPath(path: string): string {
   const base = path.split(/[\\/]/).pop() ?? path;
   const dot = base.lastIndexOf('.');
@@ -103,7 +133,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   empty.textContent = t('reader.empty');
   scrollHost.appendChild(empty);
 
-  root.append(scrollHost, pageHost);
+  const status = document.createElement('div');
+  status.className = 'lightink-reader-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.hidden = true;
+
+  root.append(scrollHost, pageHost, status);
   host.appendChild(root);
 
   const annotationsEnabled =
@@ -120,8 +156,32 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let loadGeneration = 0;
   let activeLoadController: AbortController | null = null;
   let destroyed = false;
+  let flowRenderGeneration = 0;
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
+
+  const setReaderState = (
+    state: 'empty' | 'loading' | 'ready' | 'cancelled' | 'error' | 'destroyed',
+  ): void => {
+    root.dataset.readerState = state;
+    root.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+    const messageKey =
+      state === 'loading'
+        ? 'reader.loading'
+        : state === 'cancelled'
+          ? 'reader.cancelled'
+          : state === 'error'
+            ? 'reader.failed'
+            : null;
+    status.hidden = messageKey === null;
+    status.textContent = messageKey === null ? '' : t(messageKey);
+  };
+
+  const clearFlowBindings = (): void => {
+    flowRenderGeneration += 1;
+    releaseRemoteImages.splice(0).forEach((release) => release());
+  };
+  setReaderState('empty');
 
   const saveAnnotations = async (): Promise<void> => {
     if (contentHash === null || deps.writeAnnotations === undefined) {
@@ -211,12 +271,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           return;
         }
         // flow / text：优先定位到该条高亮的 <mark>，否则到章节。
-        const mark = root.querySelector<HTMLElement>(
-          `[data-annotation-id="${cssEscape(annotation.id)}"]`,
-        );
+        const mark = Array.from(
+          scrollHost.querySelectorAll<HTMLIFrameElement>('.lightink-reader-chapter-frame'),
+        )
+          .map((frame) =>
+            frame.contentDocument?.querySelector<HTMLElement>(
+              `[data-annotation-id="${cssEscape(annotation.id)}"]`,
+            ) ?? null,
+          )
+          .find((candidate): candidate is HTMLElement => candidate !== null);
         const target =
           mark ??
-          scrollHost.querySelector<HTMLElement>(`[data-chapter-index="${loc.format === 'flow' ? loc.chapter : 0}"]`);
+          scrollHost.querySelector<HTMLElement>(
+            `[data-chapter-index="${loc.format === 'flow' ? loc.chapter : 0}"]`,
+          );
         target?.scrollIntoView({ block: 'center' });
       },
       onRemove: (annotation) => {
@@ -238,7 +306,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     root.classList.toggle('lightink-reader--sidebar', sidebarVisible);
   };
 
-  /** 在容器文本节点中包裹高亮 quote（幂等：已存在的标注跳过；单文本节点命中）。 */
+  const flowDocuments = (): Document[] =>
+    Array.from(
+      scrollHost.querySelectorAll<HTMLIFrameElement>('.lightink-reader-chapter-frame'),
+    )
+      .map((frame) => frame.contentDocument)
+      .filter((doc): doc is Document => doc !== null && doc.body !== null);
+
+  /** 在 sandbox 正文文本节点中包裹高亮 quote。 */
   const renderHighlights = (): void => {
     if (PAGE_EXTS.has(loadedExt)) {
       return;
@@ -246,34 +321,79 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     const highlights = annotations.filter((a) => a.kind === 'highlight' && a.quote !== undefined);
     for (const hl of highlights) {
       // 幂等：该标注的 <mark> 已存在则跳过，避免重复嵌套包裹。
-      if (root.querySelector(`[data-annotation-id="${cssEscape(hl.id)}"]`) !== null) {
+      const documents = flowDocuments();
+      if (
+        documents.some(
+          (doc) =>
+            doc.querySelector(`[data-annotation-id="${cssEscape(hl.id)}"]`) !== null,
+        )
+      ) {
         continue;
       }
       const quote = hl.quote ?? '';
       if (quote.length === 0) {
         continue;
       }
-      const walker = document.createTreeWalker(scrollHost, NodeFilter.SHOW_TEXT);
-      let node: Text | null;
-      while ((node = walker.nextNode() as Text | null) !== null) {
-        const idx = node.nodeValue?.indexOf(quote) ?? -1;
-        if (idx >= 0 && node.nodeValue !== null) {
-          const range = document.createRange();
-          range.setStart(node, idx);
-          range.setEnd(node, idx + quote.length);
-          const mark = document.createElement('mark');
-          mark.className = 'lightink-reader-highlight';
-          mark.dataset.annotationId = hl.id;
-          mark.appendChild(range.extractContents());
-          range.insertNode(mark);
+      const preferredChapter =
+        hl.locator.format === 'flow' ? documents[hl.locator.chapter] : documents[0];
+      const candidates =
+        preferredChapter === undefined
+          ? documents
+          : [preferredChapter, ...documents.filter((doc) => doc !== preferredChapter)];
+      let rendered = false;
+      for (const doc of candidates) {
+        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+        let node: Text | null;
+        while ((node = walker.nextNode() as Text | null) !== null) {
+          const idx = node.nodeValue?.indexOf(quote) ?? -1;
+          if (idx >= 0 && node.nodeValue !== null) {
+            const range = doc.createRange();
+            range.setStart(node, idx);
+            range.setEnd(node, idx + quote.length);
+            const mark = doc.createElement('mark');
+            mark.className = 'lightink-reader-highlight';
+            mark.dataset.annotationId = hl.id;
+            mark.appendChild(range.extractContents());
+            range.insertNode(mark);
+            rendered = true;
+            break;
+          }
+        }
+        if (rendered) {
           break;
         }
       }
     }
   };
 
+  const captureFlowSelection = (selection: Selection | null, chapter: number): void => {
+    if (deps.writeAnnotations === undefined) {
+      return;
+    }
+    const text = selection?.toString().trim() ?? '';
+    if (text.length === 0) {
+      return;
+    }
+    const annotation: Annotation = {
+      id: newAnnotationId(),
+      kind: 'highlight',
+      locator:
+        loadedExt === 'txt'
+          ? { format: 'text', start: 0, end: text.length }
+          : { format: 'flow', chapter, domPath: '', start: 0, end: 0 },
+      quote: text,
+      createdAt: Date.now(),
+    };
+    annotations = [...annotations, annotation];
+    renderHighlights();
+    sidebar?.render(annotations);
+    void saveAnnotations();
+    selection?.removeAllRanges();
+  };
+
   const renderChapters = (chapters: ReaderChapter[]): void => {
-    releaseRemoteImages.splice(0).forEach((release) => release());
+    clearFlowBindings();
+    const renderGeneration = flowRenderGeneration;
     scrollHost.hidden = false;
     pageHost.hidden = true;
     delete pageHost.dataset.readerActive;
@@ -286,13 +406,65 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const heading = document.createElement('h1');
       heading.className = 'lightink-reader-chapter-title';
       heading.textContent = chapter.title || t('reader.chapter', { n: String(chapterIndex + 1) });
-      const body = document.createElement('div');
-      body.className = 'lightink-reader-chapter-body';
-      body.innerHTML = chapter.html;
-      releaseRemoteImages.push(
-        bindBlockedRemoteImages(body, t('reader.remoteImageLoad'), remoteImagePolicy),
-      );
-      article.append(heading, body);
+      const frame = document.createElement('iframe');
+      frame.className = 'lightink-reader-chapter-frame';
+      frame.dataset.chapterIndex = String(chapterIndex);
+      frame.title = chapter.title || t('reader.chapter', { n: String(chapterIndex + 1) });
+      frame.setAttribute('sandbox', 'allow-same-origin');
+      frame.setAttribute('scrolling', 'no');
+      frame.referrerPolicy = 'no-referrer';
+
+      const frameChapter = chapterIndex;
+      const onLoad = (): void => {
+        if (renderGeneration !== flowRenderGeneration || destroyed) {
+          return;
+        }
+        const frameDocument = frame.contentDocument;
+        const frameWindow = frame.contentWindow;
+        if (frameDocument === null || frameWindow === null) {
+          return;
+        }
+        const computed = getComputedStyle(root);
+        frameDocument.body.style.color = computed.color;
+        frameDocument.body.style.fontFamily = computed.fontFamily;
+        frameDocument.body.style.fontSize = computed.fontSize;
+
+        const syncHeight = (): void => {
+          frame.style.height = `${Math.max(1, frameDocument.documentElement.scrollHeight)}px`;
+        };
+        const onClick = (event: MouseEvent): void => {
+          if ((event.target as Element | null)?.closest('a[href]') !== null) {
+            event.preventDefault();
+          }
+        };
+        const onMouseUp = (): void => {
+          captureFlowSelection(frameWindow.getSelection(), frameChapter);
+        };
+        frameDocument.addEventListener('click', onClick);
+        frameDocument.addEventListener('mouseup', onMouseUp);
+        const releaseImages = bindBlockedRemoteImages(
+          frameDocument.body,
+          t('reader.remoteImageLoad'),
+          remoteImagePolicy,
+        );
+        const resizeObserver =
+          typeof ResizeObserver === 'undefined'
+            ? null
+            : new ResizeObserver(syncHeight);
+        resizeObserver?.observe(frameDocument.documentElement);
+        syncHeight();
+        renderHighlights();
+        releaseRemoteImages.push(() => {
+          resizeObserver?.disconnect();
+          releaseImages();
+          frameDocument.removeEventListener('click', onClick);
+          frameDocument.removeEventListener('mouseup', onMouseUp);
+        });
+      };
+      frame.addEventListener('load', onLoad, { once: true });
+      releaseRemoteImages.push(() => frame.removeEventListener('load', onLoad));
+      frame.srcdoc = flowFrameSource(chapter.html);
+      article.append(heading, frame);
       scrollHost.appendChild(article);
       chapterIndex += 1;
     }
@@ -329,7 +501,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       cbz: CbzRenderHandle | null;
     },
   ): void => {
-    releaseRemoteImages.splice(0).forEach((release) => release());
+    clearFlowBindings();
     const previousPdf = pdfHandle;
     const previousCbz = cbzHandle;
     pdfHandle = staged.pdf;
@@ -407,39 +579,6 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   });
 
-  // 流式正文选中 → 添加高亮。
-  root.addEventListener('mouseup', () => {
-    if (PAGE_EXTS.has(loadedExt) || deps.writeAnnotations === undefined) {
-      return;
-    }
-    const selection = document.getSelection();
-    const text = selection?.toString().trim() ?? '';
-    if (text.length === 0) {
-      return;
-    }
-    const anchorEl = (selection?.anchorNode as Element | null | undefined)?.parentElement ?? null;
-    const chapterEl = anchorEl?.closest('.lightink-reader-chapter') ?? null;
-    const chapter =
-      chapterEl !== null && chapterEl !== undefined
-        ? Number(chapterEl.getAttribute('data-chapter-index') ?? '0')
-        : firstVisibleChapter();
-    const annotation: Annotation = {
-      id: newAnnotationId(),
-      kind: 'highlight',
-      locator:
-        loadedExt === 'txt'
-          ? { format: 'text', start: 0, end: text.length }
-          : { format: 'flow', chapter, domPath: '', start: 0, end: 0 },
-      quote: text,
-      createdAt: Date.now(),
-    };
-    annotations = [...annotations, annotation];
-    renderHighlights();
-    sidebar?.render(annotations);
-    void saveAnnotations();
-    selection?.removeAllRanges();
-  });
-
   // 书签 / 笔记改由菜单触发（见 ReaderInstance.addBookmark/addNote），不再挂浮动工具栏。
 
   return {
@@ -467,8 +606,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         !destroyed && !controller.signal.aborted && generation === loadGeneration;
       let completed = false;
 
-      root.dataset.readerState = 'loading';
-      root.setAttribute('aria-busy', 'true');
+      setReaderState('loading');
       try {
         const bytes = await readBytes(filePath, controller.signal);
         throwIfReaderLoadCancelled(controller.signal);
@@ -515,23 +653,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         await loadAnnotations(filePath, generation, controller.signal);
         throwIfReaderLoadCancelled(controller.signal);
         if (isCurrent()) {
-          root.dataset.readerState = 'ready';
-          root.setAttribute('aria-busy', 'false');
+          setReaderState('ready');
           completed = true;
         }
       } catch (error) {
         if (isReaderLoadCancelled(error, controller.signal)) {
           if (!destroyed && generation === loadGeneration) {
-            root.dataset.readerState = 'cancelled';
-            root.setAttribute('aria-busy', 'false');
+            setReaderState('cancelled');
           }
           return;
         }
         if (!isCurrent()) {
           return;
         }
-        root.dataset.readerState = 'error';
-        root.setAttribute('aria-busy', 'false');
+        setReaderState('error');
         throw error;
       } finally {
         options.signal?.removeEventListener('abort', cancelFromCaller);
@@ -548,14 +683,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       loadGeneration += 1;
       activeLoadController?.abort();
       activeLoadController = null;
-      releaseRemoteImages.splice(0).forEach((release) => release());
+      clearFlowBindings();
       const handle = pdfHandle;
       const cbz = cbzHandle;
       pdfHandle = null;
       cbzHandle = null;
       sidebar?.destroy();
       sidebar = null;
-      root.dataset.readerState = 'destroyed';
+      setReaderState('destroyed');
       root.remove();
       await handle?.destroy().catch(() => undefined);
       await cbz?.destroy().catch(() => undefined);

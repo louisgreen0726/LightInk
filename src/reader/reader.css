@@ -71,6 +71,19 @@
   padding: 4rem 1rem;
 }
 
+.lightink-reader-status {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(90%, 28rem);
+  padding: 0.75rem 1rem;
+  color: var(--lightink-fg);
+  background: var(--lightink-bg-elevated);
+  border: 1px solid var(--lightink-border);
+  border-radius: 4px;
+  text-align: center;
+}
+
 /* 页式格式：canvas（PDF 连续滚动 slot 内 / CBZ 逐页）。 */
 .lightink-reader-page {
   display: block;
@@ -86,8 +99,12 @@
   margin: 0 0 1rem;
   color: var(--lightink-fg);
 }
-.lightink-reader-chapter-body p {
-  margin: 0 0 1em;
+.lightink-reader-chapter-frame {
+  display: block;
+  width: 100%;
+  min-height: 3rem;
+  border: 0;
+  background: transparent;
 }
 
 /* Blocked network images occupy a readable inline row without imitating content. */

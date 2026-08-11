@@ -108,9 +108,10 @@ export function bindBlockedRemoteImages(
       continue;
     }
 
-    const placeholder = document.createElement('span');
+    const ownerDocument = image.ownerDocument;
+    const placeholder = ownerDocument.createElement('span');
     placeholder.className = 'lightink-remote-image-placeholder';
-    const button = document.createElement('button');
+    const button = ownerDocument.createElement('button');
     button.type = 'button';
     button.className = 'lightink-remote-image-load';
     const alt = image.alt.trim();
