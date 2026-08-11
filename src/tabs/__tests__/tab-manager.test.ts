@@ -797,3 +797,77 @@ describe('reader 标签（只读，豁免可写路径）', () => {
     await expect(manager.openReader('C:\\docs\\book.pdf')).rejects.toThrow(/mountReader/);
   });
 });
+
+describe('T3 每标签独立滚动位置', () => {
+  /** 最小 reader 装配（reader 标签默认滚动位置测试用）。 */
+  function mountReaderStub() {
+    return vi.fn(async () => ({
+      load: vi.fn(async () => undefined),
+      destroy: vi.fn(async () => undefined),
+      addBookmark: vi.fn(() => undefined),
+      addNote: vi.fn(() => undefined),
+      toggleSidebar: vi.fn(() => undefined),
+      isSidebarVisible: vi.fn(() => false),
+      isAnnotationEnabled: vi.fn(() => false),
+    }));
+  }
+
+  it('新建标签滚动位置为 0（顶部）', async () => {
+    const { manager } = makeHarness();
+    const tab = await manager.newTab();
+    expect(manager.getScrollPosition(tab.id)).toBe(0);
+  });
+
+  it('recordScrollPosition 存储、getScrollPosition 取回', async () => {
+    const { manager } = makeHarness();
+    const tab = await manager.newTab();
+    manager.recordScrollPosition(tab.id, 123);
+    expect(manager.getScrollPosition(tab.id)).toBe(123);
+  });
+
+  it('recordScrollPosition 负值夹到 0', async () => {
+    const { manager } = makeHarness();
+    const tab = await manager.newTab();
+    manager.recordScrollPosition(tab.id, -50);
+    expect(manager.getScrollPosition(tab.id)).toBe(0);
+  });
+
+  it('各标签滚动位置互不影响（A 滚动后切 B→B 在自身原位）', async () => {
+    const { manager } = makeHarness();
+    const a = await manager.newTab();
+    const b = await manager.newTab();
+    manager.recordScrollPosition(a.id, 100);
+    manager.recordScrollPosition(b.id, 250);
+    // 切到 B 再切回 A：各自存储值不变。
+    manager.switchTab(b.id);
+    manager.switchTab(a.id);
+    expect(manager.getScrollPosition(a.id)).toBe(100);
+    expect(manager.getScrollPosition(b.id)).toBe(250);
+  });
+
+  it('reader 标签默认滚动位置为 0（自有分页不参与）', async () => {
+    const { manager } = makeHarness({ mountReader: mountReaderStub() });
+    const tab = await manager.openReader('C:\\docs\\book.pdf');
+    expect(manager.getScrollPosition(tab.id)).toBe(0);
+  });
+
+  it('switchTab 触发 onTabSwitched（恢复滚动的唯一接线点，内容变化不触发）', async () => {
+    const onTabSwitched = vi.fn();
+    const { manager } = makeHarness({ onTabSwitched });
+    const a = await manager.newTab(); // createTab 内 switchTab 已触发一次
+    await manager.newTab(); // 再触发一次
+    onTabSwitched.mockClear();
+    manager.switchTab(a.id);
+    expect(onTabSwitched).toHaveBeenCalledTimes(1);
+    // 内容变化不应触发 onTabSwitched（否则编辑会重置滚动）。
+    a.editor.setMarkdown('改');
+    manager.handleContentChanged(a.id);
+    expect(onTabSwitched).toHaveBeenCalledTimes(1);
+  });
+
+  it('未知 id：getScrollPosition 返回 0、recordScrollPosition 安全无操作', () => {
+    const { manager } = makeHarness();
+    expect(manager.getScrollPosition('no-such-tab')).toBe(0);
+    expect(() => manager.recordScrollPosition('no-such-tab', 50)).not.toThrow();
+  });
+});

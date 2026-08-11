@@ -847,6 +847,10 @@ function pruneSourceViews(): void {
   }
 }
 
+// T3/R3：共享滚动容器 #lightink-editor-area——markdown 正文/源码的唯一样式滚动
+// 元素（reader 视图 absolute inset:0 填充本槽位，自有分页，不滚动此容器）。
+const editorScroller = shell.editorArea;
+
 manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
@@ -933,6 +937,14 @@ manager = new TabManager({
     return 'keep';
   },
   onTabsChanged: renderTabBar,
+  // T3/R3：切换完成后恢复目标 markdown 标签的滚动位置（reader 自有分页跳过）。
+  onTabSwitched: () => {
+    const tab = manager?.activeTab ?? null;
+    if (tab === null || tab.kind !== 'markdown') {
+      return;
+    }
+    editorScroller.scrollTop = manager.getScrollPosition(tab.id);
+  },
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
     // T5/R3：状态栏防抖刷新（内部在隐藏时短路不渲染）。
@@ -965,6 +977,24 @@ manager = new TabManager({
       cancelLabel: i18n.t('dialog.cancel'),
     }),
 });
+
+// T3/R3：实时记录活动标签的滚动位置到其 TabState.scrollTop。共享容器只有一个，
+// 故 markdown 标签的滚动需逐事件回写当前活动标签；切换时由 onTabSwitched 恢复
+// 目标标签的存储值（reader 不滚动此容器，活动 reader 时此处 scrollTop 恒 0）。
+editorScroller.addEventListener(
+  'scroll',
+  () => {
+    const m = manager;
+    if (m === undefined) {
+      return;
+    }
+    const id = m.activeTabId;
+    if (id !== null) {
+      m.recordScrollPosition(id, editorScroller.scrollTop);
+    }
+  },
+  { passive: true },
+);
 
 // Format toolbar / context menu: themed link editor (text + href).
 setFormatToolbarLinkEditor(async (initial) => {

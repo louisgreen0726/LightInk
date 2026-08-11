@@ -37,6 +37,13 @@ interface TabBase {
    * 外部变更检测基线。未命名标签、stat 失败或 reader 标签为 null（不参与检测）。
    */
   lastSavedMtime: FileStat | null;
+  /**
+   * T3/R3：该标签最近一次保存的滚动位置。markdown 标签由共享滚动容器
+   * `#lightink-editor-area` 的 scrollTop 实时回写，切换/打开时据此恢复（新建
+   * 标签为 0 = 顶部）；reader 标签自有分页/滚动，此字段恒 0，TabManager 不读写
+   * （见 tab-manager 的 onTabSwitched 对 reader 跳过恢复）。
+   */
+  scrollTop: number;
 }
 
 /** 可写 Markdown 编辑标签（既有行为）。独占一个编辑器实例。 */

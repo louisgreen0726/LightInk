@@ -120,6 +120,12 @@ export interface TabManagerDeps {
    */
   onActiveContentChanged?: () => void;
   /**
+   * T3/R3：活动标签切换完成后的回调（仅 switchTab 触发，内容变化不触发）。
+   * main.ts 据此把共享滚动容器的 scrollTop 恢复到目标 markdown 标签的存储值
+   * （reader 标签自有分页，不在此恢复）。
+   */
+  onTabSwitched?: () => void;
+  /**
    * R12：成功打开某个文件路径后回调（按路径记录到最近打开）。仅在确已打开
    * （新建标签或切换到已存在标签）时触发，对话框取消/读取失败不触发。
    */
@@ -176,6 +182,7 @@ const DEFAULT_DEBOUNCE_MS = 1000;
 type TabManagerOptionalUi =
   | 'onTabsChanged'
   | 'onActiveContentChanged'
+  | 'onTabSwitched'
   | 'onFileOpened'
   | 'onFileSaved'
   | 'onLinkNavigate'
@@ -232,6 +239,7 @@ export class TabManager {
       ...deps,
       onTabsChanged: deps.onTabsChanged,
       onActiveContentChanged: deps.onActiveContentChanged,
+      onTabSwitched: deps.onTabSwitched,
       onFileOpened: deps.onFileOpened,
       onFileSaved: deps.onFileSaved,
       onLinkNavigate: deps.onLinkNavigate,
@@ -394,6 +402,7 @@ export class TabManager {
       hostElement: host,
       lastSavedMarkdown: '',
       lastSavedMtime: null,
+      scrollTop: 0,
     };
     this.tabs.push(tab);
     this.switchTab(id);
@@ -548,6 +557,9 @@ export class TabManager {
     this.activeId = tab.id;
     this.notifyChanged();
     this.notifyActiveContentChanged();
+    // T3/R3：切换完成后通知宿主恢复目标标签的滚动位置（仅 switch 触发，
+    // 不与内容变化的 onActiveContentChanged 混用，避免编辑时被重置）。
+    this.deps.onTabSwitched?.();
   }
 
   /**
@@ -586,6 +598,27 @@ export class TabManager {
         this.writeSnapshotNow(tab);
       }
     }
+  }
+
+  /**
+   * T3/R3：记录标签的滚动位置。由 main.ts 在共享滚动容器 `#lightink-editor-area`
+   * 的 scroll 事件中回写活动标签（reader 标签自有分页，main.ts 不对其调用）。
+   */
+  recordScrollPosition(id: string, scrollTop: number): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab === undefined) {
+      return;
+    }
+    tab.scrollTop = Math.max(0, scrollTop);
+  }
+
+  /**
+   * T3/R3：取标签应恢复到的滚动位置。新建标签为 0（顶部）；未知 id 返回 0。
+   * reader 标签此值恒 0（main.ts 在 onTabSwitched 中对 reader 跳过恢复）。
+   */
+  getScrollPosition(id: string): number {
+    const tab = this.tabs.find((t) => t.id === id);
+    return tab === undefined ? 0 : tab.scrollTop;
   }
 
   private async createTab(args: {
@@ -631,6 +664,7 @@ export class TabManager {
       hostElement: host,
       lastSavedMarkdown: args.lastSavedMarkdown,
       lastSavedMtime: null,
+      scrollTop: 0,
     };
     this.tabs.push(tab);
     this.switchTab(id);
