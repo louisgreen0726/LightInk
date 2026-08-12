@@ -1,35 +1,30 @@
-/**
- * `annotations` — 标注数据模型与定位器（ebook-reader T6 / R4）。
- *
- * 标注按文件内容哈希（Rust `content_hash` 命令）关联，存 app_data_dir/annotations/。
- * 本模块定义标注与各格式定位器，并提供序列化/解析往返（损坏 JSON 视为空，R4）。
- * 纯逻辑，headless 可测；持久化经 Rust 命令，UI 渲染在 reader-view/sidebar。
- */
+/** Versioned annotation data and per-document write serialization. */
 
-/** 标注类型：高亮 / 书签 / 笔记。 */
 export type AnnotationKind = 'highlight' | 'bookmark' | 'note';
 
-/** 流式格式（EPUB/MOBI/FB2）定位器：章节索引 + DOM path + 字符区间。 */
-export interface FlowLocator {
+export interface TextQuoteAnchor {
+  start: number;
+  end: number;
+  quote: string;
+  prefix: string;
+  suffix: string;
+}
+
+export interface FlowLocator extends TextQuoteAnchor {
   format: 'flow';
   chapter: number;
-  domPath: string;
-  start: number;
-  end: number;
 }
-/** TXT 定位器：全文字符区间。 */
-export interface TextLocator {
+
+export interface TextLocator extends TextQuoteAnchor {
   format: 'text';
-  start: number;
-  end: number;
 }
-/** PDF 定位器：页码 + 选中文本（quote，供无 DOM 的高亮重定位）。 */
+
 export interface PdfLocator {
   format: 'pdf';
   page: number;
   quote: string;
 }
-/** CBZ 定位器：页码（仅书签/笔记，不支持高亮）。 */
+
 export interface CbzLocator {
   format: 'cbz';
   page: number;
@@ -37,64 +32,170 @@ export interface CbzLocator {
 
 export type Locator = FlowLocator | TextLocator | PdfLocator | CbzLocator;
 
-/** 单条标注。 */
 export interface Annotation {
   readonly id: string;
   readonly kind: AnnotationKind;
   readonly locator: Locator;
-  /** 高亮/笔记引用的原文片段（可空）。 */
+  /** Kept at the annotation level for sidebar display and v1 compatibility. */
   readonly quote?: string;
-  /** 用户笔记文本（可空）。 */
   readonly note?: string;
-  /** 创建时间（epoch 毫秒）。 */
   readonly createdAt: number;
 }
 
-/** 标注集合的序列化形态（带版本号，便于后续迁移）。 */
-interface AnnotationFile {
-  version: 1;
+interface AnnotationFileV2 {
+  version: 2;
   annotations: Annotation[];
 }
 
 const KINDS: ReadonlySet<AnnotationKind> = new Set(['highlight', 'bookmark', 'note']);
-const LOCATOR_FORMATS: ReadonlySet<Locator['format']> = new Set([
-  'flow',
-  'text',
-  'pdf',
-  'cbz',
-]);
 
-function isLocator(v: unknown): v is Locator {
-  if (typeof v !== 'object' || v === null) {
-    return false;
-  }
-  const format = (v as { format?: unknown }).format;
-  return typeof format === 'string' && LOCATOR_FORMATS.has(format as Locator['format']);
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-function isAnnotation(v: unknown): v is Annotation {
-  if (typeof v !== 'object' || v === null) {
-    return false;
-  }
-  const a = v as Record<string, unknown>;
+function isTextAnchor(value: Record<string, unknown>): boolean {
   return (
-    typeof a.id === 'string' &&
-    typeof a.kind === 'string' &&
-    KINDS.has(a.kind as AnnotationKind) &&
-    isLocator(a.locator) &&
-    typeof a.createdAt === 'number'
+    isNonNegativeInteger(value.start) &&
+    isNonNegativeInteger(value.end) &&
+    (value.end as number) >= (value.start as number) &&
+    typeof value.quote === 'string' &&
+    typeof value.prefix === 'string' &&
+    typeof value.suffix === 'string'
   );
 }
 
-/** 序列化标注集合为 JSON（写盘形态）。 */
+function isLocator(value: unknown): value is Locator {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const locator = value as Record<string, unknown>;
+  switch (locator.format) {
+    case 'flow':
+      return isNonNegativeInteger(locator.chapter) && isTextAnchor(locator);
+    case 'text':
+      return isTextAnchor(locator);
+    case 'pdf':
+      return (
+        isNonNegativeInteger(locator.page) &&
+        (locator.page as number) >= 1 &&
+        typeof locator.quote === 'string'
+      );
+    case 'cbz':
+      return isNonNegativeInteger(locator.page) && (locator.page as number) >= 1;
+    default:
+      return false;
+  }
+}
+
+function isAnnotation(value: unknown): value is Annotation {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const annotation = value as Record<string, unknown>;
+  return (
+    typeof annotation.id === 'string' &&
+    annotation.id.length > 0 &&
+    typeof annotation.kind === 'string' &&
+    KINDS.has(annotation.kind as AnnotationKind) &&
+    isLocator(annotation.locator) &&
+    typeof annotation.createdAt === 'number' &&
+    Number.isFinite(annotation.createdAt) &&
+    (annotation.quote === undefined || typeof annotation.quote === 'string') &&
+    (annotation.note === undefined || typeof annotation.note === 'string')
+  );
+}
+
+function migrateV1Locator(
+  value: unknown,
+  annotationQuote: string,
+): Locator | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const locator = value as Record<string, unknown>;
+  switch (locator.format) {
+    case 'flow':
+      if (
+        !isNonNegativeInteger(locator.chapter) ||
+        !isNonNegativeInteger(locator.start) ||
+        !isNonNegativeInteger(locator.end)
+      ) {
+        return null;
+      }
+      return {
+        format: 'flow',
+        chapter: locator.chapter,
+        start: locator.start,
+        end: Math.max(locator.start, locator.end),
+        quote: annotationQuote,
+        prefix: '',
+        suffix: '',
+      };
+    case 'text':
+      if (!isNonNegativeInteger(locator.start) || !isNonNegativeInteger(locator.end)) {
+        return null;
+      }
+      return {
+        format: 'text',
+        start: locator.start,
+        end: Math.max(locator.start, locator.end),
+        quote: annotationQuote,
+        prefix: '',
+        suffix: '',
+      };
+    case 'pdf':
+      return isNonNegativeInteger(locator.page) && locator.page >= 1
+        ? {
+            format: 'pdf',
+            page: locator.page,
+            quote: typeof locator.quote === 'string' ? locator.quote : annotationQuote,
+          }
+        : null;
+    case 'cbz':
+      return isNonNegativeInteger(locator.page) && locator.page >= 1
+        ? { format: 'cbz', page: locator.page }
+        : null;
+    default:
+      return null;
+  }
+}
+
+function migrateV1Annotation(value: unknown): Annotation | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const annotation = value as Record<string, unknown>;
+  if (
+    typeof annotation.id !== 'string' ||
+    annotation.id.length === 0 ||
+    typeof annotation.kind !== 'string' ||
+    !KINDS.has(annotation.kind as AnnotationKind) ||
+    typeof annotation.createdAt !== 'number' ||
+    !Number.isFinite(annotation.createdAt)
+  ) {
+    return null;
+  }
+  const quote = typeof annotation.quote === 'string' ? annotation.quote : '';
+  const locator = migrateV1Locator(annotation.locator, quote);
+  if (locator === null) {
+    return null;
+  }
+  return {
+    id: annotation.id,
+    kind: annotation.kind as AnnotationKind,
+    locator,
+    quote: typeof annotation.quote === 'string' ? annotation.quote : undefined,
+    note: typeof annotation.note === 'string' ? annotation.note : undefined,
+    createdAt: annotation.createdAt,
+  };
+}
+
 export function serializeAnnotations(annotations: readonly Annotation[]): string {
-  const file: AnnotationFile = { version: 1, annotations: [...annotations] };
+  const file: AnnotationFileV2 = { version: 2, annotations: [...annotations] };
   return JSON.stringify(file);
 }
 
-/**
- * 解析标注 JSON。空串/损坏/结构不符都返回空数组（R4：损坏视为空，不阻断阅读）。
- */
+/** Read v2 strictly and migrate valid v1 records on a best-effort basis. */
 export function parseAnnotations(json: string): Annotation[] {
   if (json === '') {
     return [];
@@ -108,9 +209,60 @@ export function parseAnnotations(json: string): Annotation[] {
   if (typeof parsed !== 'object' || parsed === null) {
     return [];
   }
-  const list = (parsed as { annotations?: unknown }).annotations;
-  if (!Array.isArray(list)) {
+  const file = parsed as { version?: unknown; annotations?: unknown };
+  if (!Array.isArray(file.annotations)) {
     return [];
   }
-  return list.filter(isAnnotation);
+  if (file.version === 2) {
+    return file.annotations.filter(isAnnotation);
+  }
+  if (file.version === 1) {
+    return file.annotations
+      .map(migrateV1Annotation)
+      .filter((annotation): annotation is Annotation => annotation !== null);
+  }
+  return [];
+}
+
+/** Serialize writes per content hash and invalidate work not yet started after a document switch. */
+export class AnnotationWriteQueue {
+  private generation = 0;
+  private readonly queues = new Map<string, Promise<boolean>>();
+
+  invalidate(): void {
+    this.generation += 1;
+  }
+
+  enqueue(
+    contentHash: string,
+    json: string,
+    write: (contentHash: string, json: string) => Promise<void>,
+    onError?: () => void,
+  ): Promise<boolean> {
+    const generation = this.generation;
+    const previous = this.queues.get(contentHash) ?? Promise.resolve(true);
+    const operation = previous
+      .catch(() => false)
+      .then(async () => {
+        if (generation !== this.generation) {
+          return false;
+        }
+        try {
+          await write(contentHash, json);
+          return generation === this.generation;
+        } catch {
+          if (generation === this.generation) {
+            onError?.();
+          }
+          return false;
+        }
+      });
+    this.queues.set(contentHash, operation);
+    void operation.finally(() => {
+      if (this.queues.get(contentHash) === operation) {
+        this.queues.delete(contentHash);
+      }
+    });
+    return operation;
+  }
 }

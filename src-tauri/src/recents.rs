@@ -7,12 +7,15 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Manager};
 
 /// 最近文件上限。
 pub const MAX_RECENTS: usize = 10;
 const RECENTS_FILE: &str = "recents.json";
+static RECENTS_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Recents {
@@ -33,44 +36,83 @@ pub fn remove(mut recents: Recents, path: &str) -> Recents {
     recents
 }
 
-fn file_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join(RECENTS_FILE))
+fn file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(RECENTS_FILE))
+        .map_err(|error| format!("无法定位最近文件存储目录: {}", error))
 }
 
-fn read(app: &AppHandle) -> Recents {
-    file_path(app)
-        .and_then(|p| fs::read_to_string(p).ok())
+fn read_from_path(path: &Path) -> Recents {
+    fs::read_to_string(path)
+        .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn write(app: &AppHandle, recents: &Recents) {
-    if let Some(p) = file_path(app) {
-        let _ = fs::create_dir_all(p.parent().unwrap_or(&p));
-        if let Ok(json) = serde_json::to_string_pretty(recents) {
-            let _ = fs::write(p, json);
-        }
-    }
+fn write_to_path(path: &Path, recents: &Recents) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .ok_or_else(|| format!("无效的最近文件存储路径: {}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| format!("无法创建最近文件存储目录: {}", error))?;
+    let json = serde_json::to_vec_pretty(recents)
+        .map_err(|error| format!("无法序列化最近文件列表: {}", error))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("无法创建最近文件临时文件: {}", error))?;
+    temporary
+        .write_all(&json)
+        .map_err(|error| format!("无法写入最近文件列表: {}", error))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("无法同步最近文件列表: {}", error))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("无法保存最近文件列表: {}", error.error))?;
+
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("无法同步最近文件存储目录: {}", error))?;
+
+    Ok(())
+}
+
+fn acquire_lock() -> Result<MutexGuard<'static, ()>, String> {
+    RECENTS_LOCK
+        .lock()
+        .map_err(|_| "最近文件存储锁已损坏".to_owned())
 }
 
 #[tauri::command]
 pub fn list_recents(app: AppHandle) -> Vec<String> {
-    read(&app).paths
+    let Ok(_guard) = acquire_lock() else {
+        return Vec::new();
+    };
+    file_path(&app)
+        .map(|path| read_from_path(&path).paths)
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn add_recent(app: AppHandle, path: String) {
-    write(&app, &add(read(&app), &path));
+pub fn add_recent(app: AppHandle, path: String) -> Result<(), String> {
+    let _guard = acquire_lock()?;
+    let storage_path = file_path(&app)?;
+    write_to_path(&storage_path, &add(read_from_path(&storage_path), &path))
 }
 
 #[tauri::command]
-pub fn remove_recent(app: AppHandle, path: String) {
-    write(&app, &remove(read(&app), &path));
+pub fn remove_recent(app: AppHandle, path: String) -> Result<(), String> {
+    let _guard = acquire_lock()?;
+    let storage_path = file_path(&app)?;
+    write_to_path(&storage_path, &remove(read_from_path(&storage_path), &path))
 }
 
 #[tauri::command]
-pub fn clear_recents(app: AppHandle) {
-    write(&app, &Recents::default());
+pub fn clear_recents(app: AppHandle) -> Result<(), String> {
+    let _guard = acquire_lock()?;
+    write_to_path(&file_path(&app)?, &Recents::default())
 }
 
 #[cfg(test)]
@@ -116,5 +158,32 @@ mod tests {
     fn remove_missing_is_noop() {
         let r = remove(recents(&["a.md"]), "z.md");
         assert_eq!(r.paths, vec!["a.md"]);
+    }
+
+    #[test]
+    fn atomic_write_roundtrips_valid_json() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join(RECENTS_FILE);
+        let expected = recents(&["文档.md", "C:\\notes\\two.md"]);
+
+        write_to_path(&path, &expected).expect("write recents");
+
+        assert_eq!(read_from_path(&path).paths, expected.paths);
+        let entries = fs::read_dir(directory.path()).unwrap().count();
+        assert_eq!(entries, 1, "temporary file must be promoted or cleaned");
+    }
+
+    #[test]
+    fn write_failure_is_reported_without_replacing_unrelated_data() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let blocker = directory.path().join("blocker");
+        fs::write(&blocker, b"keep me").unwrap();
+        let impossible = blocker.join(RECENTS_FILE);
+
+        let error = write_to_path(&impossible, &recents(&["a.md"]))
+            .expect_err("directory creation must fail");
+
+        assert!(error.contains("无法创建最近文件存储目录"));
+        assert_eq!(fs::read(blocker).unwrap(), b"keep me");
     }
 }

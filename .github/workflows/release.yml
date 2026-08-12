@@ -95,7 +95,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Build and publish release
+      - name: Build and upload to draft release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,7 +103,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'LightInk ${{ github.ref_name }}'
           releaseBody: ${{ env.RELEASE_BODY }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           retryAttempts: 3
           # `--verbose` exposes the underlying WiX LGHT/ICE error in Actions logs.
@@ -131,11 +131,11 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
   verify-release:
-    name: Verify release assets
+    name: Verify and publish release
     needs: release
     runs-on: ubuntu-22.04
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Require all platform installers
@@ -144,6 +144,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          IS_DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.draft')
+          if [ "$IS_DRAFT" != "true" ]; then
+            echo "::error::Release ${GITHUB_REF_NAME} was published before asset verification"
+            exit 1
+          fi
+
           ASSETS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[].name')
           echo "$ASSETS"
 
@@ -153,3 +159,9 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Publish verified release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

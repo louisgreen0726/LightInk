@@ -5,13 +5,10 @@
  * KaTeX，按需加载」):
  *
  *   - Rendering engine is KaTeX (faster and smaller than MathJax). It is
- *     loaded **lazily**: `createKatexLoader` wraps a dynamic `import('katex')`
- *     in a memoized promise, and the ProseMirror plugin only invokes it when
- *     the document actually contains math — documents without `$` never pay
- *     the KaTeX cost. The KaTeX stylesheet (`katex/dist/katex.min.css`,
- *     ~23KB) is imported statically: it is CSS-only, needed by every render,
- *     and Vite bundles it (including fonts) into the app so the Tauri WebView
- *     never hits the network.
+ *     loaded **lazily**: `createKatexLoader` wraps dynamic imports for both
+ *     `katex` and its stylesheet in one memoized promise. The ProseMirror
+ *     plugin only invokes it when the document actually contains math, so
+ *     ordinary Markdown documents pay neither the JS nor font/CSS cost.
  *
  *   - The pure logic layer is headless-testable:
  *       scanTextMath(text, baseOffset)   — `$…$` / `$$…$$` → segments
@@ -44,15 +41,12 @@
  */
 
 import { $prose } from '@milkdown/utils';
+import { appendPreviewEditButton } from './preview-edit-button.js';
 import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/prose/view';
 
 import { parseMarkdownToMdast } from '../parser.js';
-
-// KaTeX 样式（含字体）由 Vite 打包进应用，Tauri WebView 离线可用。
-// CSS 与 JS 不同无法按需动态生效（渲染前必须就位），故静态引入。
-import 'katex/dist/katex.min.css';
 
 // ---------------------------------------------------------------------------
 // 纯逻辑层：分段扫描（headless 可测）
@@ -348,26 +342,28 @@ export function renderMathHtml(latex: string, displayMode: boolean, katex: Katex
 // ---------------------------------------------------------------------------
 
 /**
- * 构造一个 memoized 的 KaTeX 加载器。`load` 工厂可注入替身以便测试断言
- * 「无公式时从不触发 import」。加载失败（网络/打包异常）的 rejected
- * promise 也会被缓存，避免每次编辑都重试。
+ * 构造一个 memoized 的 KaTeX 加载器。JS 和样式工厂均可注入，便于断言
+ * 「无公式时从不触发 import」。样式加载完成前不会返回 renderer，避免首帧
+ * 公式以无字体布局闪现。失败 Promise 同样缓存，避免每次编辑都重试。
  */
 export function createKatexLoader(
   load: () => Promise<unknown> = () => import('katex'),
+  loadStyles: () => Promise<unknown> = () => import('katex/dist/katex.min.css'),
 ): () => Promise<KatexRenderer> {
   let cached: Promise<KatexRenderer> | null = null;
   return () => {
     if (cached === null) {
-      cached = Promise.resolve()
-        .then(load)
-        .then((mod) => {
-          const shaped = mod as Partial<KatexRenderer> & { default?: Partial<KatexRenderer> };
-          const renderer = (shaped.default ?? shaped) as Partial<KatexRenderer>;
-          if (typeof renderer.renderToString !== 'function') {
-            throw new Error('katex module does not expose renderToString');
-          }
-          return renderer as KatexRenderer;
-        });
+      cached = Promise.all([
+        Promise.resolve().then(load),
+        Promise.resolve().then(loadStyles),
+      ]).then(([mod]) => {
+        const shaped = mod as Partial<KatexRenderer> & { default?: Partial<KatexRenderer> };
+        const renderer = (shaped.default ?? shaped) as Partial<KatexRenderer>;
+        if (typeof renderer.renderToString !== 'function') {
+          throw new Error('katex module does not expose renderToString');
+        }
+        return renderer as KatexRenderer;
+      });
     }
     return cached;
   };
@@ -596,6 +592,7 @@ export function buildMathDecorations(
             el.setAttribute('data-math-preview', '');
             el.setAttribute('data-math-lines', String(lineCount));
             el.innerHTML = html;
+            appendPreviewEditButton(el, MATH_EDIT_TITLE, () => onEditRequest?.(blockPos));
             el.addEventListener('dblclick', (event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -749,6 +746,7 @@ export const mathPlugin = $prose(() => {
       },
     },
     view: (view) => {
+      let destroyed = false;
       editorView = view as EditorView;
       const ensureKatex = (): void => {
         const pluginState = mathPluginKey.getState(view.state);
@@ -757,12 +755,16 @@ export const mathPlugin = $prose(() => {
         loadRequested = true;
         loadKatex()
           .then((katex) => {
+            if (destroyed) return;
             view.dispatch(
               view.state.tr.setMeta(mathPluginKey, { katex } satisfies MathPluginMeta),
             );
           })
-          .catch(() => {
-            loadRequested = false;
+          .catch((error: unknown) => {
+            // The loader memoizes failures; keep the request latched so every
+            // subsequent edit does not reattach to the same rejected promise.
+            // eslint-disable-next-line no-console
+            console.error('[lightink/math] KaTeX assets failed to load', error);
           });
       };
       ensureKatex();
@@ -772,6 +774,7 @@ export const mathPlugin = $prose(() => {
           ensureKatex();
         },
         destroy: () => {
+          destroyed = true;
           editorView = null;
         },
       };

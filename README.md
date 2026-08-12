@@ -29,7 +29,7 @@
 ## 开发
 
 ```bash
-npm install          # 安装依赖
+npm ci               # 按 package-lock.json 安装精确依赖
 npm run tauri:dev    # 启动开发模式（Vite dev server + 热重载）
 ```
 
@@ -44,8 +44,14 @@ npm run tauri:dev    # 启动开发模式（Vite dev server + 热重载）
 npm run dev          # 仅前端 dev server（:1420）
 npm run build        # tsc 严格检查 + vite 构建
 npm test             # 前端全部测试（Vitest）
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
+
+Pull Request 会由 `.github/workflows/ci.yml` 在 Ubuntu 上重复执行前端测试/构建、
+Rust 格式检查、测试和 clippy。Linux CI 会安装 Tauri 所需的 WebKitGTK 系统依赖；
+本机缺少这些库时，应明确报告未运行的 Rust 检查，以 CI 结果为准。
 
 ## 构建与发布
 
@@ -74,12 +80,16 @@ ad-hoc 签名不等于 Apple 公证。从浏览器下载后，Gatekeeper 仍可�
 推送 `v*` tag 即触发 GitHub Actions 自动编译并发布三平台安装包（见 `.github/workflows/release.yml`），Release 说明从上个 tag 以来的提交记录自动提取（按 feat/fix/其他分组，基于 conventional commits）：
 
 ```bash
-# 1. 升版本号（package.json 与 src-tauri/tauri.conf.json 的 version 保持一致）
-# 2. 全量验证
-npm test && cargo test --manifest-path src-tauri/Cargo.toml
+# 1. 同步 package.json、package-lock.json、src-tauri/Cargo.toml、
+#    src-tauri/Cargo.lock 与 src-tauri/tauri.conf.json 中的 LightInk 版本号
+# 2. 全量验证（先执行 npm ci）
+npm test && npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 # 3. 打 tag 并推送 —— CI 自动构建 Windows(NSIS/MSI) + macOS(DMG, Apple Silicon) + Linux(deb/AppImage)，产出草稿 Release
 git tag v0.1.0 && git push origin main v0.1.0
-# 4. 在 GitHub Releases 页面检查草稿，确认后发布
+# 4. 全部平台成功且资产校验完整后，CI 自动公开同一个 Release；失败时保持草稿
 ```
 
 也可手动发布：本机 `npm run tauri:build` 后在 GitHub Releases 页面上传 `src-tauri/target/release/bundle/` 下的安装包。

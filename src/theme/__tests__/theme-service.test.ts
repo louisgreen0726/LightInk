@@ -112,6 +112,31 @@ describe('ThemeService 内置主题', () => {
     expect(h.attrs.get('data-theme')).toBe('warm-light');
   });
 
+  it('restores a persisted custom theme file on startup', async () => {
+    const h = makeHarness({
+      savedTheme: CUSTOM_THEME_ID,
+      savedCustomPath: '/themes/saved.css',
+    });
+    h.files.set('/themes/saved.css', ':root { --lightink-bg: #123456; }');
+
+    expect(h.service.currentThemeId).toBe(CUSTOM_THEME_ID);
+    await expect(h.service.restorePersistedCustomTheme()).resolves.toBe(true);
+    expect(h.slot.css).toContain('#123456');
+    expect(h.attrs.get('data-theme')).toBe(CUSTOM_THEME_ID);
+  });
+
+  it('falls back safely when a persisted custom theme cannot be read', async () => {
+    const h = makeHarness({
+      savedTheme: CUSTOM_THEME_ID,
+      savedCustomPath: '/themes/missing.css',
+    });
+
+    await expect(h.service.restorePersistedCustomTheme()).rejects.toThrow('no such file');
+    expect(h.service.currentThemeId).toBe('warm-light');
+    expect(h.service.customThemePath).toBe('/themes/missing.css');
+    expect(h.attrs.get('data-theme')).toBe('warm-light');
+  });
+
   it('apply 设置 data-theme 属性并持久化，且清除自定义注入', () => {
     const h = makeHarness();
     h.service.loadCustomTheme(':root { --lightink-bg: #000; }');

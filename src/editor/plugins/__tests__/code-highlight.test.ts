@@ -1,9 +1,9 @@
 /**
- * Code highlight plugin tests (T5 / R4 + full language registry + language select).
+ * Code highlight plugin tests (T5 / R4 + on-demand grammars + language select).
  *
  * Headless coverage:
- *   - `highlightCode` per core language → HTML with `hljs-*` classes.
- *   - Full highlight.js registry exposed via `listSupportedLanguages`.
+ *   - `highlightCode` per supported language → HTML with `hljs-*` classes.
+ *   - Stable on-demand registry exposed via `listSupportedLanguages`.
  *   - Unlabeled / unknown language → escaped plain text, no hljs markup.
  *   - Language select value normalization + option population.
  *   - Decoration map fence info-string → language correctly.
@@ -17,6 +17,7 @@ import {
   copyButtonClassName,
   copyButtonLabel,
   createLanguagePicker,
+  ensureHighlightLanguage,
   escapeHtml,
   filterLanguages,
   highlightCode,
@@ -105,14 +106,13 @@ describe('resolveLanguage', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Full language registry
+// On-demand language registry
 // ---------------------------------------------------------------------------
 
 describe('listSupportedLanguages', () => {
-  it('exposes the full highlight.js component language set', () => {
+  it('exposes the stable on-demand language set', () => {
     const langs = listSupportedLanguages();
-    // Full package ships ~190 grammars; plain-text markers are filtered out.
-    expect(langs.length).toBeGreaterThan(100);
+    expect(langs.length).toBeGreaterThan(20);
     expect(langs).toContain('javascript');
     expect(langs).toContain('typescript');
     expect(langs).toContain('kotlin');
@@ -129,7 +129,7 @@ describe('listSupportedLanguages', () => {
 
 describe('highlightCode', () => {
   const languageSamples: Array<{
-    language: string;
+    language: Parameters<typeof ensureHighlightLanguage>[0];
     code: string;
     marker: string;
   }> = [
@@ -150,9 +150,18 @@ describe('highlightCode', () => {
     { language: 'kotlin', code: 'fun main() { val x = 1 }', marker: 'hljs-keyword' },
   ];
 
+  it('falls back to plain text until a supported grammar finishes loading', async () => {
+    const code = 'Get-ChildItem | Where-Object { $_.Name }';
+    expect(highlightCode('powershell', code)).toBe(escapeHtml(code));
+
+    await expect(ensureHighlightLanguage('powershell')).resolves.toBe(true);
+    expect(highlightCode('powershell', code)).toContain('<span class="hljs-');
+  });
+
   it.each(languageSamples)(
     'highlights $language with hljs classes ($marker)',
-    ({ language, code, marker }) => {
+    async ({ language, code, marker }) => {
+      await expect(ensureHighlightLanguage(language)).resolves.toBe(true);
       const html = highlightCode(language, code);
       expect(html).toContain(marker);
       expect(html).toContain('<span class="hljs-');
@@ -173,7 +182,8 @@ describe('highlightCode', () => {
     expect(highlightCode('foobar', code)).toBe(escapeHtml(code));
   });
 
-  it('escapes HTML in code (no <script> injection) on both paths', () => {
+  it('escapes HTML in code (no <script> injection) on both paths', async () => {
+    await ensureHighlightLanguage('javascript');
     const code = 'const s = "<script>alert(1)</script>";';
     const highlighted = highlightCode('javascript', code);
     expect(highlighted).not.toContain('<script>');
@@ -189,7 +199,8 @@ describe('highlightCode', () => {
 // ---------------------------------------------------------------------------
 
 describe('tokenizeCode', () => {
-  it('concatenated token text reproduces the original code exactly', () => {
+  it('concatenated token text reproduces the original code exactly', async () => {
+    await ensureHighlightLanguage('javascript');
     const code = 'const x = "a\\n";\n// 注释 & <tag>\n';
     const tokens = tokenizeCode('javascript', code);
     expect(tokens).not.toBeNull();
@@ -513,7 +524,8 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
     expect(shaped.plugin()).toBeUndefined();
   });
 
-  it('adds a node decoration with language class for known languages', () => {
+  it('adds a node decoration with language class for known languages', async () => {
+    await ensureHighlightLanguage('javascript');
     const doc = codeDoc({ language: 'js', code: 'const x = 1;' });
     const found = buildCodeDecorations(doc).find();
     const nodeDeco = found.find((d) => decoAttrs(d)['data-language'] === 'javascript');
@@ -532,7 +544,8 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
     expect(buildCodeDecorations(doc).find()).toHaveLength(0);
   });
 
-  it('highlights shell fence via registered shell language', () => {
+  it('highlights shell fence via registered shell language', async () => {
+    await ensureHighlightLanguage('shell');
     const doc = codeDoc({ language: 'shell', code: 'echo hi # c' });
     const found = buildCodeDecorations(doc).find();
     const lang = found
@@ -541,7 +554,11 @@ describe('codeHighlightPlugin (Milkdown wiring)', () => {
     expect(lang).toBe('shell');
   });
 
-  it('inline decorations land on correct offsets across multiple blocks', () => {
+  it('inline decorations land on correct offsets across multiple blocks', async () => {
+    await Promise.all([
+      ensureHighlightLanguage('javascript'),
+      ensureHighlightLanguage('python'),
+    ]);
     const doc = codeDoc(
       { language: 'js', code: 'const a = 1;' },
       { language: '', code: 'plain' },

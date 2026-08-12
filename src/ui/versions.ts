@@ -6,6 +6,8 @@
  * 经注入的 [`VersionActions`] 与后端 + 编辑器交互。纯逻辑 [`newestFirst`] 可单测。
  */
 
+import { labelModal, mountModalFocus } from './modal-focus.js';
+
 export interface VersionMeta {
   id: string;
   created_at_ms: number;
@@ -20,6 +22,53 @@ export interface VersionActions {
   restore(id: string): Promise<void>;
   /** 手动把当前内容存为一个新版本。 */
   saveCurrent(): Promise<void>;
+}
+
+export interface BoundVersionActionsDeps<
+  T extends { readonly id: string; readonly filePath: string | null },
+> {
+  readonly targetId: string;
+  readonly filePath: string;
+  getTarget(id: string): T | null;
+  getContent(target: T): string;
+  setContent(target: T, content: string): void;
+  listVersions(filePath: string): Promise<VersionMeta[]>;
+  readVersion(filePath: string, id: string): Promise<string>;
+  restoreVersion(filePath: string, id: string, currentContent: string): Promise<string>;
+  createVersion(filePath: string, content: string): Promise<void>;
+}
+
+/** Bind async version operations to the document that opened the modal. */
+export function createBoundVersionActions<
+  T extends { readonly id: string; readonly filePath: string | null },
+>(deps: BoundVersionActionsDeps<T>): VersionActions {
+  const resolveTarget = (): T | null => {
+    const target = deps.getTarget(deps.targetId);
+    return target?.filePath === deps.filePath ? target : null;
+  };
+
+  return {
+    list: () => deps.listVersions(deps.filePath),
+    read: (id) => deps.readVersion(deps.filePath, id),
+    restore: async (id) => {
+      const target = resolveTarget();
+      if (target === null) return;
+      const content = await deps.restoreVersion(
+        deps.filePath,
+        id,
+        deps.getContent(target),
+      );
+      const liveTarget = resolveTarget();
+      if (liveTarget !== null) {
+        deps.setContent(liveTarget, content);
+      }
+    },
+    saveCurrent: async () => {
+      const target = resolveTarget();
+      if (target === null) return;
+      await deps.createVersion(deps.filePath, deps.getContent(target));
+    },
+  };
 }
 
 export interface VersionModalLabels {
@@ -104,9 +153,12 @@ export function showVersionsModal(
   overlay.className = 'lightink-modal-overlay';
   const dialog = doc.createElement('div');
   dialog.className = 'lightink-modal-dialog lightink-versions-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
   const title = doc.createElement('div');
   title.className = 'lightink-modal-title';
   title.textContent = L.title;
+  labelModal(dialog, title);
 
   // 双栏主体：左版本列表 / 右内容预览。
   const body = doc.createElement('div');
@@ -142,15 +194,10 @@ export function showVersionsModal(
   overlay.appendChild(dialog);
 
   let selectedId: string | null = null;
+  let releaseModal = (): void => overlay.remove();
 
   function dismiss(): void {
-    doc.removeEventListener('keydown', onKey);
-    overlay.remove();
-  }
-  function onKey(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      dismiss();
-    }
+    releaseModal();
   }
   overlay.addEventListener('pointerdown', (event) => {
     if (event.target === overlay) {
@@ -238,9 +285,10 @@ export function showVersionsModal(
       .catch(() => renderRows([]));
   }
 
-  doc.addEventListener('keydown', onKey);
-  doc.body.appendChild(overlay);
-  closeBtn.focus();
+  releaseModal = mountModalFocus(doc, overlay, dialog, {
+    initialFocus: closeBtn,
+    onEscape: dismiss,
+  });
   refresh();
 }
 

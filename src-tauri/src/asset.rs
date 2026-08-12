@@ -5,8 +5,8 @@
 //! 原子落盘：
 //!   - 文档已保存（`doc_path` 为 Some）→ 写入 `<文档目录>/assets/`；
 //!   - 文档未保存 → 写入应用数据目录下按会话隔离的暂存目录
-//!     `staging-assets/<session_id>/`，保存（另存为）时由
-//!     `migrate_staging_assets` 迁移进 `<文档目录>/assets/`。
+//!     `staging-assets/<session_id>/`，保存（另存为）时与 Markdown 一起
+//!     事务式提交进 `<文档目录>/assets/`。
 //!
 //! 两种情况下返回给前端的引用都是相对路径 `assets/<name>.<ext>`：暂存期
 //! 与迁移后的引用形式一致，迁移只是搬动文件，文档内容无需改写；移动整个
@@ -16,11 +16,13 @@
 //! crate；纯逻辑均接受可注入的目录参数以便单元测试，Tauri 命令层负责
 //! 解析应用数据目录（与 snapshot.rs 同一约定）。
 
-use std::fs;
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::identifiers::validate_session_id;
 
 /// 文档旁的图片目录名；文档内引用形如 `assets/<name>.<ext>`。
 const ASSETS_DIR_NAME: &str = "assets";
@@ -28,6 +30,8 @@ const ASSETS_DIR_NAME: &str = "assets";
 const STAGING_DIR_NAME: &str = "staging-assets";
 /// 允许的图片扩展名白名单（小写）。svg 经 `<img>` 渲染，不内联解析。
 const ALLOWED_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
+pub const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_IMAGE_BASE64_LEN: usize = (MAX_IMAGE_BYTES as usize).div_ceil(3) * 4;
 
 /// 进程内单调计数器：与毫秒时间戳、内容哈希共同保证文件名唯一
 ///（同一毫秒连发多张图也不冲突）。
@@ -52,7 +56,7 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     }
 
     let bytes = input.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("base64 长度必须是 4 的倍数".to_owned());
     }
     let chunk_count = bytes.len() / 4;
@@ -113,6 +117,22 @@ fn validate_ext(ext: &str) -> Result<String, String> {
     Ok(lowered)
 }
 
+fn ensure_image_size(actual: u64) -> Result<(), String> {
+    if actual > MAX_IMAGE_BYTES {
+        return Err(format!("IMAGE_TOO_LARGE:{actual}:{MAX_IMAGE_BYTES}"));
+    }
+    Ok(())
+}
+
+fn ensure_image_base64_length(actual: usize) -> Result<(), String> {
+    if actual > MAX_IMAGE_BASE64_LEN {
+        return Err(format!(
+            "IMAGE_BASE64_TOO_LARGE:{actual}:{MAX_IMAGE_BASE64_LEN}"
+        ));
+    }
+    Ok(())
+}
+
 /// FNV-1a 64-bit（与 snapshot.rs 同一哈希，跨运行稳定）。
 pub fn fnv64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -148,24 +168,6 @@ fn unique_asset_name(bytes: &[u8]) -> String {
     )
 }
 
-/// 会话 id 消毒：只保留字母数字/`-`/`_`，其余替换为 `_`，杜绝路径穿越。
-fn sanitize_session_id(session_id: &str) -> Result<String, String> {
-    let cleaned: String = session_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        return Err("会话 id 不能为空".to_owned());
-    }
-    Ok(cleaned)
-}
-
 /// 原子写字节版（与 file.rs 的字符串版同一策略：同目录临时文件 +
 /// flush/sync + rename；失败时 NamedTempFile 自动清理，不留半截文件）。
 /// file.rs 不在本任务 scope，故字节变体放在这里。
@@ -174,11 +176,10 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| format!("无效的保存路径: {}", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| format!("无法创建目录 {}: {}", parent.display(), e))?;
+    fs::create_dir_all(parent).map_err(|e| format!("无法创建目录 {}: {}", parent.display(), e))?;
 
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("无法创建临时文件: {}", e))?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("无法创建临时文件: {}", e))?;
     tmp.write_all(bytes)
         .map_err(|e| format!("写入临时文件失败: {}", e))?;
     tmp.as_file()
@@ -193,8 +194,8 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 ///
 /// - `doc_dir` 为 Some：写入 `<doc_dir>/assets/`；
 /// - 为 None（文档未保存）：写入 `<staging_root>/staging-assets/<session_id>/`，
-///   返回同样的相对引用 —— 保存时 `migrate_staging_assets_impl` 按原名
-///   搬入 `<文档目录>/assets/`，引用保持有效。
+///   返回同样的相对引用 —— 保存时 `save_document_as_impl` 按原名提交到
+///   `<文档目录>/assets/`，引用保持有效。
 pub fn save_asset_impl(
     doc_dir: Option<&Path>,
     staging_root: &Path,
@@ -202,70 +203,169 @@ pub fn save_asset_impl(
     bytes: &[u8],
     ext: &str,
 ) -> Result<String, String> {
+    let session_id = validate_session_id(session_id)?;
     let ext = validate_ext(ext)?;
     if bytes.is_empty() {
         return Err("图片内容为空，未保存".to_owned());
     }
+    ensure_image_size(bytes.len() as u64)?;
     let name = format!("{}.{}", unique_asset_name(bytes), ext);
     let dir = match doc_dir {
         Some(d) => d.join(ASSETS_DIR_NAME),
-        None => staging_root
-            .join(STAGING_DIR_NAME)
-            .join(sanitize_session_id(session_id)?),
+        None => staging_root.join(STAGING_DIR_NAME).join(session_id),
     };
     write_bytes_atomic(&dir.join(&name), bytes)?;
     Ok(format!("{}/{}", ASSETS_DIR_NAME, name))
 }
 
-/// 把某会话暂存目录里的全部图片搬入 `<doc_path 父目录>/assets/`（按原名
-/// 移动，跨设备时回退 copy+delete），返回迁移后的相对引用列表（排序后）。
-/// 暂存目录不存在视为无事可做（Ok(空)）；搬空后删除会话目录。
-pub fn migrate_staging_assets_impl(
+fn files_have_same_content(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_meta =
+        fs::metadata(left).map_err(|e| format!("无法读取资源信息 {}: {}", left.display(), e))?;
+    let right_meta =
+        fs::metadata(right).map_err(|e| format!("无法读取资源信息 {}: {}", right.display(), e))?;
+    if left_meta.len() != right_meta.len() {
+        return Ok(false);
+    }
+
+    let mut left_file =
+        File::open(left).map_err(|e| format!("无法读取资源 {}: {}", left.display(), e))?;
+    let mut right_file =
+        File::open(right).map_err(|e| format!("无法读取资源 {}: {}", right.display(), e))?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_count = left_file
+            .read(&mut left_buffer)
+            .map_err(|e| format!("无法读取资源 {}: {}", left.display(), e))?;
+        let right_count = right_file
+            .read(&mut right_buffer)
+            .map_err(|e| format!("无法读取资源 {}: {}", right.display(), e))?;
+        if left_count != right_count || left_buffer[..left_count] != right_buffer[..right_count] {
+            return Ok(false);
+        }
+        if left_count == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn rollback_created_assets(paths: &[PathBuf]) {
+    for path in paths.iter().rev() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Persist a Save As operation as one logical transaction. Staged assets are
+/// prepared and promoted without overwriting existing files before the
+/// Markdown document is atomically written. If document persistence fails,
+/// every asset created by this transaction is removed and staging is kept.
+pub fn save_document_as_impl(
     staging_root: &Path,
     session_id: &str,
-    doc_path: &str,
+    doc_path: &Path,
+    content: &str,
 ) -> Result<Vec<String>, String> {
-    let staging = staging_root
-        .join(STAGING_DIR_NAME)
-        .join(sanitize_session_id(session_id)?);
-    if !staging.exists() {
-        return Ok(Vec::new());
-    }
-    let doc_dir = Path::new(doc_path)
+    let session_id = validate_session_id(session_id)?;
+    let doc_dir = doc_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| format!("无效的文档路径: {}", doc_path))?;
-    let target_dir = doc_dir.join(ASSETS_DIR_NAME);
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("无法创建目录 {}: {}", target_dir.display(), e))?;
+        .ok_or_else(|| format!("无效的文档路径: {}", doc_path.display()))?;
+    let staging = staging_root.join(STAGING_DIR_NAME).join(session_id);
 
-    let mut moved: Vec<String> = Vec::new();
-    let entries = fs::read_dir(&staging)
-        .map_err(|e| format!("无法读取暂存目录 {}: {}", staging.display(), e))?;
-    for entry in entries {
+    if !staging.exists() {
+        crate::file::write_file_impl(doc_path, content)?;
+        return Ok(Vec::new());
+    }
+
+    let mut assets = Vec::new();
+    for entry in fs::read_dir(&staging)
+        .map_err(|e| format!("无法读取暂存目录 {}: {}", staging.display(), e))?
+    {
         let entry = entry.map_err(|e| format!("无法读取暂存目录项: {}", e))?;
         let file_type = entry
             .file_type()
             .map_err(|e| format!("无法读取暂存文件类型: {}", e))?;
-        if !file_type.is_file() {
-            continue;
+        if file_type.is_file() {
+            assets.push((entry.path(), entry.file_name()));
         }
-        let name = entry.file_name();
-        let target = target_dir.join(&name);
-        if fs::rename(entry.path(), &target).is_err() {
-            // 跨文件系统等 rename 失败场景：回退 copy + delete。
-            fs::copy(entry.path(), &target).map_err(|e| {
-                format!("无法迁移暂存图片到 {}: {}", target.display(), e)
-            })?;
-            fs::remove_file(entry.path())
-                .map_err(|e| format!("无法清理暂存图片: {}", e))?;
-        }
-        moved.push(format!("{}/{}", ASSETS_DIR_NAME, name.to_string_lossy()));
     }
-    // 搬空后移除会话目录（删不掉不阻断，留空目录无害）。
+    assets.sort_by(|left, right| left.1.cmp(&right.1));
+
+    let target_dir = doc_dir.join(ASSETS_DIR_NAME);
+    if !assets.is_empty() {
+        fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("无法创建目录 {}: {}", target_dir.display(), e))?;
+    }
+
+    // Preflight every collision before creating any target file. Existing
+    // identical assets are safe to reuse; different content is never replaced.
+    let mut missing = Vec::new();
+    let mut persisted = Vec::with_capacity(assets.len());
+    for (source, name) in &assets {
+        let target = target_dir.join(name);
+        let relative = format!("{}/{}", ASSETS_DIR_NAME, name.to_string_lossy());
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_file() || !files_have_same_content(source, &target)? {
+                    return Err(format!("目标资源已存在且内容不同: {}", target.display()));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push((source.clone(), target));
+            }
+            Err(error) => {
+                return Err(format!("无法检查目标资源 {}: {}", target.display(), error));
+            }
+        }
+        persisted.push(relative);
+    }
+
+    // Copy all missing assets into synced temporary files first. No visible
+    // target is created until every source can be read completely.
+    let mut prepared = Vec::with_capacity(missing.len());
+    for (source, target) in missing {
+        let mut source_file = File::open(&source)
+            .map_err(|e| format!("无法读取暂存资源 {}: {}", source.display(), e))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&target_dir)
+            .map_err(|e| format!("无法创建资源临时文件: {}", e))?;
+        std::io::copy(&mut source_file, &mut temporary)
+            .map_err(|e| format!("无法准备资源 {}: {}", target.display(), e))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|e| format!("无法同步资源 {}: {}", target.display(), e))?;
+        prepared.push((target, temporary));
+    }
+
+    let mut created = Vec::with_capacity(prepared.len());
+    for (target, temporary) in prepared {
+        match temporary.persist_noclobber(&target) {
+            Ok(_) => created.push(target),
+            Err(error) => {
+                rollback_created_assets(&created);
+                return Err(format!(
+                    "无法提交资源 {}（目标可能已存在）: {}",
+                    target.display(),
+                    error.error
+                ));
+            }
+        }
+    }
+
+    if let Err(error) = crate::file::write_file_impl(doc_path, content) {
+        rollback_created_assets(&created);
+        return Err(error);
+    }
+
+    // Persistence is already committed. Cleanup is deliberately best-effort:
+    // a stale staging copy is recoverable, while reporting failure here would
+    // make the frontend believe a successfully written document was not saved.
+    for (source, _) in &assets {
+        let _ = fs::remove_file(source);
+    }
     let _ = fs::remove_dir(&staging);
-    moved.sort();
-    Ok(moved)
+    persisted.sort();
+    Ok(persisted)
 }
 
 /// 解析应用数据目录：优先 Tauri app_data_dir，失败回退系统临时目录
@@ -306,16 +406,12 @@ pub fn save_asset(
     bytes_base64: String,
     ext: String,
 ) -> Result<String, String> {
+    ensure_image_base64_length(bytes_base64.len())?;
     let bytes = decode_base64(&bytes_base64)?;
+    ensure_image_size(bytes.len() as u64)?;
     let staging_root = resolve_base_dir(&app);
     let doc_dir = resolve_doc_dir(doc_path.as_deref())?;
-    save_asset_impl(
-        doc_dir.as_deref(),
-        &staging_root,
-        &session_id,
-        &bytes,
-        &ext,
-    )
+    save_asset_impl(doc_dir.as_deref(), &staging_root, &session_id, &bytes, &ext)
 }
 
 /// 「插入图片」从本地文件导入（纯逻辑）：读取源文件字节，按与粘贴/拖拽
@@ -331,6 +427,10 @@ pub fn import_image_asset_impl(
         .extension()
         .and_then(|e| e.to_str())
         .ok_or_else(|| format!("无法识别图片扩展名: {}", source_path.display()))?;
+    let size = fs::metadata(source_path)
+        .map_err(|e| format!("无法读取图片信息 {}: {}", source_path.display(), e))?
+        .len();
+    ensure_image_size(size)?;
     let bytes = fs::read(source_path)
         .map_err(|e| format!("无法读取图片 {}: {}", source_path.display(), e))?;
     save_asset_impl(doc_dir, staging_root, session_id, &bytes, ext)
@@ -354,15 +454,21 @@ pub fn import_image_asset(
     )
 }
 
-/// 文档首次保存（另存为）后调用：把该会话暂存的图片迁移到文档旁的
-/// assets/ 目录。返回迁移后的相对引用列表。
+/// Atomically persist a Save As request together with any assets staged for
+/// the untitled editor session.
 #[tauri::command]
-pub fn migrate_staging_assets(
+pub fn save_document_as(
     app: tauri::AppHandle,
     session_id: String,
     doc_path: String,
+    content: String,
 ) -> Result<Vec<String>, String> {
-    migrate_staging_assets_impl(&resolve_base_dir(&app), &session_id, &doc_path)
+    save_document_as_impl(
+        &resolve_base_dir(&app),
+        &session_id,
+        Path::new(&doc_path),
+        &content,
+    )
 }
 
 #[cfg(test)]
@@ -406,6 +512,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn image_limits_accept_boundary_and_reject_one_extra_byte() {
+        assert!(ensure_image_size(MAX_IMAGE_BYTES).is_ok());
+        assert!(ensure_image_size(MAX_IMAGE_BYTES + 1).is_err());
+        assert!(ensure_image_base64_length(MAX_IMAGE_BASE64_LEN).is_ok());
+        assert!(ensure_image_base64_length(MAX_IMAGE_BASE64_LEN + 1).is_err());
+    }
+
     // -- 保存 --
 
     #[test]
@@ -429,8 +543,8 @@ mod tests {
     #[test]
     fn save_without_doc_goes_to_session_staging() {
         let dir = temp_dir();
-        let rel = save_asset_impl(None, dir.path(), "untitled-ab12", b"GIF89a", "gif")
-            .expect("save");
+        let rel =
+            save_asset_impl(None, dir.path(), "untitled-ab12", b"GIF89a", "gif").expect("save");
         assert!(rel.starts_with("assets/") && rel.ends_with(".gif"));
         let file_name = rel.strip_prefix("assets/").unwrap();
         let staged = dir
@@ -471,71 +585,112 @@ mod tests {
     }
 
     #[test]
-    fn session_id_is_sanitized_against_traversal() {
+    fn session_id_is_rejected_instead_of_rewritten() {
         let dir = temp_dir();
-        let rel = save_asset_impl(None, dir.path(), "../evil/../x", b"data", "png").unwrap();
-        let file_name = rel.strip_prefix("assets/").unwrap();
-        // 消毒后不会逃出 staging 根目录
-        let staged_root = dir.path().join(STAGING_DIR_NAME);
-        let mut found = false;
-        for entry in fs::read_dir(&staged_root).unwrap() {
-            let session = entry.unwrap();
-            let candidate = session.path().join(file_name);
-            if candidate.exists() {
-                assert!(candidate.starts_with(&staged_root));
-                found = true;
-            }
-        }
-        assert!(found, "sanitized staging file must exist under staging root");
+        assert!(save_asset_impl(None, dir.path(), "../evil/../x", b"data", "png").is_err());
+        assert!(!dir.path().join(STAGING_DIR_NAME).exists());
         assert!(save_asset_impl(None, dir.path(), "", b"data", "png").is_err());
     }
 
-    // -- 迁移 --
+    // -- transactional Save As --
 
     #[test]
-    fn migrate_moves_staged_files_into_doc_assets() {
+    fn save_document_as_commits_document_and_assets_then_cleans_staging() {
         let dir = temp_dir();
-        let session = "untitled-m1";
-        let rel_a = save_asset_impl(None, dir.path(), session, b"png-a", "png").unwrap();
-        let rel_b = save_asset_impl(None, dir.path(), session, b"png-b", "png").unwrap();
+        let session = "untitled-transaction";
+        let rel_a = save_asset_impl(None, dir.path(), session, b"asset-a", "png").unwrap();
+        let rel_b = save_asset_impl(None, dir.path(), session, b"asset-b", "webp").unwrap();
+        let doc_path = dir.path().join("docs").join("note.md");
 
-        let doc_path = dir.path().join("docs").join("笔记.md");
-        fs::create_dir_all(doc_path.parent().unwrap()).unwrap();
-        let moved = migrate_staging_assets_impl(
-            dir.path(),
-            session,
-            &doc_path.to_string_lossy(),
-        )
-        .expect("migrate");
-        assert_eq!(moved, {
-            let mut v = vec![rel_a.clone(), rel_b.clone()];
-            v.sort();
-            v
+        let persisted = save_document_as_impl(dir.path(), session, &doc_path, "![a](assets/a.png)")
+            .expect("transaction succeeds");
+
+        assert_eq!(fs::read_to_string(&doc_path).unwrap(), "![a](assets/a.png)");
+        assert_eq!(persisted, {
+            let mut expected = vec![rel_a.clone(), rel_b.clone()];
+            expected.sort();
+            expected
         });
-        // 文件已按原名落在文档旁 assets/，内容一致
-        let doc_dir = doc_path.parent().unwrap();
-        assert_eq!(fs::read(doc_dir.join(&rel_a)).unwrap(), b"png-a");
-        assert_eq!(fs::read(doc_dir.join(&rel_b)).unwrap(), b"png-b");
-        // 暂存目录已清空移除
+        assert_eq!(
+            fs::read(doc_path.parent().unwrap().join(rel_a)).unwrap(),
+            b"asset-a"
+        );
+        assert_eq!(
+            fs::read(doc_path.parent().unwrap().join(rel_b)).unwrap(),
+            b"asset-b"
+        );
         assert!(!dir.path().join(STAGING_DIR_NAME).join(session).exists());
     }
 
     #[test]
-    fn migrate_without_staging_is_noop() {
+    fn save_document_as_reuses_identical_targets_without_overwriting() {
         let dir = temp_dir();
-        let doc = dir.path().join("a.md");
-        let moved =
-            migrate_staging_assets_impl(dir.path(), "never-staged", &doc.to_string_lossy())
-                .expect("noop migrate");
-        assert!(moved.is_empty());
+        let session = "untitled-reuse";
+        let rel = save_asset_impl(None, dir.path(), session, b"same", "png").unwrap();
+        let doc_path = dir.path().join("docs").join("note.md");
+        let target = doc_path.parent().unwrap().join(&rel);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"same").unwrap();
+
+        save_document_as_impl(dir.path(), session, &doc_path, "body").expect("reuse");
+
+        assert_eq!(fs::read(&target).unwrap(), b"same");
+        assert_eq!(fs::read_to_string(&doc_path).unwrap(), "body");
+        assert!(!dir.path().join(STAGING_DIR_NAME).join(session).exists());
     }
 
     #[test]
-    fn migrate_rejects_doc_path_without_parent() {
+    fn save_document_as_rejects_different_target_content_before_writing() {
         let dir = temp_dir();
-        let session = "untitled-m2";
-        save_asset_impl(None, dir.path(), session, b"x", "png").unwrap();
-        assert!(migrate_staging_assets_impl(dir.path(), session, "").is_err());
+        let session = "untitled-conflict";
+        let rel = save_asset_impl(None, dir.path(), session, b"staged", "png").unwrap();
+        let doc_path = dir.path().join("docs").join("note.md");
+        let target = doc_path.parent().unwrap().join(&rel);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"existing").unwrap();
+
+        let error = save_document_as_impl(dir.path(), session, &doc_path, "body")
+            .expect_err("conflict must fail");
+
+        assert!(error.contains("内容不同"), "unexpected error: {}", error);
+        assert_eq!(fs::read(&target).unwrap(), b"existing");
+        assert!(!doc_path.exists());
+        assert!(dir.path().join(STAGING_DIR_NAME).join(session).exists());
+    }
+
+    #[test]
+    fn save_document_as_rolls_back_new_assets_when_document_write_fails() {
+        let dir = temp_dir();
+        let session = "untitled-rollback";
+        let rel = save_asset_impl(None, dir.path(), session, b"asset", "png").unwrap();
+        let doc_path = dir.path().join("docs").join("note.md");
+        fs::create_dir_all(&doc_path).unwrap();
+
+        save_document_as_impl(dir.path(), session, &doc_path, "body")
+            .expect_err("document write must fail");
+
+        assert!(!doc_path.parent().unwrap().join(&rel).exists());
+        let staged_name = rel.strip_prefix("assets/").unwrap();
+        assert_eq!(
+            fs::read(
+                dir.path()
+                    .join(STAGING_DIR_NAME)
+                    .join(session)
+                    .join(staged_name)
+            )
+            .unwrap(),
+            b"asset"
+        );
+    }
+
+    #[test]
+    fn save_document_as_without_staging_still_writes_document() {
+        let dir = temp_dir();
+        let doc_path = dir.path().join("docs").join("plain.md");
+        let persisted = save_document_as_impl(dir.path(), "untitled-empty", &doc_path, "plain")
+            .expect("save document");
+        assert!(persisted.is_empty());
+        assert_eq!(fs::read_to_string(doc_path).unwrap(), "plain");
     }
 
     // -- 本地文件导入（插入图片） --
@@ -546,10 +701,14 @@ mod tests {
         let source = dir.path().join("照片.JPG");
         fs::write(&source, b"\xff\xd8jpeg-bytes").unwrap();
         let doc_dir = dir.path().join("docs");
-        let rel = import_image_asset_impl(Some(&doc_dir), dir.path(), "s", &source)
-            .expect("import");
+        let rel =
+            import_image_asset_impl(Some(&doc_dir), dir.path(), "s", &source).expect("import");
         // 扩展名小写化（JPG → jpg），内容一致。
-        assert!(rel.starts_with("assets/") && rel.ends_with(".jpg"), "rel = {}", rel);
+        assert!(
+            rel.starts_with("assets/") && rel.ends_with(".jpg"),
+            "rel = {}",
+            rel
+        );
         assert_eq!(fs::read(doc_dir.join(&rel)).unwrap(), b"\xff\xd8jpeg-bytes");
     }
 
@@ -558,8 +717,7 @@ mod tests {
         let dir = temp_dir();
         let source = dir.path().join("p.webp");
         fs::write(&source, b"RIFFwebp").unwrap();
-        let rel = import_image_asset_impl(None, dir.path(), "untitled-z", &source)
-            .expect("import");
+        let rel = import_image_asset_impl(None, dir.path(), "untitled-z", &source).expect("import");
         let name = rel.strip_prefix("assets/").unwrap();
         let staged = dir
             .path()

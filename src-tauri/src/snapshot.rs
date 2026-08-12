@@ -9,9 +9,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::file::write_file_impl;
+use crate::identifiers::{validate_session_id, validate_version_id};
 
 const SNAPSHOT_DIR_NAME: &str = "snapshots";
 const SNAPSHOT_EXT: &str = "snapshot";
@@ -20,6 +22,7 @@ const SNAPSHOT_EXT: &str = "snapshot";
 /// 未命名草稿。正常保存/关闭会同时移除索引条目与快照文件。
 const UNTITLED_INDEX_NAME: &str = "untitled-index.json";
 const UNTITLED_KEY_PREFIX: &str = "untitled-";
+static UNTITLED_INDEX_LOCK: Mutex<()> = Mutex::new(());
 
 /// FNV-1a 64-bit 哈希 —— 跨进程/跨运行稳定（std 的 DefaultHasher 不保证
 /// 稳定，不能用于持久化命名）。对规范化后的路径字符串计算，输出 hex。
@@ -44,9 +47,11 @@ fn stable_path_hash(file_path: &str) -> String {
 
 /// 快照文件完整路径：`<base_dir>/<hash>.snapshot`。
 pub fn snapshot_path_for(base_dir: &Path, file_path: &str) -> PathBuf {
-    base_dir
-        .join(SNAPSHOT_DIR_NAME)
-        .join(format!("{}.{}", stable_path_hash(file_path), SNAPSHOT_EXT))
+    base_dir.join(SNAPSHOT_DIR_NAME).join(format!(
+        "{}.{}",
+        stable_path_hash(file_path),
+        SNAPSHOT_EXT
+    ))
 }
 
 /// 未命名草稿索引条目（序列化进 untitled-index.json）。
@@ -85,16 +90,39 @@ fn load_untitled_index(base_dir: &Path) -> Vec<UntitledIndexEntry> {
 
 fn save_untitled_index(base_dir: &Path, entries: &[UntitledIndexEntry]) -> Result<(), String> {
     let path = untitled_index_path(base_dir);
-    let body = serde_json::to_string(entries)
-        .map_err(|e| format!("无法序列化未命名快照索引: {}", e))?;
+    let body =
+        serde_json::to_string(entries).map_err(|e| format!("无法序列化未命名快照索引: {}", e))?;
     write_file_impl(&path, &body)
+}
+
+fn lock_untitled_index() -> Result<MutexGuard<'static, ()>, String> {
+    UNTITLED_INDEX_LOCK
+        .lock()
+        .map_err(|_| "未命名快照索引锁已损坏".to_string())
+}
+
+fn remove_snapshot_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("无法删除快照 {}: {}", path.display(), e)),
+    }
+}
+
+fn validate_snapshot_key(file_path: &str) -> Result<(), String> {
+    if file_path.starts_with(UNTITLED_KEY_PREFIX) {
+        validate_session_id(file_path)?;
+    }
+    Ok(())
 }
 
 /// 原子写快照（复用 file 模块的原子写实现）；未命名键同步登记索引。
 pub fn write_snapshot_impl(base_dir: &Path, file_path: &str, content: &str) -> Result<(), String> {
+    validate_snapshot_key(file_path)?;
     let snap = snapshot_path_for(base_dir, file_path);
-    write_file_impl(&snap, content)?;
     if file_path.starts_with(UNTITLED_KEY_PREFIX) {
+        let _guard = lock_untitled_index()?;
+        write_file_impl(&snap, content)?;
         let mut entries = load_untitled_index(base_dir);
         entries.retain(|e| e.key != file_path);
         entries.push(UntitledIndexEntry {
@@ -102,25 +130,27 @@ pub fn write_snapshot_impl(base_dir: &Path, file_path: &str, content: &str) -> R
             written_at_ms: now_ms(),
         });
         save_untitled_index(base_dir, &entries)?;
+    } else {
+        write_file_impl(&snap, content)?;
     }
     Ok(())
 }
 
 /// 删除快照；快照不存在不算错误。未命名键同步移除索引条目。
 pub fn clear_snapshot_impl(base_dir: &Path, file_path: &str) -> Result<(), String> {
+    validate_snapshot_key(file_path)?;
     let snap = snapshot_path_for(base_dir, file_path);
-    match fs::remove_file(&snap) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("无法删除快照 {}: {}", snap.display(), e)),
-    }?;
     if file_path.starts_with(UNTITLED_KEY_PREFIX) {
+        let _guard = lock_untitled_index()?;
+        remove_snapshot_file(&snap)?;
         let mut entries = load_untitled_index(base_dir);
         let before = entries.len();
         entries.retain(|e| e.key != file_path);
         if entries.len() != before {
             save_untitled_index(base_dir, &entries)?;
         }
+    } else {
+        remove_snapshot_file(&snap)?;
     }
     Ok(())
 }
@@ -128,11 +158,16 @@ pub fn clear_snapshot_impl(base_dir: &Path, file_path: &str) -> Result<(), Strin
 /// 枚举仍存在的未命名草稿快照（启动崩溃恢复用）。索引与快照文件相互
 /// 校验：索引指向的快照缺失时自动剔除该条目（并回写索引）。
 pub fn list_untitled_drafts_impl(base_dir: &Path) -> Result<Vec<UntitledDraft>, String> {
+    let _guard = lock_untitled_index()?;
     let entries = load_untitled_index(base_dir);
     let mut drafts: Vec<UntitledDraft> = Vec::new();
     let mut surviving: Vec<UntitledIndexEntry> = Vec::new();
     let mut pruned = false;
     for entry in entries {
+        if validate_session_id(&entry.key).is_err() || !entry.key.starts_with(UNTITLED_KEY_PREFIX) {
+            pruned = true;
+            continue;
+        }
         let snap = snapshot_path_for(base_dir, &entry.key);
         match fs::read_to_string(&snap) {
             Ok(content) => {
@@ -166,7 +201,11 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 /// 「崩溃新于保存」启发式：快照存在且其 mtime 晚于磁盘文件 mtime 时，
 /// 返回快照内容；否则返回 None。磁盘文件不存在时视为 epoch 0，
 /// 任何存在的快照都算「更新」。
-pub fn read_stale_snapshot_impl(base_dir: &Path, file_path: &str) -> Result<Option<String>, String> {
+pub fn read_stale_snapshot_impl(
+    base_dir: &Path,
+    file_path: &str,
+) -> Result<Option<String>, String> {
+    validate_snapshot_key(file_path)?;
     let snap = snapshot_path_for(base_dir, file_path);
     let snap_mtime = match mtime(&snap) {
         Some(t) => t,
@@ -191,7 +230,11 @@ fn resolve_base_dir(app: &tauri::AppHandle) -> PathBuf {
 }
 
 #[tauri::command]
-pub fn write_snapshot(app: tauri::AppHandle, file_path: String, content: String) -> Result<(), String> {
+pub fn write_snapshot(
+    app: tauri::AppHandle,
+    file_path: String,
+    content: String,
+) -> Result<(), String> {
     write_snapshot_impl(&resolve_base_dir(&app), &file_path, &content)
 }
 
@@ -201,7 +244,10 @@ pub fn clear_snapshot(app: tauri::AppHandle, file_path: String) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn read_stale_snapshot(app: tauri::AppHandle, file_path: String) -> Result<Option<String>, String> {
+pub fn read_stale_snapshot(
+    app: tauri::AppHandle,
+    file_path: String,
+) -> Result<Option<String>, String> {
     read_stale_snapshot_impl(&resolve_base_dir(&app), &file_path)
 }
 
@@ -248,7 +294,7 @@ fn list_version_ids(dir: &Path) -> Vec<String> {
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_string())
             })
-            .filter(|s| s.parse::<u64>().is_ok())
+            .filter(|s| validate_version_id(s).is_ok() && s.parse::<u64>().is_ok())
             .collect(),
         Err(_) => Vec::new(),
     };
@@ -311,6 +357,7 @@ pub fn read_version_impl(
     file_path: &str,
     version_id: &str,
 ) -> Result<String, String> {
+    let version_id = validate_version_id(version_id)?;
     let path = version_dir_for(base_dir, file_path).join(format!("{version_id}.{VERSION_EXT}"));
     fs::read_to_string(&path).map_err(|e| format!("无法读取版本 {version_id}: {e}"))
 }
@@ -360,12 +407,18 @@ pub fn restore_version(
     version_id: String,
     current_content: String,
 ) -> Result<String, String> {
-    restore_version_impl(&resolve_base_dir(&app), &file_path, &version_id, &current_content)
+    restore_version_impl(
+        &resolve_base_dir(&app),
+        &file_path,
+        &version_id,
+        &current_content,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::Duration;
 
@@ -376,7 +429,10 @@ mod tests {
     #[test]
     fn hash_is_stable_and_path_form_insensitive() {
         // 同一字符串多次哈希一致（跨运行稳定是 FNV-1a 的算法属性）
-        assert_eq!(stable_path_hash("C:\\a\\b.md"), stable_path_hash("C:\\a\\b.md"));
+        assert_eq!(
+            stable_path_hash("C:\\a\\b.md"),
+            stable_path_hash("C:\\a\\b.md")
+        );
         // 正/反斜杠差异映射到同一快照
         assert_eq!(
             stable_path_hash("C:/Docs/Note.md"),
@@ -410,13 +466,49 @@ mod tests {
 
         let drafts = list_untitled_drafts_impl(dir.path()).expect("list");
         assert_eq!(drafts.len(), 2);
-        assert!(drafts.iter().any(|d| d.key == "untitled-a1b2c3" && d.content == "草稿甲"));
-        assert!(drafts.iter().any(|d| d.key == "untitled-d4e5f6" && d.content == "草稿乙"));
+        assert!(drafts
+            .iter()
+            .any(|d| d.key == "untitled-a1b2c3" && d.content == "草稿甲"));
+        assert!(drafts
+            .iter()
+            .any(|d| d.key == "untitled-d4e5f6" && d.content == "草稿乙"));
 
         clear_snapshot_impl(dir.path(), "untitled-a1b2c3").expect("clear");
         let drafts = list_untitled_drafts_impl(dir.path()).expect("list after clear");
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].key, "untitled-d4e5f6");
+    }
+
+    #[test]
+    fn concurrent_untitled_writes_keep_every_index_entry() {
+        let dir = temp_dir();
+        let base = Arc::new(dir.path().to_path_buf());
+        let barrier = Arc::new(Barrier::new(12));
+        let handles: Vec<_> = (0..12)
+            .map(|index| {
+                let base = Arc::clone(&base);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let key = format!("untitled-concurrent-{index}");
+                    write_snapshot_impl(&base, &key, &format!("draft {index}"))
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("writer thread")
+                .expect("write snapshot");
+        }
+        let drafts = list_untitled_drafts_impl(&base).expect("list drafts");
+        assert_eq!(drafts.len(), 12);
+        for index in 0..12 {
+            assert!(drafts
+                .iter()
+                .any(|draft| draft.key == format!("untitled-concurrent-{index}")));
+        }
     }
 
     #[test]
@@ -502,6 +594,17 @@ mod tests {
         assert_eq!(stale, None);
     }
 
+    #[test]
+    fn rejects_invalid_untitled_snapshot_identifiers() {
+        let dir = temp_dir();
+        for key in ["untitled-../escape", "untitled-with space", "untitled-会话"] {
+            assert!(write_snapshot_impl(dir.path(), key, "draft").is_err());
+            assert!(clear_snapshot_impl(dir.path(), key).is_err());
+            assert!(read_stale_snapshot_impl(dir.path(), key).is_err());
+        }
+        assert!(!dir.path().join(SNAPSHOT_DIR_NAME).exists());
+    }
+
     // ── R13 版本快照 ──
     #[test]
     fn evict_ids_keeps_newest_cap() {
@@ -540,6 +643,16 @@ mod tests {
     }
 
     #[test]
+    fn version_reads_reject_non_numeric_or_oversized_identifiers() {
+        let dir = temp_dir();
+        let path = dir.path().join("d.md").to_string_lossy().into_owned();
+        for id in ["", "../1", "1.version", "123456789012345678901"] {
+            assert!(read_version_impl(dir.path(), &path, id).is_err());
+            assert!(restore_version_impl(dir.path(), &path, id, "current").is_err());
+        }
+    }
+
+    #[test]
     fn version_evicts_oldest_beyond_cap() {
         let dir = temp_dir();
         let path = dir.path().join("cap.md").to_string_lossy().into_owned();
@@ -569,6 +682,8 @@ mod tests {
         let restored = restore_version_impl(dir.path(), &path, &old.id, "当前").expect("restore");
         assert_eq!(restored, "旧版本");
         let list = list_versions_impl(dir.path(), &path).expect("list");
-        assert!(list.iter().any(|m| read_version_impl(dir.path(), &path, &m.id).unwrap_or_default() == "当前"));
+        assert!(list
+            .iter()
+            .any(|m| read_version_impl(dir.path(), &path, &m.id).unwrap_or_default() == "当前"));
     }
 }

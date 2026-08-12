@@ -12,6 +12,8 @@
  * 挂载态 DOM（同 menus.ts）。
  */
 
+import type { MessageKey } from '../i18n/messages.js';
+
 export interface MenuItem {
   id: string;
   label: string;
@@ -125,7 +127,7 @@ export interface EditorMenuContext {
   /** 光标是否在表格内（展示行列操作）。 */
   inTable?: boolean;
   /** Translate UI string (en / zh-CN). Optional for tests. */
-  t?: (key: string) => string;
+  t?: (key: MessageKey) => string;
   /** Format shortcut for current OS. Optional for tests. */
   formatShortcut?: (combo: string) => string;
 }
@@ -159,7 +161,7 @@ export function buildEditorContextMenuItems(
   ctx: EditorMenuContext,
   actions: EditorMenuActions,
 ): MenuItem[] {
-  const t = ctx.t ?? ((key: string) => key);
+  const t = ctx.t ?? ((key: MessageKey) => key);
   const sc = ctx.formatShortcut ?? ((combo: string) => combo);
   const clipboardItems: MenuItem[] = [
     { id: 'cut', label: t('ctx.cut'), action: actions.cut, enabled: () => ctx.hasSelection },
@@ -279,7 +281,7 @@ export interface TabMenuContext {
   /** 是否有磁盘文件路径（未保存的新标签无路径）。 */
   hasFile: boolean;
   /** Translate UI string (en / zh-CN). Optional for tests. */
-  t?: (key: string) => string;
+  t?: (key: MessageKey) => string;
 }
 
 export interface TabMenuActions {
@@ -291,7 +293,7 @@ export interface TabMenuActions {
 
 /** 构建标签页右键菜单项：关闭/关闭其他/复制路径/在文件管理器中显示。 */
 export function buildTabContextMenuItems(ctx: TabMenuContext, actions: TabMenuActions): MenuItem[] {
-  const t = ctx.t ?? ((key: string) => key);
+  const t = ctx.t ?? ((key: MessageKey) => key);
   return [
     { id: 'close', label: t('ctx.tab.close'), action: actions.close },
     { id: 'close-others', label: t('ctx.tab.closeOthers'), action: actions.closeOthers },

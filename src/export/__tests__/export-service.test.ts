@@ -13,6 +13,7 @@ import {
   type ExportServiceDeps,
   type ExportTabSnapshot,
 } from '../export-service.js';
+import { UnsafeCssBoundaryError } from '../html-export.js';
 import { PRINT_CSS } from '../pdf-export.js';
 
 const SNAPSHOT: ExportTabSnapshot = {
@@ -33,6 +34,7 @@ function makeDeps(overrides: Partial<ExportServiceDeps> = {}) {
     showHtmlSaveDialog: vi.fn(async () => 'C:\\out\\笔记.html'),
     writeFile: vi.fn(async () => undefined),
     printHtml: vi.fn(),
+    getUnsafeCssErrorMessage: () => 'Unsafe custom theme CSS',
     reportError: vi.fn(),
     ...overrides,
   };
@@ -117,6 +119,17 @@ describe('exportActiveTabHtml', () => {
     });
     await expect(exportActiveTabHtml(deps)).resolves.toBe(false);
     expect(deps.reportError).toHaveBeenCalledOnce();
+  });
+
+  it('不安全 CSS 在保存对话框前终止并显示错误', async () => {
+    const deps = makeDeps({ getCssText: () => '/* </STYLE boundary */' });
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(false);
+    expect(deps.reportError).toHaveBeenCalledWith(
+      'Unsafe custom theme CSS',
+      expect.any(UnsafeCssBoundaryError),
+    );
+    expect(deps.showHtmlSaveDialog).not.toHaveBeenCalled();
+    expect(deps.writeFile).not.toHaveBeenCalled();
   });
 
   it('图片读取失败不阻断导出：保留原 src 并上报警告', async () => {

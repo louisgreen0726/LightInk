@@ -22,13 +22,14 @@ export async function writeFile(path: string, content: string): Promise<void> {
 }
 
 /**
- * 文件 stat（R13 外部变更检测）：修改时间（ms，自 UNIX_EPOCH）+ 字节数。
+ * 文件 stat（R13 外部变更检测）：修改时间、字节数与稳定内容指纹。
  * 字段名与 Rust `FileStat` 的 serde 序列化一致（snake_case 原样透传）。
  * stat 失败（文件被删/权限）reject 可读错误信息。
  */
 export interface FileStat {
   readonly mtime_ms: number;
   readonly size: number;
+  readonly fingerprint: string;
 }
 
 export async function statFile(path: string): Promise<FileStat> {

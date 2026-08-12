@@ -9,6 +9,7 @@ import {
   LOCALE_STORAGE_KEY,
   translate,
   type LocaleId,
+  type MessageKey,
 } from './messages.js';
 
 export interface StorageLike {
@@ -57,7 +58,7 @@ export function saveLocale(
 
 export interface I18n {
   readonly locale: LocaleId;
-  t(key: string, vars?: Readonly<Record<string, string>>): string;
+  t(key: MessageKey, vars?: Readonly<Record<string, string>>): string;
   setLocale(locale: LocaleId): void;
   subscribe(listener: LocaleListener): () => void;
 }

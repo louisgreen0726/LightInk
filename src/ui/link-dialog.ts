@@ -5,6 +5,8 @@
  * and href, and cancel cleanly. Styles share the existing modal tokens.
  */
 
+import { labelModal, mountModalFocus } from './modal-focus.js';
+
 export interface LinkDialogValues {
   readonly text: string;
   readonly href: string;
@@ -44,11 +46,12 @@ export function showLinkDialog(
 ): Promise<LinkDialogResult> {
   return new Promise<LinkDialogResult>((resolve) => {
     let settled = false;
+    let releaseModal = (): void => overlay.remove();
     const settle = (value: LinkDialogResult): void => {
       if (settled) return;
       settled = true;
       doc.removeEventListener('keydown', onKey, true);
-      overlay.remove();
+      releaseModal();
       resolve(value);
     };
 
@@ -60,11 +63,11 @@ export function showLinkDialog(
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
     const L = spec.labels ?? {};
-    dialog.setAttribute('aria-label', spec.title ?? 'Edit link');
 
     const heading = doc.createElement('div');
     heading.className = 'lightink-modal-title';
     heading.textContent = spec.title ?? 'Edit link';
+    labelModal(dialog, heading);
 
     const form = doc.createElement('div');
     form.className = 'lightink-link-dialog-form';
@@ -112,12 +115,6 @@ export function showLinkDialog(
     overlay.appendChild(dialog);
 
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        settle(null);
-        return;
-      }
       if (event.key === 'Enter' && !(event.target instanceof HTMLTextAreaElement)) {
         // Confirm from either field.
         if (
@@ -141,17 +138,13 @@ export function showLinkDialog(
     });
 
     doc.addEventListener('keydown', onKey, true);
-    doc.body.appendChild(overlay);
-
-    // Focus text when empty, otherwise URL (common edit path).
     const initialText = (spec.initialText ?? '').trim();
-    if (initialText === '') {
-      textField.input.focus();
-      textField.input.select();
-    } else {
-      hrefField.input.focus();
-      hrefField.input.select();
-    }
+    const initialFocus = initialText === '' ? textField.input : hrefField.input;
+    releaseModal = mountModalFocus(doc, overlay, dialog, {
+      initialFocus,
+      onEscape: () => settle(null),
+    });
+    initialFocus.select();
   });
 }
 
@@ -172,11 +165,12 @@ export function showOpenLinkConfirm(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let releaseModal = (): void => overlay.remove();
     const settle = (ok: boolean): void => {
       if (settled) return;
       settled = true;
       doc.removeEventListener('keydown', onKey, true);
-      overlay.remove();
+      releaseModal();
       resolve(ok);
     };
 
@@ -194,6 +188,7 @@ export function showOpenLinkConfirm(
     const message = doc.createElement('div');
     message.className = 'lightink-modal-message';
     message.textContent = labels.message ?? 'Open the following link?';
+    labelModal(dialog, title, message);
 
     const target = doc.createElement('div');
     target.className = 'lightink-link-dialog-target';
@@ -220,12 +215,6 @@ export function showOpenLinkConfirm(
     overlay.appendChild(dialog);
 
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        settle(false);
-        return;
-      }
       if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) {
         event.preventDefault();
         settle(true);
@@ -235,8 +224,10 @@ export function showOpenLinkConfirm(
       if (event.target === overlay) settle(false);
     });
     doc.addEventListener('keydown', onKey, true);
-    doc.body.appendChild(overlay);
-    okBtn.focus();
+    releaseModal = mountModalFocus(doc, overlay, dialog, {
+      initialFocus: okBtn,
+      onEscape: () => settle(false),
+    });
   });
 }
 

@@ -61,7 +61,13 @@ import { tableOpsPlugin } from './plugins/table-ops.js';
 import { tocPlugin } from './plugins/toc.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
-import type { CursorLink, EditorInstance, MountOptions, SelectionSummary } from './types.js';
+import type {
+  CursorLink,
+  CursorPosition,
+  EditorInstance,
+  MountOptions,
+  SelectionSummary,
+} from './types.js';
 
 interface MountState {
   editor: MilkdownEditor | null;
@@ -207,7 +213,7 @@ export async function mountEditor(
         .use(findReplacePlugin)
         // 文档变更广播：壳层字数栏 / 脏标记 / 查找计数的可靠事实源
         // （不依赖 contenteditable 的 input 冒泡）。
-        .use(contentChangePlugin);
+        .use(contentChangePlugin(options.onContentChanged));
       // T14：文档链接 Ctrl/Cmd+点击跳转（R14）；注入确认闸门避免误开。
       if (options.onLinkNavigate !== undefined) {
         editor.use(
@@ -237,7 +243,11 @@ export async function mountEditor(
       // 注入相对引用解析器时，image 节点经 nodeView 把 assets/… 解析为可显示
       // 的 data URL；T8/R12 同 nodeView 提供选中后的缩放柄 + 浮动对齐条。
       if (options.imageSrcResolver !== undefined) {
-        editor.use(imageSizeNodeViewPlugin(options.imageSrcResolver));
+        editor.use(
+          imageSizeNodeViewPlugin(options.imageSrcResolver, {
+            remoteImageLoadLabel: options.remoteImageLoadLabel,
+          }),
+        );
       }
       state.editor = editor;
 
@@ -292,6 +302,21 @@ export async function mountEditor(
       if (view === null) return null;
       const { from, to, empty } = view.state.selection;
       return { from, to, empty };
+    },
+    getCursorPosition(): CursorPosition | null {
+      const view = getView(state);
+      if (view === null) return null;
+      const before = view.state.doc.textBetween(
+        0,
+        view.state.selection.head,
+        '\n',
+        '\n',
+      );
+      const lines = before.split('\n');
+      return {
+        line: lines.length,
+        column: Array.from(lines[lines.length - 1] ?? '').length + 1,
+      };
     },
     getLinkAtCursor(): CursorLink | null {
       const view = getView(state);

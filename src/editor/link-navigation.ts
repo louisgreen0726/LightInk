@@ -19,27 +19,74 @@ export type LinkKind = 'external' | 'localMd' | 'localFile' | 'invalid';
 
 export interface ClassifiedLink {
   kind: LinkKind;
-  /** external: raw url; local*: resolved path; invalid: empty. */
+  /** external: canonical HTTP(S) URL; local*: resolved path; invalid: empty. */
   target: string;
 }
 
 const MARKDOWN_EXT = /\.(md|markdown|mdown|mkd)$/i;
-/**
- * External scheme: at least two-char scheme (exclude Windows drive `C:`),
- * and protocol-relative `//host`.
- */
-const EXTERNAL_SCHEME = /^[a-z][a-z0-9+.-]+:/i;
+const EXTERNAL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const HTTP_URL = /^https?:\/\//i;
 const PROTOCOL_RELATIVE = /^\/\//;
 const WINDOWS_DRIVE_ABS = /^[a-z]:[\\/]/i;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+const ENCODED_CONTROL_CHARACTER = /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i;
+
+/** Normalize a browser target while rejecting custom schemes and parser bypasses. */
+export function normalizeExternalHttpUrl(href: string): string | null {
+  if (CONTROL_CHARACTERS.test(href) || ENCODED_CONTROL_CHARACTER.test(href)) {
+    return null;
+  }
+  const value = href.trim();
+  const candidate = PROTOCOL_RELATIVE.test(value)
+    ? `https:${value}`
+    : HTTP_URL.test(value)
+      ? value
+      : null;
+  if (candidate === null) return null;
+  try {
+    const parsed = new URL(candidate);
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.host === '') {
+      return null;
+    }
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+function hidesExternalSyntaxWithEncoding(value: string): boolean {
+  if (!value.includes('%')) return false;
+  try {
+    const decoded = decodeURIComponent(value);
+    return (
+      decoded !== value &&
+      (EXTERNAL_SCHEME.test(decoded) || PROTOCOL_RELATIVE.test(decoded))
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Pure: classify href with optional current document directory. */
 export function classifyLink(href: string, currentDocDir: string): ClassifiedLink {
-  const h = typeof href === 'string' ? href.trim() : '';
+  if (typeof href !== 'string' || CONTROL_CHARACTERS.test(href)) {
+    return { kind: 'invalid', target: '' };
+  }
+  const h = href.trim();
   if (h === '') {
     return { kind: 'invalid', target: '' };
   }
-  if (EXTERNAL_SCHEME.test(h) || PROTOCOL_RELATIVE.test(h)) {
-    return { kind: 'external', target: h };
+  if (HTTP_URL.test(h) || PROTOCOL_RELATIVE.test(h)) {
+    const target = normalizeExternalHttpUrl(h);
+    return target === null
+      ? { kind: 'invalid', target: '' }
+      : { kind: 'external', target };
+  }
+  if (
+    (EXTERNAL_SCHEME.test(h) && !WINDOWS_DRIVE_ABS.test(h)) ||
+    hidesExternalSyntaxWithEncoding(h)
+  ) {
+    return { kind: 'invalid', target: '' };
   }
   const pathPart = h.split(/[#?]/)[0] ?? '';
   if (pathPart === '') {

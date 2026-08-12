@@ -7,33 +7,11 @@
 
 import { $prose } from '@milkdown/utils';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
-import type { EditorView } from '@milkdown/prose/view';
-
 export const CONTENT_CHANGE_PLUGIN_KEY = new PluginKey('lightink-content-change');
 
-export type ContentChangeListener = (view: EditorView) => void;
+export type ContentChangeListener = () => void;
 
-const listeners = new Set<ContentChangeListener>();
-
-/** 订阅任意标签的 WYSIWYG 文档变更；返回取消订阅函数。 */
-export function subscribeContentChange(listener: ContentChangeListener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-function emit(view: EditorView): void {
-  for (const listener of listeners) {
-    try {
-      listener(view);
-    } catch {
-      // 壳层监听器异常不影响编辑器。
-    }
-  }
-}
-
-export function createContentChangePlugin(): Plugin {
+export function createContentChangePlugin(listener?: ContentChangeListener): Plugin {
   return new Plugin({
     key: CONTENT_CHANGE_PLUGIN_KEY,
     view(editorView) {
@@ -42,7 +20,11 @@ export function createContentChangePlugin(): Plugin {
         update(view) {
           if (view.state.doc === lastDoc) return;
           lastDoc = view.state.doc;
-          emit(view);
+          try {
+            listener?.();
+          } catch {
+            // A shell callback must not break the editor update cycle.
+          }
         },
       };
     },
@@ -50,4 +32,6 @@ export function createContentChangePlugin(): Plugin {
 }
 
 /** Milkdown 注册入口。 */
-export const contentChangePlugin = $prose(() => createContentChangePlugin());
+export function contentChangePlugin(listener?: ContentChangeListener) {
+  return $prose(() => createContentChangePlugin(listener));
+}

@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SHORTCUTS,
   isEditableTarget,
+  isModalTarget,
   matchEvent,
   ShortcutRegistry,
   type KeyboardEventLike,
@@ -96,6 +97,15 @@ describe('isEditableTarget', () => {
     expect(isEditableTarget({ isContentEditable: true })).toBe(true);
     expect(isEditableTarget({ tagName: 'DIV' })).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
+  });
+});
+
+describe('isModalTarget', () => {
+  it('recognizes descendants of aria-modal dialogs', () => {
+    const dialog = { getAttribute: (name: string) => name === 'aria-modal' ? 'true' : null };
+    const button = { parentElement: dialog };
+    expect(isModalTarget(button)).toBe(true);
+    expect(isModalTarget({ parentElement: null })).toBe(false);
   });
 });
 
@@ -195,6 +205,14 @@ describe('ShortcutRegistry 派发', () => {
     expect(handlers.save).toHaveBeenCalledTimes(1);
     expect(registry.handleKeyDown(keyEvent({ key: 'n', target: editable }))).toBe(true);
     expect(handlers.new).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not dispatch global shortcuts from an open modal', () => {
+    const { handlers, registry } = makeRegistry();
+    const dialog = { getAttribute: (name: string) => name === 'aria-modal' ? 'true' : null };
+    const input = { tagName: 'INPUT', parentElement: dialog };
+    expect(registry.handleKeyDown(keyEvent({ key: 's', target: input }))).toBe(false);
+    expect(handlers.save).not.toHaveBeenCalled();
   });
 
   it('无修饰键的打印键在可编辑目标内被忽略；功能键（F11）仍生效', () => {

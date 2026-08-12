@@ -1,42 +1,179 @@
 /**
- * `sanitize` — 阅读内容 HTML 消毒（ebook-reader T4）。
- *
- * 外来电子书 HTML（EPUB XHTML / MOBI HTML / FB2 转换结果）在插入 DOM 前必须消毒：
- * 移除脚本/样式、事件处理器属性、危险协议与危险容器标签。对齐 mermaid
- * securityLevel strict 的安全先例。本消毒器面向阅读场景的已知攻击面，配合各格式
- * 解析器的白名单标签映射使用；纯字符串实现，node 环境可测（无 DOMParser 依赖）。
+ * Reader HTML sanitization for untrusted EPUB, MOBI, and FB2 content.
+ * DOMPurify parses with the same DOM model used by rendering, then applies a
+ * deliberately small reading allowlist and URL policy.
  */
 
-/** 危险容器标签：成对整块（含内容）移除。 */
-const DANGEROUS_BLOCK =
-  /<(script|style|iframe|object|embed|applet|noscript|template|svg|math|form|button|input|textarea|select|option|link|meta|base|frame|frameset)\b[\s\S]*?<\/\1\s*>/gi;
+import createDOMPurify, {
+  type DOMPurify,
+  type UponSanitizeAttributeHookEvent,
+  type WindowLike,
+} from 'dompurify';
+import { makeRemoteImagesInert } from '../media/remote-image-policy.js';
 
-/** 危险容器标签名（用于移除残留的自闭合/未配对标签）。 */
-const DANGEROUS_NAMES =
-  'script|style|iframe|object|embed|applet|noscript|template|svg|math|form|button|input|textarea|select|option|link|meta|base|frame|frameset';
+const READER_TAGS = [
+  'a',
+  'article',
+  'aside',
+  'b',
+  'blockquote',
+  'br',
+  'caption',
+  'code',
+  'dd',
+  'del',
+  'div',
+  'dl',
+  'dt',
+  'em',
+  'figcaption',
+  'figure',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hr',
+  'i',
+  'img',
+  'li',
+  'main',
+  'mark',
+  'nav',
+  'ol',
+  'p',
+  'pre',
+  'rp',
+  'rt',
+  'ruby',
+  's',
+  'section',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+] as const;
 
-/** 事件处理器属性：on*="..." / on*='...' / on*=裸值。 */
-const EVENT_ATTR = /\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi;
+const READER_ATTRIBUTES = [
+  'alt',
+  'colspan',
+  'dir',
+  'height',
+  'href',
+  'id',
+  'lang',
+  'reversed',
+  'rowspan',
+  'scope',
+  'src',
+  'start',
+  'title',
+  'value',
+  'width',
+] as const;
 
-/**
- * 消毒 HTML：移除注释/CDATA、脚本与样式、危险容器标签（含与不含内容）、
- * 事件处理器属性，并把 URL 属性中的 javascript:/vbscript: 协议中和掉。
- * 保留阅读所需的格式标签（p/h/ul/ol/li/blockquote/pre/code/a/img/table 等）。
- */
-export function sanitizeHtml(input: string): string {
-  let s = input.replace(/<!--[\s\S]*?-->/g, '');
-  s = s.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
-  // 成对危险容器（含内容）。
-  s = s.replace(DANGEROUS_BLOCK, '');
-  // 残留的危险标签（自闭合或未成对）。
-  s = s.replace(new RegExp(`</?(?:${DANGEROUS_NAMES})\\b[^>]*>`, 'gi'), '');
-  // 事件处理器属性。
-  s = s.replace(EVENT_ATTR, '');
-  // 危险 URL 协议中和：把 href/src 中的 javascript:/vbscript:/data:text-html 值替换为 #
-  // （覆盖引号与无引号两种属性值形式）。
-  s = s.replace(
-    /((?:href|src)\s*=\s*)(["']?)(?:javascript|vbscript|data:text\/html)[^"'\s>]*\2/gi,
-    '$1$2#$2',
+const URL_ATTRIBUTES = new Set(['href', 'src']);
+const SAFE_RASTER_DATA_URL = /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\s]*$/i;
+const SCHEME = /^([a-z][a-z0-9+.-]*):/i;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+function isAllowedReaderUrl(tagName: string, attribute: string, rawValue: string): boolean {
+  const value = rawValue.trim();
+  if (value === '' || CONTROL_CHARACTERS.test(value)) {
+    return false;
+  }
+  if (value.startsWith('//')) {
+    return true;
+  }
+  const match = value.match(SCHEME);
+  if (match === null) {
+    return true;
+  }
+  const scheme = match[1]!.toLowerCase();
+  if (scheme === 'http' || scheme === 'https') {
+    return true;
+  }
+  if (attribute === 'src' && tagName === 'img') {
+    return scheme === 'blob' || (scheme === 'data' && SAFE_RASTER_DATA_URL.test(value));
+  }
+  return false;
+}
+
+let purifierWindow: WindowLike | null = null;
+let purifier: DOMPurify | null = null;
+
+function readerPurifier(): DOMPurify {
+  const currentWindow = globalThis.window as unknown as WindowLike | undefined;
+  if (currentWindow === undefined) {
+    throw new Error('Reader HTML sanitization requires a DOM window');
+  }
+  if (purifier !== null && purifierWindow === currentWindow) {
+    return purifier;
+  }
+
+  const next = createDOMPurify(currentWindow);
+  next.addHook(
+    'uponSanitizeAttribute',
+    (node: Element, event: UponSanitizeAttributeHookEvent) => {
+      const attribute = event.attrName.toLowerCase();
+      if (
+        URL_ATTRIBUTES.has(attribute) &&
+        !isAllowedReaderUrl(node.tagName.toLowerCase(), attribute, event.attrValue)
+      ) {
+        event.keepAttr = false;
+      }
+    },
   );
-  return s;
+  purifierWindow = currentWindow;
+  purifier = next;
+  return next;
+}
+
+/** Sanitize untrusted flow-format HTML before it reaches any rendering DOM. */
+export function sanitizeHtml(input: string): string {
+  const fragment = readerPurifier().sanitize(input, {
+    ALLOWED_TAGS: [...READER_TAGS],
+    ALLOWED_ATTR: [...READER_ATTRIBUTES],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    ALLOW_UNKNOWN_PROTOCOLS: true,
+    FORBID_TAGS: [
+      'applet',
+      'base',
+      'button',
+      'embed',
+      'form',
+      'iframe',
+      'input',
+      'link',
+      'math',
+      'meta',
+      'object',
+      'script',
+      'select',
+      'style',
+      'svg',
+      'template',
+      'textarea',
+    ],
+    FORBID_ATTR: ['style', 'srcset', 'ping', 'formaction', 'xlink:href'],
+    RETURN_DOM_FRAGMENT: true,
+  });
+  makeRemoteImagesInert(fragment);
+  const container = document.createElement('div');
+  container.appendChild(fragment);
+  return container.innerHTML;
 }

@@ -4,15 +4,61 @@
 //! 唯一 owner 是前端编辑器会话。写入采用「同目录临时文件 + rename」的原子写
 //! 策略：失败时清理临时文件并返回错误，目标路径上永远不会留下半截文件。
 
-use std::fs;
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+pub const MAX_TEXT_FILE_BYTES: u64 = 32 * 1024 * 1024;
+pub const MAX_READER_FILE_BYTES: u64 = 128 * 1024 * 1024;
+
+fn file_limit_error(actual: u64, limit: u64) -> String {
+    format!("FILE_TOO_LARGE:{actual}:{limit}")
+}
+
+fn ensure_file_size(actual: u64, limit: u64) -> Result<(), String> {
+    if actual > limit {
+        return Err(file_limit_error(actual, limit));
+    }
+    Ok(())
+}
+
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let file = File::open(path).map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    let size = file
+        .metadata()
+        .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?
+        .len();
+    ensure_file_size(size, limit)?;
+
+    let mut bytes = Vec::with_capacity(size.min(limit) as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    ensure_file_size(bytes.len() as u64, limit)?;
+    Ok(bytes)
+}
+
+fn reader_limit_for_path(path: &Path) -> u64 {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "md" | "markdown" | "mdown" | "mkd" | "txt"
+    ) {
+        MAX_TEXT_FILE_BYTES
+    } else {
+        MAX_READER_FILE_BYTES
+    }
+}
+
 /// 读取 UTF-8 文本文件。io 错误映射为可读的中文错误信息。
 pub fn read_file_impl(path: &Path) -> Result<String, String> {
-    fs::read_to_string(path)
-        .map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))
+    String::from_utf8(read_bounded(path, MAX_TEXT_FILE_BYTES)?)
+        .map_err(|_| "文件不是有效的 UTF-8 文本".to_string())
 }
 
 /// 原子写入：先写同目录临时文件并 flush/sync，再 rename 覆盖目标。
@@ -27,11 +73,10 @@ pub fn write_file_impl(path: &Path, content: &str) -> Result<(), String> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| format!("无效的保存路径: {}", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| format!("无法创建目录 {}: {}", parent.display(), e))?;
+    fs::create_dir_all(parent).map_err(|e| format!("无法创建目录 {}: {}", parent.display(), e))?;
 
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("无法创建临时文件: {}", e))?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("无法创建临时文件: {}", e))?;
     tmp.write_all(content.as_bytes())
         .map_err(|e| format!("写入临时文件失败: {}", e))?;
     tmp.as_file()
@@ -52,18 +97,37 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     write_file_impl(Path::new(&path), &content)
 }
 
-/// 文件 stat 结果（返回前端用于 R13 外部变更检测）：修改时间（毫秒，自
-/// UNIX_EPOCH）+ 字节数。两者经 mtime 对比判定磁盘是否比记录基线更新。
+/// 文件 stat 结果（返回前端用于外部变更检测）：元数据加内容指纹。
 #[derive(serde::Serialize, Debug)]
 pub struct FileStat {
     pub mtime_ms: u64,
     pub size: u64,
+    pub fingerprint: String,
 }
 
-/// 取文件的修改时间（ms）与大小。读不到元数据/修改时间时报可读中文错误
+fn fingerprint_reader(mut reader: impl Read) -> Result<String, std::io::Error> {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        for byte in &buffer[..count] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    Ok(format!("{:016x}", hash))
+}
+
+/// 取文件的修改时间、大小与内容指纹。读不到文件/修改时间时报可读中文错误
 /// （R13 失败行为：stat 失败 → 前端提示文件不可读，不做自动动作）。
 pub fn stat_file_impl(path: &Path) -> Result<FileStat, String> {
-    let meta = fs::metadata(path)
+    let file =
+        File::open(path).map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?;
+    let meta = file
+        .metadata()
         .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?;
     let mtime = meta
         .modified()
@@ -73,9 +137,12 @@ pub fn stat_file_impl(path: &Path) -> Result<FileStat, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    let fingerprint = fingerprint_reader(file)
+        .map_err(|e| format!("无法计算文件指纹 {}: {}", path.display(), e))?;
     Ok(FileStat {
         mtime_ms,
         size: meta.len(),
+        fingerprint,
     })
 }
 
@@ -85,14 +152,13 @@ pub fn stat_file(path: String) -> Result<FileStat, String> {
 }
 
 /// 标准 base64 编码表（与 asset.rs 自实现 decoder 的字母表一致，无新 crate）。
-const B64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// 编码为标准 base64（含 `+` `/` 与 `=` 填充）。供 `read_file_bytes` 把二进制电子书
 /// 字节以字符串形式经 IPC 传给前端（前端 atob 解码）。输入可以是任意字节（含中文、
 /// 二进制）；输出长度 = ceil(len/3)*4。逐 3 字节分组、u32 移位不溢出。
 pub fn encode_base64(input: &[u8]) -> String {
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -116,7 +182,7 @@ pub fn encode_base64(input: &[u8]) -> String {
 
 /// 读取文件的原始字节（不做 UTF-8 解码，电子书多为二进制）。io 错误映射为可读中文信息。
 pub fn read_file_bytes_impl(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))
+    read_bounded(path, reader_limit_for_path(path))
 }
 
 /// 读取文件字节并以标准 base64 返回（供前端 reader 解析二进制电子书格式）。
@@ -138,7 +204,8 @@ mod tests {
     fn roundtrip_chinese_and_special_chars() {
         let dir = temp_dir();
         let path = dir.path().join("笔记.md");
-        let content = "# 标题 🎉\n\n中文内容、特殊字符 <>&\"'\\、emoji 🚀、零宽\u{200b}字符。\n\n第二行\n";
+        let content =
+            "# 标题 🎉\n\n中文内容、特殊字符 <>&\"'\\、emoji 🚀、零宽\u{200b}字符。\n\n第二行\n";
         write_file_impl(&path, content).expect("write");
         let back = read_file_impl(&path).expect("read");
         assert_eq!(back, content);
@@ -200,6 +267,10 @@ mod tests {
         let st = stat_file_impl(&path).expect("stat");
         assert_eq!(st.size, content.len() as u64);
         assert!(st.mtime_ms > 0, "mtime should be a real epoch ms");
+        assert_eq!(st.fingerprint.len(), 16);
+        write_file_impl(&path, "different").expect("replace");
+        let changed = stat_file_impl(&path).expect("stat changed");
+        assert_ne!(st.fingerprint, changed.fingerprint);
     }
 
     #[test]
@@ -207,7 +278,11 @@ mod tests {
         let dir = temp_dir();
         let missing = dir.path().join("nope.md");
         let err = stat_file_impl(&missing).expect_err("must fail");
-        assert!(err.contains("无法读取文件信息"), "unexpected error: {}", err);
+        assert!(
+            err.contains("无法读取文件信息"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
@@ -233,7 +308,7 @@ mod tests {
         let enc = encode_base64(&bin);
         assert_eq!(enc.len(), 8);
         assert_eq!(enc.matches('=').count(), 1); // 5 字节 → 1 填充
-        // 中文 UTF-8 字节同样满足长度约束。
+                                                 // 中文 UTF-8 字节同样满足长度约束。
         let zh = encode_base64("轻墨 🚀".as_bytes());
         assert_eq!(zh.len() % 4, 0);
     }
@@ -249,7 +324,7 @@ mod tests {
         assert_eq!(bytes, raw.to_vec());
         // base64 编码长度正确（read_file_bytes 命令的返回形态）。
         let b64 = super::encode_base64(&bytes);
-        assert_eq!(b64.len(), ((raw.len() + 2) / 3) * 4);
+        assert_eq!(b64.len(), raw.len().div_ceil(3) * 4);
     }
 
     #[test]
@@ -268,7 +343,7 @@ mod tests {
         let bytes = super::read_file_bytes_impl(&path).expect("read");
         assert_eq!(bytes.len() as u64, size);
         let b64 = super::encode_base64(&bytes);
-        assert_eq!(b64.len(), ((size as usize + 2) / 3) * 4);
+        assert_eq!(b64.len(), (size as usize).div_ceil(3) * 4);
     }
 
     #[test]
@@ -277,5 +352,42 @@ mod tests {
         let missing = dir.path().join("nope.epub");
         let err = super::read_file_bytes_impl(&missing).expect_err("must fail");
         assert!(err.contains("无法读取文件"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn file_size_limits_accept_boundary_and_reject_one_extra_byte() {
+        assert!(ensure_file_size(MAX_TEXT_FILE_BYTES, MAX_TEXT_FILE_BYTES).is_ok());
+        assert_eq!(
+            ensure_file_size(MAX_TEXT_FILE_BYTES + 1, MAX_TEXT_FILE_BYTES).unwrap_err(),
+            format!(
+                "FILE_TOO_LARGE:{}:{}",
+                MAX_TEXT_FILE_BYTES + 1,
+                MAX_TEXT_FILE_BYTES
+            )
+        );
+        assert!(ensure_file_size(MAX_READER_FILE_BYTES, MAX_READER_FILE_BYTES).is_ok());
+        assert!(ensure_file_size(MAX_READER_FILE_BYTES + 1, MAX_READER_FILE_BYTES).is_err());
+    }
+
+    #[test]
+    fn oversized_files_are_rejected_before_allocation() {
+        let dir = temp_dir();
+        let text = dir.path().join("oversized.txt");
+        File::create(&text)
+            .unwrap()
+            .set_len(MAX_TEXT_FILE_BYTES + 1)
+            .unwrap();
+        assert!(read_file_impl(&text)
+            .unwrap_err()
+            .starts_with("FILE_TOO_LARGE:"));
+
+        let reader = dir.path().join("oversized.epub");
+        File::create(&reader)
+            .unwrap()
+            .set_len(MAX_READER_FILE_BYTES + 1)
+            .unwrap();
+        assert!(read_file_bytes_impl(&reader)
+            .unwrap_err()
+            .starts_with("FILE_TOO_LARGE:"));
     }
 }

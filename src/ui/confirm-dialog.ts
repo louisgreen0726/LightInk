@@ -14,6 +14,8 @@
  * `showConfirmDialog` 属挂载态 DOM（同 menus.ts，仅断言工厂形态）。
  */
 
+import { labelModal, mountModalFocus } from './modal-focus.js';
+
 export type ConfirmButtonKind = 'primary' | 'danger' | 'plain';
 
 export interface ConfirmButtonSpec {
@@ -48,11 +50,12 @@ export function resolveCancelId(spec: ConfirmDialogSpec): string | null {
 export function showConfirmDialog(doc: Document, spec: ConfirmDialogSpec): Promise<string> {
   return new Promise<string>((resolve) => {
     let settled = false;
+    let releaseModal = (): void => overlay.remove();
     const settle = (id: string | null): void => {
       if (settled || id === null) return;
       settled = true;
       doc.removeEventListener('keydown', onKey, true);
-      overlay.remove();
+      releaseModal();
       resolve(id);
     };
 
@@ -69,6 +72,7 @@ export function showConfirmDialog(doc: Document, spec: ConfirmDialogSpec): Promi
     const message = doc.createElement('div');
     message.className = 'lightink-modal-message';
     message.textContent = spec.message;
+    labelModal(dialog, title, message);
 
     const actions = doc.createElement('div');
     actions.className = 'lightink-modal-actions';
@@ -90,11 +94,6 @@ export function showConfirmDialog(doc: Document, spec: ConfirmDialogSpec): Promi
     overlay.appendChild(dialog);
 
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        settle(resolveCancelId(spec));
-        return;
-      }
       // Enter 触发默认按钮；焦点已在某按钮上时交还给原生 click。
       if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) {
         event.preventDefault();
@@ -107,7 +106,9 @@ export function showConfirmDialog(doc: Document, spec: ConfirmDialogSpec): Promi
       }
     });
     doc.addEventListener('keydown', onKey, true);
-    doc.body.appendChild(overlay);
-    defaultBtn?.focus();
+    releaseModal = mountModalFocus(doc, overlay, dialog, {
+      initialFocus: defaultBtn,
+      onEscape: () => settle(resolveCancelId(spec)),
+    });
   });
 }
