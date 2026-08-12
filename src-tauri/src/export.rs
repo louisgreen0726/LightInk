@@ -325,6 +325,10 @@ pub async fn print_webview_to_pdf(
             // createPDF completion 即终点：retain NSData → 写盘 → tx.send。
             // 闭包调 createPDF 后立即返回，主线程回到 run loop 派发 completion，
             // 避免在主线程 recv 阻塞 → completion 派发回主队列 → 死锁。
+            // oneshot::Sender::send 消耗 self（FnOnce），而 RcBlock::new 要求 Fn；
+            // 故用 Cell<Option<Sender>> 提供内部可变性，take() 经 &self 取出，
+            // 使 completion 闭包满足 Fn 约束（macOS 11+ completion 仅回调一次）。
+            let tx = std::cell::Cell::new(Some(tx));
             let block = RcBlock::new(move |data: *mut NSData, err: *mut NSError| {
                 let result = if !err.is_null() {
                     Err("createPDF 返回 NSError".to_string())
@@ -337,7 +341,9 @@ pub async fn print_webview_to_pdf(
                         None => Err("NSData retain 失败".to_string()),
                     }
                 };
-                let _ = tx.send(result);
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(result);
+                }
             });
             unsafe {
                 wk.createPDFWithConfiguration_completionHandler(None, &block);
