@@ -27,7 +27,7 @@ describe('native window close guard', () => {
     expect(confirmExit).not.toHaveBeenCalled();
   });
 
-  it('shares repeated close events and only permits the programmatic retry', async () => {
+  it('shares repeated close events and destroys after confirmation without re-entry', async () => {
     let releaseChoice: ((choice: 'save') => void) | undefined;
     const confirmExit = vi.fn(
       () =>
@@ -35,12 +35,8 @@ describe('native window close guard', () => {
           releaseChoice = resolve;
         }),
     );
-    let guard: ReturnType<typeof createWindowCloseGuard>;
-    const retryEvent = closeEvent();
-    const closeWindow = vi.fn(async () => {
-      expect(guard.handleCloseRequested(retryEvent)).toBeNull();
-    });
-    guard = createWindowCloseGuard({
+    const closeWindow = vi.fn(async () => undefined);
+    const guard = createWindowCloseGuard({
       hasUnsavedChanges: () => true,
       confirmExit,
       closeAllTabs: vi.fn(async () => true),
@@ -60,7 +56,6 @@ describe('native window close guard', () => {
     await first;
 
     expect(closeWindow).toHaveBeenCalledOnce();
-    expect(retryEvent.preventDefault).not.toHaveBeenCalled();
   });
 
   it('keeps the window open and flushes snapshots on cancel or save failure', async () => {
@@ -136,5 +131,31 @@ describe('browser beforeunload fallback', () => {
     await vi.waitFor(() => expect(addEventListener).toHaveBeenCalledOnce());
     expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
     expect(reportError).toHaveBeenCalledWith(failure);
+  });
+
+  it('uses force destroy after a confirmed dirty close', async () => {
+    const destroy = vi.fn(async () => undefined);
+    let listener: ((event: ReturnType<typeof closeEvent>) => void) | undefined;
+    installWindowCloseProtection({
+      window: { addEventListener: vi.fn() },
+      isNative: true,
+      getNativeWindow: vi.fn(async () => ({
+        destroy,
+        onCloseRequested: vi.fn(async (handler) => {
+          listener = handler;
+        }),
+      })),
+      hasUnsavedChanges: () => true,
+      confirmExit: vi.fn(async () => 'discard' as const),
+      closeAllTabs: vi.fn(async () => true),
+      flushDirtySnapshots: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(listener).toBeDefined());
+    const event = closeEvent();
+    await listener!(event);
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledOnce();
   });
 });

@@ -406,6 +406,12 @@ export function createHeadingFoldProsePlugin(
           view.dispatch(view.state.tr.setMeta(FOLD_PLUGIN_KEY, FOLD_REFRESH_META));
         }
       }, FOLD_REBUILD_DEBOUNCE_MS);
+      // 兜底重建：Milkdown commonmark 的 heading id 插件在挂载时为缺 id 的
+      // 标题 setNodeMarkup（replaceAround structure 事务，不经本插件 view 的
+      // update），DecorationSet.map 对 structure step 会把挂在标题内部的三角
+      // widget 全部丢弃——新打开的文件因此没有折叠三角。挂载即排一次防抖
+      // 刷新，按当前文档重建 decoration。
+      schedule();
       return {
         update(view, prevState) {
           viewRef = view;

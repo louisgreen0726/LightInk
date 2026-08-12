@@ -24,7 +24,7 @@ export interface WindowCloseGuard {
 }
 
 export interface NativeWindowCloseTarget {
-  close(): Promise<void>;
+  destroy(): Promise<void>;
   onCloseRequested(listener: (event: CloseRequestEventLike) => void): Promise<unknown>;
 }
 
@@ -44,7 +44,6 @@ export interface WindowCloseProtectionDeps
 
 /** Coordinate native close requests without allowing async confirmation races. */
 export function createWindowCloseGuard(deps: WindowCloseGuardDeps): WindowCloseGuard {
-  let allowNextClose = false;
   let inFlight: Promise<void> | null = null;
 
   const reportError = (error: unknown): void => {
@@ -71,21 +70,15 @@ export function createWindowCloseGuard(deps: WindowCloseGuardDeps): WindowCloseG
       return;
     }
 
-    allowNextClose = true;
     try {
       await deps.closeWindow();
     } catch (error) {
-      allowNextClose = false;
       reportError(error);
     }
   };
 
   return {
     handleCloseRequested(event) {
-      if (allowNextClose) {
-        allowNextClose = false;
-        return null;
-      }
       if (!deps.hasUnsavedChanges()) {
         return null;
       }
@@ -140,10 +133,13 @@ export function installWindowCloseProtection(deps: WindowCloseProtectionDeps): v
     .then(async (appWindow) => {
       const guard = createWindowCloseGuard({
         ...deps,
-        closeWindow: () => appWindow.close(),
+        // Tauri's onCloseRequested wrapper already destroys a clean window.
+        // After an intercepted dirty close, destroy directly so close() does
+        // not emit another CloseRequested event and re-enter this guard.
+        closeWindow: () => appWindow.destroy(),
       });
       await appWindow.onCloseRequested((event) => {
-        guard.handleCloseRequested(event);
+        return guard.handleCloseRequested(event) ?? undefined;
       });
     })
     .catch((error: unknown) => {

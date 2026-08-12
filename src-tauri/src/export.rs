@@ -284,43 +284,39 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
     window
         .with_webview(move |wv: tauri::webview::PlatformWebview| {
             // retain WKWebView；失败经 tx 报错并立即返回（不在主线程阻塞等待）。
-            let wk: Retained<WKWebView> = match unsafe {
-                Retained::retain(wv.webview as *mut WKWebView)
-            } {
-                Ok(w) => w,
-                Err(_) => {
-                    let _ = tx.send(Err("WKWebView 句柄无效".to_string()));
-                    return;
-                }
-            };
+            let wk: Retained<WKWebView> =
+                match unsafe { Retained::retain(wv.inner() as *mut WKWebView) } {
+                    Some(w) => w,
+                    None => {
+                        let _ = tx.send(Err("WKWebView 句柄无效".to_string()));
+                        return;
+                    }
+                };
 
             // createPDF completion 即终点：retain NSData → 写盘 → tx.send。
             // 闭包调 createPDF 后立即返回，主线程回到 run loop 派发 completion，
             // 避免在主线程 recv 阻塞 → completion 派发回主队列 → 死锁（与 Windows
             // 分支 wait_for_async_operation 消息泵同理）。
-            let block = RcBlock::new(
-                move |data: *mut NSData, err: *mut NSError| {
-                    if !err.is_null() {
-                        let _ = tx.send(Err("createPDF 返回 NSError".to_string()));
+            let block = RcBlock::new(move |data: *mut NSData, err: *mut NSError| {
+                if !err.is_null() {
+                    let _ = tx.send(Err("createPDF 返回 NSError".to_string()));
+                    return;
+                }
+                if data.is_null() {
+                    let _ = tx.send(Err("createPDF 返回空数据".to_string()));
+                    return;
+                }
+                let pdf = match unsafe { Retained::retain(data) } {
+                    Some(d) => d,
+                    None => {
+                        let _ = tx.send(Err("NSData retain 失败".to_string()));
                         return;
                     }
-                    if data.is_null() {
-                        let _ = tx.send(Err("createPDF 返回空数据".to_string()));
-                        return;
-                    }
-                    let pdf = match unsafe { Retained::retain(data) } {
-                        Ok(d) => d,
-                        Err(_) => {
-                            let _ = tx.send(Err("NSData retain 失败".to_string()));
-                            return;
-                        }
-                    };
-                    let bytes: &[u8] = pdf.bytes();
-                    let res =
-                        std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"));
-                    let _ = tx.send(res);
-                },
-            );
+                };
+                let bytes = pdf.to_vec();
+                let res = std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"));
+                let _ = tx.send(res);
+            });
             unsafe {
                 wk.createPDFWithConfiguration_completionHandler(None, &block);
             }
@@ -336,10 +332,7 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
 /// 系统打印对话框（WebKitGTK 的「打印为 PDF」输出矢量文字）。
 #[cfg(not(any(windows, target_os = "macos")))]
 #[tauri::command]
-pub fn print_webview_to_pdf(
-    _window: tauri::WebviewWindow,
-    _path: String,
-) -> Result<(), String> {
+pub fn print_webview_to_pdf(_window: tauri::WebviewWindow, _path: String) -> Result<(), String> {
     Err("当前平台不支持原生 PrintToPdf，请使用打印对话框".to_string())
 }
 
