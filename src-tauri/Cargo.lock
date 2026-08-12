@@ -1912,6 +1912,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-runtime-wry",
  "tempfile",
+ "tokio",
  "url",
  "webview2-com",
  "windows",

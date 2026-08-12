@@ -212,25 +212,34 @@ pub fn read_image_base64(
 //
 // 流程：前端把导出文档装进 #lightink-export-print-root（@media print 仅它可见），
 // 弹保存对话框取 .pdf 路径，调本命令；本命令取主窗口 WebView2 控制器 →
-// CoreWebView2 → cast ICoreWebView2_7 → PrintToPdf 写入路径。回调经
-// webview2-com 的 wait_for_async_operation（带消息泵）同步等待，避免主线程
-// 阻塞死锁（COM 回调需消息循环派发）。
+// CoreWebView2 → cast ICoreWebView2_7 → PrintToPdf 写入路径。
+//
+// 必须是 async 命令：同步命令跑在 UI 线程，任何 recv / wait_with_pump 都会堵住
+// 消息循环，导致 PrintToPdf 完成回调永远派发不了（PDF 已写出，但 IPC 永不返回，
+// 后续打开/关闭全部挂起）。async 命令在 tokio worker 上 await，主线程只负责
+// 发起 PrintToPdf 并立刻回到 run loop。
 
 #[cfg(windows)]
 #[tauri::command]
-pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+pub async fn print_webview_to_pdf(
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
-    use std::sync::mpsc;
 
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
     use webview2_com::PrintToPdfCompletedHandler;
     use windows::core::Interface;
 
-    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let mut tx = Some(tx);
 
     window
         .with_webview(move |wv: tauri::webview::PlatformWebview| {
-            let outcome = (|| -> Result<(), String> {
+            // 发起 PrintToPdf 后立即返回，完成回调经 oneshot 通知 worker。
+            // 绝不能用 wait_for_async_operation：其 GetMessageA 泵会嵌套消息循环，
+            // 且 completed 回调只 send 不 PostMessage，主线程永远醒不过来。
+            let sync_outcome = (|| -> Result<(), String> {
                 let controller = wv.controller();
                 let core = unsafe { controller.CoreWebView2() }
                     .map_err(|e| format!("取 CoreWebView2 失败: {e}"))?;
@@ -238,29 +247,41 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
                     .cast()
                     .map_err(|e| format!("当前 WebView2 运行时不支持 PrintToPdf: {e}"))?;
 
-                // 路径 → UTF-16 + NUL（PCWSTR 要求）。
+                // 路径 → UTF-16 + NUL（PCWSTR 要求）。PrintToPdf 同步复制路径，
+                // 返回后 wide 可安全释放。
                 let mut wide: Vec<u16> = std::ffi::OsStr::new(&path).encode_wide().collect();
                 wide.push(0);
+                let pcws = windows::core::PCWSTR::from_raw(wide.as_ptr());
 
-                PrintToPdfCompletedHandler::wait_for_async_operation(
-                    Box::new(move |handler| {
-                        let pcws = windows::core::PCWSTR::from_raw(wide.as_ptr());
-                        // 默认打印设置（背景由前端 @media print 强制浅色：深字白底，
-                        // 不依赖「打印背景」即清晰且为矢量文字）。
-                        unsafe { core7.PrintToPdf(pcws, None, &handler) }
-                            .map_err(webview2_com::Error::WindowsError)
-                    }),
-                    // 直接透传 COM 调用的 HRESULT 结果（成功/失败）。
-                    Box::new(|hr: windows::core::Result<()>, _success: bool| hr),
-                )
-                .map_err(|e| format!("PrintToPdf 失败: {e}"))
+                let Some(tx) = tx.take() else {
+                    return Err("打印通道已关闭".to_string());
+                };
+                let handler = PrintToPdfCompletedHandler::create(Box::new(
+                    move |hr: windows::core::Result<()>, _success: bool| {
+                        let result = hr.map_err(|e| format!("PrintToPdf 失败: {e}"));
+                        let _ = tx.send(result);
+                        Ok(())
+                    },
+                ));
+
+                // 默认打印设置（背景由前端 @media print 强制浅色：深字白底，
+                // 不依赖「打印背景」即清晰且为矢量文字）。
+                unsafe { core7.PrintToPdf(pcws, None, &handler) }
+                    .map_err(|e| format!("PrintToPdf 失败: {e}"))
             })();
-            let _ = tx.send(outcome);
+
+            // 同步失败（如路径无效 E_INVALIDARG）不会触发 completed 回调，必须在此
+            // 通知 worker，否则 rx.await 永远挂起。
+            if let Err(e) = sync_outcome {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(Err(e));
+                }
+            }
         })
         .map_err(|e| format!("with_webview 失败: {e}"))?;
 
-    rx.recv()
-        .map_err(|_| "打印通道关闭（主线程未返回结果）".to_string())?
+    rx.await
+        .map_err(|_| "打印通道关闭（completion 未派发）".to_string())?
 }
 
 /// macOS：WKWebView `createPDFWithConfiguration:completionHandler:`（macOS 11+）
@@ -272,14 +293,17 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
 /// 写文件的正确性（delivery 阶段 macOS CI/手测）。
 #[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+pub async fn print_webview_to_pdf(
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
     use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2_foundation::{NSData, NSError};
     use objc2_web_kit::WKWebView;
-    use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let mut tx = Some(tx);
 
     window
         .with_webview(move |wv: tauri::webview::PlatformWebview| {
@@ -288,43 +312,41 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
                 match unsafe { Retained::retain(wv.inner() as *mut WKWebView) } {
                     Some(w) => w,
                     None => {
-                        let _ = tx.send(Err("WKWebView 句柄无效".to_string()));
+                        if let Some(tx) = tx.take() {
+                            let _ = tx.send(Err("WKWebView 句柄无效".to_string()));
+                        }
                         return;
                     }
                 };
 
+            let Some(tx) = tx.take() else {
+                return;
+            };
             // createPDF completion 即终点：retain NSData → 写盘 → tx.send。
             // 闭包调 createPDF 后立即返回，主线程回到 run loop 派发 completion，
-            // 避免在主线程 recv 阻塞 → completion 派发回主队列 → 死锁（与 Windows
-            // 分支 wait_for_async_operation 消息泵同理）。
+            // 避免在主线程 recv 阻塞 → completion 派发回主队列 → 死锁。
             let block = RcBlock::new(move |data: *mut NSData, err: *mut NSError| {
-                if !err.is_null() {
-                    let _ = tx.send(Err("createPDF 返回 NSError".to_string()));
-                    return;
-                }
-                if data.is_null() {
-                    let _ = tx.send(Err("createPDF 返回空数据".to_string()));
-                    return;
-                }
-                let pdf = match unsafe { Retained::retain(data) } {
-                    Some(d) => d,
-                    None => {
-                        let _ = tx.send(Err("NSData retain 失败".to_string()));
-                        return;
+                let result = if !err.is_null() {
+                    Err("createPDF 返回 NSError".to_string())
+                } else if data.is_null() {
+                    Err("createPDF 返回空数据".to_string())
+                } else {
+                    match unsafe { Retained::retain(data) } {
+                        Some(pdf) => std::fs::write(&path, pdf.to_vec())
+                            .map_err(|e| format!("写 PDF 失败: {e}")),
+                        None => Err("NSData retain 失败".to_string()),
                     }
                 };
-                let bytes = pdf.to_vec();
-                let res = std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"));
-                let _ = tx.send(res);
+                let _ = tx.send(result);
             });
             unsafe {
                 wk.createPDFWithConfiguration_completionHandler(None, &block);
             }
-            // 闭包立即返回；最终结果由 completion block 经 tx → 命令线程 rx.recv()。
+            // 闭包立即返回；最终结果由 completion block 经 oneshot 通知 worker。
         })
         .map_err(|e| format!("with_webview 失败: {e}"))?;
 
-    rx.recv()
+    rx.await
         .map_err(|_| "打印通道关闭（completion 未派发或主线程未返回结果）".to_string())?
 }
 
@@ -332,7 +354,10 @@ pub fn print_webview_to_pdf(window: tauri::WebviewWindow, path: String) -> Resul
 /// 系统打印对话框（WebKitGTK 的「打印为 PDF」输出矢量文字）。
 #[cfg(not(any(windows, target_os = "macos")))]
 #[tauri::command]
-pub fn print_webview_to_pdf(_window: tauri::WebviewWindow, _path: String) -> Result<(), String> {
+pub async fn print_webview_to_pdf(
+    _window: tauri::WebviewWindow,
+    _path: String,
+) -> Result<(), String> {
     Err("当前平台不支持原生 PrintToPdf，请使用打印对话框".to_string())
 }
 
