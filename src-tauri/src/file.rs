@@ -158,7 +158,7 @@ const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 /// 字节以字符串形式经 IPC 传给前端（前端 atob 解码）。输入可以是任意字节（含中文、
 /// 二进制）；输出长度 = ceil(len/3)*4。逐 3 字节分组、u32 移位不溢出。
 pub fn encode_base64(input: &[u8]) -> String {
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(bytes, raw.to_vec());
         // base64 编码长度正确（read_file_bytes 命令的返回形态）。
         let b64 = super::encode_base64(&bytes);
-        assert_eq!(b64.len(), ((raw.len() + 2) / 3) * 4);
+        assert_eq!(b64.len(), raw.len().div_ceil(3) * 4);
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
         let bytes = super::read_file_bytes_impl(&path).expect("read");
         assert_eq!(bytes.len() as u64, size);
         let b64 = super::encode_base64(&bytes);
-        assert_eq!(b64.len(), ((size as usize + 2) / 3) * 4);
+        assert_eq!(b64.len(), (size as usize).div_ceil(3) * 4);
     }
 
     #[test]

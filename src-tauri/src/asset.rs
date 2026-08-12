@@ -56,7 +56,7 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     }
 
     let bytes = input.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("base64 长度必须是 4 的倍数".to_owned());
     }
     let chunk_count = bytes.len() / 4;
