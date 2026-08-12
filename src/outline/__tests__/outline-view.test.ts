@@ -242,7 +242,7 @@ describe('createOutlineView 折叠标记（T4/R2）', () => {
     view.destroy();
   });
 
-  it('级联折叠：折叠条目的更深后代隐藏，同级/更高级保持可见', () => {
+  it('折叠与大纲独立：折叠条目的更深后代仍在大纲中完整可见', () => {
     const state = { folded: [0] };
     const view = createOutlineView({
       doc: fakeDocument(),
@@ -255,9 +255,9 @@ describe('createOutlineView 折叠标记（T4/R2）', () => {
       },
       getFoldedOrdinals: () => state.folded,
     });
-    // # A 折叠 → ## A1 与 ### A1a 级联隐藏；# B 与 ## B1 可见。
-    expect(itemTexts(view)).toEqual(['A', 'B', 'B1']);
-    // 展开 # A → 后代恢复可见。
+    // # A 折叠 → 大纲不级联隐藏，A1 / A1a 仍可见（编辑器折叠不影响大纲）。
+    expect(itemTexts(view)).toEqual(['A', 'A1', 'A1a', 'B', 'B1']);
+    // 展开 # A → 列表保持完整不变。
     const marker0 = bodyOf(view).children[0]?.firstChild as FakeElement;
     marker0.emit('click', { preventDefault: vi.fn(), stopPropagation: vi.fn() });
     expect(itemTexts(view)).toEqual(['A', 'A1', 'A1a', 'B', 'B1']);

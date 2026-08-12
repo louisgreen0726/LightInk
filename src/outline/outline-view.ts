@@ -9,8 +9,9 @@
  *     并 `scrollIntoView({ block: 'start' })`；
  *   - 显示三态循环（菜单 / Ctrl+Shift+L / 侧栏按钮）：
  *       expanded → rail（窄条 »）→ hidden（完全隐藏）→ expanded
- *   - T4/R2 折叠联动：条目左侧三角切换编辑器对应标题折叠；被折叠条目的
- *     更深后代条目在大纲中级联隐藏（树形语义），展开后恢复。
+ *   - T4/R2 折叠联动：条目左侧三角显示编辑器对应标题的折叠态、点击切换；
+ *     大纲始终渲染完整标题列表——编辑器侧折叠只隐藏编辑器正文，不在大纲中
+ *     级联隐藏子条目（两个视图保持独立，大纲作为完整导航目录不被折叠影响）。
  *   - Expanded 态右侧拖动手柄可调宽度，写入 localStorage `lightink.outlineWidth`。
  *
  * 可测试性：DOM 创建经 `doc` 注入、宿主/内容经 `getActiveHost` /
@@ -269,23 +270,10 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
       return;
     }
     const foldedOrdinals = new Set(deps.getFoldedOrdinals?.() ?? []);
-    // 级联折叠（R2 修复）：折叠条目的更深后代在大纲中隐藏（树形折叠语义），
-    // 遇到同级/更高级条目恢复可见；隐藏仅为展示层，anchor 序号不受影响。
-    let hiddenBelowLevel: number | null = null;
-    const visibleItems = items.filter((item, index) => {
-      if (hiddenBelowLevel !== null) {
-        if (item.level > hiddenBelowLevel) return false; // 祖先已折叠 → 隐藏
-        hiddenBelowLevel = null; // 同级/更高级 → 恢复可见
-      }
-      const next = items[index + 1];
-      const hasChildren = next !== undefined && next.level > item.level;
-      if (hasChildren && foldedOrdinals.has(item.anchor)) {
-        hiddenBelowLevel = item.level;
-      }
-      return true;
-    });
+    // 大纲与编辑器折叠保持独立：编辑器侧折叠只隐藏编辑器正文，大纲始终渲染
+    // 完整标题列表（不在大纲中级联隐藏子条目），折叠态仅以左侧标记呈现。
     body.replaceChildren(
-      ...visibleItems.map((item) => {
+      ...items.map((item) => {
         const el = doc.createElement('button');
         el.type = 'button';
         el.classList.add('lightink-outline-item');
