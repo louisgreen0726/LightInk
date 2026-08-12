@@ -144,13 +144,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          IS_DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.draft')
+          # /releases/tags/{tag} 只返回已发布 Release；draft 一律 404
+          # （https://docs.github.com/en/rest/releases/releases）。
+          # 必须先 list 再按 tag 过滤；draft 仅对有 contents:write 的 token 可见。
+          RELEASE_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            | jq --arg tag "${GITHUB_REF_NAME}" '[.[] | select(.tag_name == $tag)] | first')
+          if [ -z "$RELEASE_JSON" ] || [ "$RELEASE_JSON" = "null" ]; then
+            echo "::error::Release ${GITHUB_REF_NAME} was not found (draft or published)"
+            exit 1
+          fi
+
+          IS_DRAFT=$(jq -r '.draft' <<< "$RELEASE_JSON")
           if [ "$IS_DRAFT" != "true" ]; then
             echo "::error::Release ${GITHUB_REF_NAME} was published before asset verification"
             exit 1
           fi
 
-          ASSETS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[].name')
+          ASSETS=$(jq -r '.assets[].name' <<< "$RELEASE_JSON")
           echo "$ASSETS"
 
           for PATTERN in '\.msi$' '\.exe$' '\.dmg$' '\.deb$' '\.AppImage$'; do
@@ -160,8 +170,16 @@ jobs:
             fi
           done
 
+          echo "RELEASE_ID=$(jq -r '.id' <<< "$RELEASE_JSON")" >> "$GITHUB_ENV"
+
       - name: Publish verified release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+        run: |
+          set -euo pipefail
+          # 按 id 发布，避免 /releases/tags/{tag} 对 draft 404。
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false
+          echo "Published release ${GITHUB_REF_NAME} (id=${RELEASE_ID})"
+
