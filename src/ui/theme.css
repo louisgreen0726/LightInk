@@ -584,6 +584,42 @@ body.lightink-outline-resizing * {
   letter-spacing: 0;
   font-weight: 650;
   color: var(--lightink-fg);
+  /* 折叠三角绝对定位的参照系（绘制区外左侧装订线，见 .lightink-fold-marker）。 */
+  position: relative;
+}
+
+/*
+ * 标题折叠三角（R2）：widget 挂在标题行首，视觉上绝对定位到标题左侧装订线
+ * （正文绘制区外，不占文本空间）；默认隐藏，悬停标题或折叠态显示。
+ */
+.lightink-fold-marker {
+  position: absolute;
+  left: 0;
+  transform: translateX(-100%);
+  display: inline-block;
+  width: 1em;
+  padding-right: 4px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0;
+  font-size: 0.85em;
+  color: var(--lightink-muted);
+  transition: opacity 0.12s ease;
+}
+
+.lightink-tab-host .ProseMirror h1:hover .lightink-fold-marker,
+.lightink-tab-host .ProseMirror h2:hover .lightink-fold-marker,
+.lightink-tab-host .ProseMirror h3:hover .lightink-fold-marker,
+.lightink-tab-host .ProseMirror h4:hover .lightink-fold-marker,
+.lightink-tab-host .ProseMirror h5:hover .lightink-fold-marker,
+.lightink-tab-host .ProseMirror h6:hover .lightink-fold-marker,
+.lightink-fold-marker.is-folded {
+  opacity: 0.55;
+}
+
+.lightink-fold-marker:hover {
+  opacity: 0.95;
 }
 
 .lightink-tab-host .ProseMirror h1 { font-size: 1.75em; margin: 1.1em 0 0.5em; }

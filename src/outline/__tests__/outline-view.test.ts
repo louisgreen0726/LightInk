@@ -227,7 +227,8 @@ describe('createOutlineView 折叠标记（T4/R2）', () => {
     const view = createOutlineView({
       doc: fakeDocument(),
       getActiveHost: () => null,
-      getActiveMarkdown: () => '# 一\n\n## 二\n',
+      // 同级标题：折叠「一」不影响「二」的可见性。
+      getActiveMarkdown: () => '# 一\n\n# 二\n',
       toggleFoldAtOrdinal,
       getFoldedOrdinals: () => [0], // 第 0 个标题「一」已折叠
     });
@@ -238,6 +239,28 @@ describe('createOutlineView 折叠标记（T4/R2）', () => {
     expect(marker0?.classList.contains('is-folded')).toBe(true);
     expect(marker1?.classList.contains('lightink-outline-fold')).toBe(true);
     expect(marker1?.classList.contains('is-folded')).toBe(false);
+    view.destroy();
+  });
+
+  it('级联折叠：折叠条目的更深后代隐藏，同级/更高级保持可见', () => {
+    const state = { folded: [0] };
+    const view = createOutlineView({
+      doc: fakeDocument(),
+      getActiveHost: () => null,
+      getActiveMarkdown: () => '# A\n\n## A1\n\n### A1a\n\n# B\n\n## B1\n',
+      toggleFoldAtOrdinal: (ordinal) => {
+        state.folded = state.folded.includes(ordinal)
+          ? state.folded.filter((o) => o !== ordinal)
+          : [...state.folded, ordinal];
+      },
+      getFoldedOrdinals: () => state.folded,
+    });
+    // # A 折叠 → ## A1 与 ### A1a 级联隐藏；# B 与 ## B1 可见。
+    expect(itemTexts(view)).toEqual(['A', 'B', 'B1']);
+    // 展开 # A → 后代恢复可见。
+    const marker0 = bodyOf(view).children[0]?.firstChild as FakeElement;
+    marker0.emit('click', { preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(itemTexts(view)).toEqual(['A', 'A1', 'A1a', 'B', 'B1']);
     view.destroy();
   });
 

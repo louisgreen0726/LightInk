@@ -7,9 +7,12 @@
  *     **非** heading attr（避免 toMarkdown 序列化污染，R6 合规）。PluginKey 态
  *     永不序列化（与 toc / image-size 同一先例），故保存重开自动恢复全展开。
  *
- *   - 渲染只挂 decoration（不改文档）：每个标题前一个三角 widget（可点击切换），
+ *   - 渲染只挂 decoration（不改文档）：每个标题行首一个三角 widget（可点击切换，
+ *     位于标题节点内部首位，渲染为 <h1-h6> 的首个子元素），
  *     折叠区间内的顶层块用 `Decoration.node(style:display:none)` 隐藏。导出基于
- *     未改动的 live doc（`getMarkdown`），折叠不影响导出内容。
+ *     未改动的 live doc（`getMarkdown`），折叠不影响导出内容。三角视觉上经
+ *     theme.css 绝对定位到标题左侧装订线（绘制区外，不占正文空间），默认隐藏、
+ *     悬停标题或折叠态显示。
  *
  *   - 折叠范围 = 该标题之后到「下一个同级或更高级标题」之前的全部顶层内容
  *     （更深的子标题及其内容一并落入父标题的折叠区间）。
@@ -230,10 +233,10 @@ function createFoldMarker(
   const el = document.createElement('span');
   el.className = 'lightink-fold-marker' + (isFolded ? ' is-folded' : '');
   el.contentEditable = 'false';
-  el.textContent = isFolded ? '▾' : '▸';
-  el.style.cssText =
-    'cursor:pointer;user-select:none;display:inline-block;width:1em;' +
-    'margin-right:2px;opacity:.55;font-size:.85em;';
+  // 三角方向按树形控件惯例：折叠 ▸（可展开）/ 展开 ▾（可折叠）。
+  // 呈现（绘制区外左侧装订线、默认隐藏、悬停/折叠态显示）全部在 theme.css，
+  // 此处只挂结构类，便于导出按类名剥离（main.ts 的 clone 清理）。
+  el.textContent = isFolded ? '▸' : '▾';
   el.setAttribute('role', 'button');
   el.setAttribute('aria-label', isFolded ? '展开' : '折叠');
   // 阻止 PM 抢占焦点 / 放置光标（同 toc widget 先例）。
@@ -284,10 +287,15 @@ export function buildFoldDecorations(
       continue; // 已被父折叠隐藏的子标题：不留三角标记
     }
     const isFolded = folded.has(h.pos);
+    // widget 挂在标题节点内部首位（h.pos + 1，正文第一个 inline 之前）——
+    // 渲染为 <h1> 的首个子元素，CSS 才能以标题为参照系把三角绝对定位到左侧
+    // 装订线。挂在 h.pos（块边界）会渲染成标题的兄弟节点、独占一行。
+    // key 带折叠态：PM 对同 key widget 复用旧 DOM（不回调 factory），
+    // 折叠态变化必须换 key 才能让三角方向/类名更新。
     decorations.push(
-      Decoration.widget(h.pos, () => createFoldMarker(h.pos, isFolded, getView), {
+      Decoration.widget(h.pos + 1, () => createFoldMarker(h.pos, isFolded, getView), {
         side: -1,
-        key: `lightink-fold-${h.pos}`,
+        key: `lightink-fold-${h.pos}-${isFolded ? 'f' : 'u'}`,
         ignoreSelection: true,
       }),
     );
