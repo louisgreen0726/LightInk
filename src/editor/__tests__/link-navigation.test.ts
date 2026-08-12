@@ -5,18 +5,24 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { classifyLink, resolveLocalPath } from '../link-navigation.js';
+import {
+  classifyLink,
+  normalizeExternalHttpUrl,
+  resolveLocalPath,
+} from '../link-navigation.js';
 
 describe('classifyLink external', () => {
-  it('http(s) 与协议相对、其他 scheme 归 external', () => {
+  it('仅将 http(s) 与协议相对链接归为 external', () => {
     expect(classifyLink('https://example.com/a/b', '/docs').kind).toBe('external');
     expect(classifyLink('http://x.org', '/docs').kind).toBe('external');
-    expect(classifyLink('mailto:a@b.com', '/docs').kind).toBe('external');
     expect(classifyLink('//cdn.example.com/x', '/docs').kind).toBe('external');
   });
 
-  it('external target 为原始 href', () => {
-    expect(classifyLink('https://example.com', '/docs').target).toBe('https://example.com');
+  it('external target 规范化且协议相对链接升级为 HTTPS', () => {
+    expect(classifyLink('HTTPS://Example.COM', '/docs').target).toBe('https://example.com/');
+    expect(classifyLink('//cdn.example.com/x', '/docs').target).toBe(
+      'https://cdn.example.com/x',
+    );
   });
 });
 
@@ -56,6 +62,30 @@ describe('classifyLink invalid', () => {
     expect(classifyLink('', '/docs').kind).toBe('invalid');
     expect(classifyLink('   ', '/docs').kind).toBe('invalid');
     expect(classifyLink('#anchor', '/docs').kind).toBe('invalid');
+  });
+
+  it('拒绝自定义协议、控制字符和编码协议绕过', () => {
+    for (const href of [
+      'mailto:a@example.com',
+      'javascript:alert(1)',
+      'file:///tmp/a.md',
+      'data:text/html,test',
+      'x:custom-target',
+      'https://example.com/path\n',
+      'https://example.com/%0aheader',
+      'javascript%3Aalert(1)',
+      '%68%74%74%70%73%3A%2F%2Fevil.example',
+      'https://',
+    ]) {
+      expect(classifyLink(href, '/docs')).toEqual({ kind: 'invalid', target: '' });
+    }
+  });
+});
+
+describe('normalizeExternalHttpUrl', () => {
+  it('returns null for direct custom-scheme and encoded-control input', () => {
+    expect(normalizeExternalHttpUrl('custom://host')).toBeNull();
+    expect(normalizeExternalHttpUrl('https://example.com/%7f')).toBeNull();
   });
 });
 

@@ -21,12 +21,16 @@ class FakeEl {
   hidden = false;
   disabled = false;
   type = '';
+  id = '';
+  tabIndex = 0;
   title = '';
+  focused = false;
   dataset: Record<string, string> = {};
   style: Record<string, string> = {};
   children: FakeEl[] = [];
   parent: FakeEl | null = null;
   private readonly listeners = new Map<string, Array<(e: FakeEvent) => void>>();
+  private readonly attrs = new Map<string, string>();
   readonly classList = {
     contains: (c: string): boolean => this.className.split(/\s+/).filter(Boolean).includes(c),
     add: (c: string): void => {
@@ -38,6 +42,22 @@ class FakeEl {
 
   constructor(tag: string) {
     this.tagName = tag.toUpperCase();
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+
+  get parentElement(): FakeEl | null {
+    return this.parent;
+  }
+
+  focus(): void {
+    this.focused = true;
   }
 
   get textContent(): string {
@@ -177,6 +197,10 @@ describe('createMenuBar 渲染', () => {
     expect(trigger(bar).textContent).toBe('文件');
     expect(trigger(bar).dataset.menuId).toBe('file');
     expect(panelEl(bar).hidden).toBe(true);
+    expect(asEl(bar.element).getAttribute('role')).toBe('menubar');
+    expect(trigger(bar).getAttribute('role')).toBe('menuitem');
+    expect(trigger(bar).getAttribute('aria-expanded')).toBe('false');
+    expect(panelEl(bar).getAttribute('role')).toBe('menu');
   });
 
   it('菜单项标注快捷键；分隔符渲染', () => {
@@ -241,6 +265,19 @@ describe('展开/关闭与派发', () => {
     doc.dispatch('keydown', { key: 'Escape' });
     expect(panelEl(bar).hidden).toBe(true);
   });
+
+  it('uses arrow keys and Home/End to move through enabled menu items', () => {
+    const doc = new FakeDoc();
+    const bar = createMenuBar(spec(), doc as unknown as Document);
+    trigger(bar).fire('keydown', { key: 'ArrowDown' });
+    const [first, second, disabled] = menuItems(bar);
+    expect(first?.tabIndex).toBe(0);
+    first?.fire('keydown', { key: 'ArrowDown' });
+    expect(second?.tabIndex).toBe(0);
+    second?.fire('keydown', { key: 'End' });
+    expect(disabled?.disabled).toBe(true);
+    expect(second?.tabIndex).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -284,6 +321,10 @@ function panelByMenuId(bar: { element: HTMLDivElement }, menuId: string): FakeEl
   const wraps = asEl(bar.element).children;
   const wrap = wraps.find((w) => w.children[0]?.dataset.menuId === menuId) as FakeEl;
   return wrap.children[1];
+}
+
+function overflowPanel(bar: { element: HTMLDivElement }): FakeEl {
+  return panelByMenuId(bar, 'overflow');
 }
 
 function flyoutOf(bar: { element: HTMLDivElement }, menuId: string): FakeEl | undefined {
@@ -358,5 +399,47 @@ describe('菜单栏悬停跟踪（VS Code 式）', () => {
     const editTrigger = asEl(bar.element).children[1].children[0];
     editTrigger.fire('mouseenter');
     expect(panelByMenuId(bar, 'edit').hidden).toBe(true);
+  });
+});
+
+describe('narrow-window overflow menu', () => {
+  it('routes a category to the original menu panel', () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(
+      { ...specObj, overflowLabel: 'More commands' },
+      new FakeDoc() as unknown as Document,
+    );
+    const wrappers = asEl(bar.element).children;
+    const overflowWrap = wrappers[wrappers.length - 1]!;
+    expect(overflowWrap.classList.contains('lightink-menu--overflow')).toBe(true);
+    expect(overflowWrap.children[0]?.getAttribute('aria-label')).toBe('More commands');
+    expect(overflowWrap.children[0]?.tabIndex).toBe(0);
+
+    overflowWrap.children[0]?.click();
+    const fileCategory = overflowPanel(bar).children.find(
+      (child) => child.dataset.itemId === 'overflow-file',
+    );
+    fileCategory?.click();
+    expect(panelByMenuId(bar, 'file').hidden).toBe(false);
+    expect(overflowPanel(bar).hidden).toBe(true);
+  });
+
+  it('returns focus to the overflow trigger after closing a routed menu', () => {
+    const { specObj } = specWithSubmenu();
+    const bar = createMenuBar(specObj, new FakeDoc() as unknown as Document);
+    const wrappers = asEl(bar.element).children;
+    const overflowTrigger = wrappers[wrappers.length - 1]!.children[0]!;
+
+    overflowTrigger.click();
+    overflowPanel(bar).children.find(
+      (child) => child.dataset.itemId === 'overflow-file',
+    )?.click();
+    panelByMenuId(bar, 'file').children.find(
+      (child) => child.dataset.itemId === 'new',
+    )?.fire('keydown', { key: 'Escape' });
+
+    expect(panelByMenuId(bar, 'file').hidden).toBe(true);
+    expect(overflowTrigger.focused).toBe(true);
+    expect(overflowTrigger.tabIndex).toBe(0);
   });
 });

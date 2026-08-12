@@ -19,10 +19,10 @@ import {
 import { setCodeChromeLabels } from './editor/plugins/code-highlight.js';
 import { setMathEditTitle } from './editor/plugins/math.js';
 import { setMermaidEditTitle } from './editor/plugins/mermaid.js';
+import { setTaskCheckboxLabels } from './editor/plugins/task-checkbox.js';
 import { setSlashImageHandler, setSlashTranslate } from './editor/plugins/slash-menu.js';
 import { setAppDisplayName } from './ui/window-title.js';
 import { SourceView } from './editor/source-view.js';
-import { subscribeContentChange } from './editor/plugins/content-change.js';
 import {
   clearFindReplace,
   collectSourceMatches,
@@ -51,28 +51,29 @@ import {
   type InsertElementId,
 } from './editor/insert-commands.js';
 import { fileNameStem, importImageAsset } from './asset/asset-service.js';
-import { isReaderPath, planDroppedFiles } from './file/file-drop.js';
+import { planDroppedFiles } from './file/file-drop.js';
 import { OPEN_FILTERS } from './file/file-dialog.js';
-import { buildExportCss } from './export/export-css.js';
-import {
-  exportActiveTabHtml,
-  exportActiveTabPdf,
-  serializeEditorContent,
-  type ExportServiceDeps,
-  type ExportTabSnapshot,
+import { openDocumentPath } from './file/document-router.js';
+import type {
+  ExportServiceDeps,
+  ExportTabSnapshot,
 } from './export/export-service.js';
-import { printToPdfFile, printViaMainWindow } from './export/pdf-export.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
-import { createReaderView } from './reader/reader-view.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
-import { createStatusBar, type StatusBar } from './ui/status-bar.js';
+import { showExitConfirmation } from './ui/exit-confirmation.js';
+import {
+  createStatusBar,
+  cursorPositionFromOffset,
+  type StatusBar,
+  type StatusBarSnapshot,
+} from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
 import { installFontScale } from './ui/font-scale.js';
@@ -81,7 +82,12 @@ import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
-import { showVersionsModal, type VersionMeta } from './ui/versions.js';
+import { installWindowCloseProtection } from './ui/window-lifecycle.js';
+import {
+  createBoundVersionActions,
+  showVersionsModal,
+  type VersionMeta,
+} from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
 
@@ -102,6 +108,41 @@ installWheelZoom(document, fontScale);
 // UI language (en / zh-CN) + macOS shortcut labels.
 const i18n = createI18n(window.localStorage);
 const isMac = isMacPlatform();
+
+type RecentMutationCommand = 'add_recent' | 'remove_recent' | 'clear_recents';
+let recentPersistenceNotice: Promise<void> | null = null;
+
+function reportRecentPersistenceError(error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.error('[lightink/recents] persistence failed', error);
+  if (recentPersistenceNotice !== null) return;
+  const pending = dialogMessage(i18n.t('error.recentsPersistFailed'), {
+    title: i18n.t('app.name'),
+    kind: 'error',
+  })
+    .then(() => undefined)
+    .catch((dialogError: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error('[lightink/recents] error dialog failed', dialogError);
+    })
+    .finally(() => {
+      recentPersistenceNotice = null;
+    });
+  recentPersistenceNotice = pending;
+}
+
+async function persistRecentMutation(
+  command: RecentMutationCommand,
+  payload?: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    await invoke<void>(command, payload);
+    return true;
+  } catch (error) {
+    reportRecentPersistenceError(error);
+    return false;
+  }
+}
 
 /** Apply locale-dependent chrome labels (window title, format bar, code blocks). */
 function applyLocaleChrome(): void {
@@ -124,6 +165,10 @@ function applyLocaleChrome(): void {
   });
   setMathEditTitle(i18n.t('math.editTitle'));
   setMermaidEditTitle(i18n.t('mermaid.editTitle'));
+  setTaskCheckboxLabels({
+    check: i18n.t('task.markComplete'),
+    uncheck: i18n.t('task.markIncomplete'),
+  });
   setSlashTranslate((key) => i18n.t(key));
 }
 applyLocaleChrome();
@@ -136,6 +181,30 @@ const themeService = new ThemeService({
   readFile,
 });
 
+function reportCustomThemeError(error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error ?? '');
+  void dialogMessage(i18n.t('error.customTheme', { detail }), {
+    title: i18n.t('app.name'),
+    kind: 'error',
+  });
+}
+
+void themeService.restorePersistedCustomTheme().catch(reportCustomThemeError);
+
+async function selectCustomTheme(): Promise<void> {
+  try {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: 'CSS', extensions: ['css'] }],
+    });
+    if (typeof selected === 'string') {
+      await themeService.reloadCustomThemeFile(selected);
+    }
+  } catch (error) {
+    reportCustomThemeError(error);
+  }
+}
+
 // 外壳按钮/快捷键回调仅在用户交互时触发，此时 manager 必然已赋值。
 let manager: TabManager;
 // Shell is assigned after createAppShell returns; menu labels/actions use optional access.
@@ -144,6 +213,8 @@ let shell: ReturnType<typeof createAppShell>;
 let outline: OutlineView;
 // T5/R3：字数状态栏在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let statusBar: StatusBar;
+// Per-tab source surfaces must be available to status callbacks during manager startup.
+const sourceViews = new Map<string, SourceView>();
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
 /** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
@@ -170,51 +241,116 @@ function activeReaderTab(): ReaderTabState | null {
   return tab.kind === 'reader' ? tab : null;
 }
 
-/**
- * base64 → Uint8Array（read_file_bytes 返回 base64，前端 atob 解码为字节供解析器）。
- */
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = typeof atob === 'function' ? atob(b64) : '';
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+function throwIfReaderReadCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted === true) {
+    throw new Error('Reader load cancelled');
   }
-  return bytes;
 }
 
 /** 读取阅读文件原始字节（read_file_bytes base64 → Uint8Array），供 reader-view.load。 */
-async function readReaderBytes(filePath: string): Promise<Uint8Array> {
-  const b64 = await invoke<string>('read_file_bytes', { path: filePath });
-  return base64ToBytes(b64);
+async function readReaderBytes(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  throwIfReaderReadCancelled(signal);
+  const { decodeReaderFileBase64, ReaderFileTooLargeError } = await import(
+    './reader/file-bytes.js'
+  );
+  try {
+    throwIfReaderReadCancelled(signal);
+    const b64 = await invoke<string>('read_file_bytes', { path: filePath });
+    throwIfReaderReadCancelled(signal);
+    const bytes = decodeReaderFileBase64(filePath, b64);
+    throwIfReaderReadCancelled(signal);
+    return bytes;
+  } catch (error) {
+    const detail = String(error);
+    const nativeLimit = detail.match(/FILE_TOO_LARGE:(\d+):(\d+)/);
+    if (nativeLimit !== null) {
+      throw new Error(
+        i18n.t('reader.fileTooLarge', { actual: nativeLimit[1]!, limit: nativeLimit[2]! }),
+      );
+    }
+    if (error instanceof ReaderFileTooLargeError) {
+      throw new Error(
+        i18n.t('reader.fileTooLarge', {
+          actual: String(error.actualBytes),
+          limit: String(error.limitBytes),
+        }),
+      );
+    }
+    throw error;
+  }
+}
+
+const READER_LIMIT_MESSAGE_KEYS = {
+  archiveEntries: 'reader.limit.archiveEntries',
+  archiveTotalBytes: 'reader.limit.archiveTotalBytes',
+  archiveEntryBytes: 'reader.limit.archiveEntryBytes',
+  archiveCompressionRatio: 'reader.limit.archiveCompressionRatio',
+  readerImageBytes: 'reader.limit.readerImageBytes',
+  pdfPages: 'reader.limit.pdfPages',
+  cbzPages: 'reader.limit.cbzPages',
+} as const;
+
+const READER_CAPABILITY_MESSAGE_KEYS = {
+  mobiDrm: 'reader.capability.mobiDrm',
+  mobiKf8: 'reader.capability.mobiKf8',
+  mobiHuff: 'reader.capability.mobiHuff',
+} as const;
+
+function readerLoadErrorDetail(error: unknown): string {
+  if (error !== null && typeof error === 'object') {
+    const candidate = error as Record<string, unknown>;
+    const kind = typeof candidate['kind'] === 'string' ? candidate['kind'] : '';
+    if (
+      candidate['name'] === 'ReaderLimitError' &&
+      Object.prototype.hasOwnProperty.call(READER_LIMIT_MESSAGE_KEYS, kind) &&
+      typeof candidate['actual'] === 'number' &&
+      typeof candidate['limit'] === 'number'
+    ) {
+      const key = READER_LIMIT_MESSAGE_KEYS[kind as keyof typeof READER_LIMIT_MESSAGE_KEYS];
+      return i18n.t(key, {
+        actual: String(candidate['actual']),
+        limit: String(candidate['limit']),
+      });
+    }
+    if (
+      candidate['name'] === 'ReaderCapabilityError' &&
+      Object.prototype.hasOwnProperty.call(READER_CAPABILITY_MESSAGE_KEYS, kind)
+    ) {
+      const key =
+        READER_CAPABILITY_MESSAGE_KEYS[kind as keyof typeof READER_CAPABILITY_MESSAGE_KEYS];
+      return i18n.t(key);
+    }
+  }
+  return error instanceof Error ? error.message : String(error ?? '');
+}
+
+function reportReaderLoadError(error: unknown): void {
+  void dialogMessage(i18n.t('reader.loadFailed', { detail: readerLoadErrorDetail(error) }), {
+    title: i18n.t('app.name'),
+    kind: 'error',
+  });
 }
 
 /**
  * 按扩展名把路径路由到 markdown 编辑标签或只读 reader 标签，并加载/解析内容。
  * reader 标签：openReader 后调用 reader.load；解析失败（DRM/损坏）弹 i18n 错误提示，
- * 标签仍保留。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
+ * 失败标签会立即清理。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
  */
 async function openPathByKind(path: string): Promise<TabState | null> {
-  if (!isReaderPath(path)) {
-    return manager.openFile(path);
-  }
-  let tab: ReaderTabState;
-  try {
-    tab = await manager.openReader(path);
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error(`[lightink] 打开阅读文件失败: ${path}`, error);
-    return null;
-  }
-  try {
-    await tab.reader.load(path);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error ?? '');
-    void dialogMessage(i18n.t('reader.loadFailed', { detail }), {
-      title: i18n.t('app.name'),
-      kind: 'error',
-    });
-  }
-  return tab;
+  return openDocumentPath(path, {
+    manager,
+    onReaderOpenError: (failedPath, error) => {
+      // eslint-disable-next-line no-console
+      console.error(`[lightink] 打开阅读文件失败: ${failedPath}`, error);
+      reportReaderLoadError(error);
+    },
+    onReaderLoadError: (error) => {
+      reportReaderLoadError(error);
+    },
+  });
 }
 
 /**
@@ -275,17 +411,14 @@ function insertElement(id: InsertElementId): void {
   const sourceView = sourceViews.get(tab.id);
   if (sourceView !== undefined && sourceView.isSourceMode) {
     sourceView.insertSnippetAtCursor(element.snippet());
-    manager.handleContentChanged(tab.id);
     return;
   }
   // Structured insert at caret (table/list/code as real nodes, not plain text).
   if (tab.editor.insertMarkdown(element.snippet())) {
-    manager.handleContentChanged(tab.id);
     return;
   }
   // Fallback: append as markdown blocks at end of document.
   tab.editor.setMarkdown(insertElementMarkdown(tab.editor.getMarkdown(), id));
-  manager.handleContentChanged(tab.id);
 }
 
 /** Insert → Link / shortcut: themed dialog for display text + URL. */
@@ -321,7 +454,6 @@ async function insertLinkViaDialog(): Promise<void> {
     // setLink wraps the current selection or inserts a linked run at the caret.
     tab.editor.setLink(result.href, result.text);
   }
-  manager.handleContentChanged(tab.id);
 }
 
 /**
@@ -353,7 +485,6 @@ async function importAndInsertImage(sourcePath: string): Promise<void> {
   } else {
     tab.editor.insertImage(relPath, alt);
   }
-  manager.handleContentChanged(tab.id);
 }
 
 /** 插入菜单「图片」：打开本地文件选择器，选中后走共享落盘/插入流程。 */
@@ -448,12 +579,11 @@ function undoActiveEditor(): void {
     if (sourceView !== undefined && sourceView.isSourceMode) {
       sourceView.focusEditor();
       document.execCommand('undo');
-      manager.handleContentChanged(tab.id);
+      sourceView.syncToEditor();
       return;
     }
     tab.editor.undo();
     tab.editor.focus();
-    manager.handleContentChanged(tab.id);
   });
 }
 
@@ -468,12 +598,11 @@ function redoActiveEditor(): void {
     if (sourceView !== undefined && sourceView.isSourceMode) {
       sourceView.focusEditor();
       document.execCommand('redo');
-      manager.handleContentChanged(tab.id);
+      sourceView.syncToEditor();
       return;
     }
     tab.editor.redo();
     tab.editor.focus();
-    manager.handleContentChanged(tab.id);
   });
 }
 
@@ -497,38 +626,54 @@ function runClipboardCommand(command: 'cut' | 'copy' | 'paste'): void {
             // Fallback for environments that still allow the paste command.
             document.execCommand('paste');
           }
-          // 延迟采样：insertText / 默认 paste 完成后才有正确字数与查找计数。
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const tab = manager?.activeTab ?? null;
-              if (tab !== null) {
-                manager.handleContentChanged(tab.id);
-              }
-            });
-          });
         })
         .catch(() => {
           focusActiveEditor();
           document.execCommand('paste');
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const tab = manager?.activeTab ?? null;
-              if (tab !== null) {
-                manager.handleContentChanged(tab.id);
-              }
-            });
-          });
         });
       return;
     }
     document.execCommand(command);
-    if (command === 'cut') {
-      const tab = manager?.activeTab ?? null;
-      if (tab !== null) {
-        manager.handleContentChanged(tab.id);
-      }
+  });
+}
+
+interface ExportPipeline {
+  readonly buildExportCss: (extraCss?: string) => string;
+  readonly exportHtml: (deps: ExportServiceDeps) => Promise<boolean>;
+  readonly exportPdf: (deps: ExportServiceDeps) => Promise<boolean>;
+  readonly printHtml: (doc: Document, html: string) => void;
+  readonly printPdfNative: (
+    doc: Document,
+    html: string,
+    invokeNative: () => Promise<void>,
+  ) => Promise<void>;
+}
+
+let exportPipelinePromise: Promise<ExportPipeline> | null = null;
+
+/** Load the export implementation and its self-contained CSS only after an export command. */
+function loadExportPipeline(): Promise<ExportPipeline> {
+  if (exportPipelinePromise !== null) {
+    return exportPipelinePromise;
+  }
+  const pending = Promise.all([
+    import('./export/export-css.js'),
+    import('./export/export-service.js'),
+    import('./export/pdf-export.js'),
+  ]).then(([css, service, pdf]) => ({
+    buildExportCss: css.buildExportCss,
+    exportHtml: service.exportActiveTabHtml,
+    exportPdf: service.exportActiveTabPdf,
+    printHtml: pdf.printViaMainWindow,
+    printPdfNative: pdf.printToPdfFile,
+  }));
+  exportPipelinePromise = pending;
+  void pending.catch(() => {
+    if (exportPipelinePromise === pending) {
+      exportPipelinePromise = null;
     }
   });
+  return pending;
 }
 
 // T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
@@ -557,7 +702,8 @@ function activeExportSnapshot(): ExportTabSnapshot | null {
 function exportContentHtmlWithoutFold(host: HTMLElement): string {
   const pm = host.querySelector('.ProseMirror');
   if (pm === null) {
-    return serializeEditorContent(host);
+    // 与 serializeEditorContent 相同的回退（不静态 import，保住导出管线懒加载）。
+    return host.innerHTML;
   }
   const clone = pm.cloneNode(true) as HTMLElement;
   // 移除每个标题前的折叠三角 widget。
@@ -579,52 +725,74 @@ function currentCustomThemeCss(): string {
   return document.getElementById('lightink-custom-theme')?.textContent ?? '';
 }
 
-const exportDeps: ExportServiceDeps = {
-  getActiveSnapshot: activeExportSnapshot,
-  getTheme: () => document.documentElement.getAttribute('data-theme') ?? 'warm-light',
-  getCssText: () => buildExportCss(currentCustomThemeCss()),
-  readImageBase64: (docPath, sessionId, relPath) =>
-    invoke<string>('read_image_base64', { docPath, sessionId, relPath }),
-  showHtmlSaveDialog: async (defaultPath) => {
-    const selected = await save({
-      defaultPath,
-      filters: [
-        { name: 'HTML', extensions: ['html', 'htm'] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
-    });
-    return typeof selected === 'string' ? selected : null;
-  },
-  writeFile,
-  // 主窗口 print：macOS/Linux WebKit 上 iframe.print 会静默失败（见 pdf-export）。
-    printHtml: (html) => printViaMainWindow(document, html),
-  showPdfSaveDialog: async (defaultPath) => {
-    const selected = await save({
-      defaultPath,
-      filters: [
-        { name: 'PDF', extensions: ['pdf'] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
-    });
-    return typeof selected === 'string' ? selected : null;
-  },
-  // 原生矢量 PDF（Windows WebView2 PrintToPdf / macOS WKWebView createPDF）：含可选
-  // 文字；非 macOS 失败回退 printHtml。macOS（R1/T6）以原生为唯一路径，不回退。
-  printPdfNative: (html, path) =>
-    printToPdfFile(document, html, () => invoke<void>('print_webview_to_pdf', { path })),
-  // R1/T6：macOS 平台判断——原生 createPDF 失败时不回退 window.print。
-  isMacOS: () => isMac,
-  reportError: (message, error) => {
-    // eslint-disable-next-line no-console
-    console.error(`[lightink/export] ${message}`, error);
-    // 导出是用户主动触发的动作：失败必须可见（不静默 console-only）。
-    const detail = error instanceof Error ? error.message : String(error ?? '');
-    void dialogMessage(`${message}\n${detail}`, {
-      title: i18n.t('error.exportFailed'),
-      kind: 'error',
-    });
-  },
-};
+function reportExportError(message: string, error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.error(`[lightink/export] ${message}`, error);
+  const detail = error instanceof Error ? error.message : String(error ?? '');
+  void dialogMessage(`${message}\n${detail}`, {
+    title: i18n.t('error.exportFailed'),
+    kind: 'error',
+  });
+}
+
+function createExportDeps(
+  pipeline: ExportPipeline,
+  snapshot: ExportTabSnapshot | null,
+): ExportServiceDeps {
+  return {
+    getActiveSnapshot: () => snapshot,
+    getTheme: () => document.documentElement.getAttribute('data-theme') ?? 'warm-light',
+    getCssText: () => pipeline.buildExportCss(currentCustomThemeCss()),
+    readImageBase64: (docPath, sessionId, relPath) =>
+      invoke<string>('read_image_base64', { docPath, sessionId, relPath }),
+    showHtmlSaveDialog: async (defaultPath) => {
+      const selected = await save({
+        defaultPath,
+        filters: [
+          { name: 'HTML', extensions: ['html', 'htm'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      return typeof selected === 'string' ? selected : null;
+    },
+    writeFile,
+    // macOS/Linux WebKit requires printing from the main window.
+    printHtml: (html) => pipeline.printHtml(document, html),
+    showPdfSaveDialog: async (defaultPath) => {
+      const selected = await save({
+        defaultPath,
+        filters: [
+          { name: 'PDF', extensions: ['pdf'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      return typeof selected === 'string' ? selected : null;
+    },
+    printPdfNative: (html, path) =>
+      pipeline.printPdfNative(document, html, () =>
+        invoke<void>('print_webview_to_pdf', { path }),
+      ),
+    // R1/T6：macOS 平台判断——原生 createPDF 失败时不回退 window.print。
+    isMacOS: () => isMac,
+    getUnsafeCssErrorMessage: () => i18n.t('error.exportUnsafeCss'),
+    reportError: reportExportError,
+  };
+}
+
+async function runActiveExport(kind: 'html' | 'pdf'): Promise<void> {
+  const snapshot = activeExportSnapshot();
+  try {
+    const pipeline = await loadExportPipeline();
+    const deps = createExportDeps(pipeline, snapshot);
+    if (kind === 'html') {
+      await pipeline.exportHtml(deps);
+    } else {
+      await pipeline.exportPdf(deps);
+    }
+  } catch (error) {
+    reportExportError(i18n.t('error.exportFailed'), error);
+  }
+}
 
 shell = createAppShell(
   app,
@@ -636,16 +804,20 @@ shell = createAppShell(
       const tab = await openPathByKind(path);
       if (tab === null) {
         // 文件缺失/不可读：移除该最近条目并提示。
-        void invoke('remove_recent', { path }).catch(() => undefined);
+        const removed = await persistRecentMutation('remove_recent', { path });
         void dialogMessage(
-          `${i18n.t('error.openFile', { path })} ${i18n.t('error.recentRemoved')}`,
+          `${i18n.t('error.openFile', { path })}${
+            removed ? ` ${i18n.t('error.recentRemoved')}` : ''
+          }`,
           { title: i18n.t('app.name'), kind: 'warning' },
         );
         return false;
       }
       return true;
     },
-    clearRecents: () => invoke('clear_recents'),
+    clearRecents: async () => {
+      await persistRecentMutation('clear_recents');
+    },
     onShowVersions: () => showVersionsForActive(),
     // 注意：菜单 enabled 回调在 createAppShell 构造期就被同步调用（见 menus.ts 的
     // refreshItemEnabled），此时 manager 尚未赋值（于下方 new TabManager 处赋值）。
@@ -668,11 +840,11 @@ shell = createAppShell(
     },
     onExportHtml: () => {
       commitActiveSourceMode();
-      void exportActiveTabHtml(exportDeps);
+      void runActiveExport('html');
     },
     onExportPdf: () => {
       commitActiveSourceMode();
-      void exportActiveTabPdf(exportDeps);
+      void runActiveExport('pdf');
     },
     onUndo: () => undoActiveEditor(),
     onRedo: () => redoActiveEditor(),
@@ -692,9 +864,13 @@ shell = createAppShell(
     },
     getCurrentThemeId: () => themeService.currentThemeId,
     onReloadCustomTheme: () => {
-      void themeService.reloadCustomThemeFile();
+      void themeService.reloadCustomThemeFile().catch(reportCustomThemeError);
     },
+    onSelectCustomTheme: () => void selectCustomTheme(),
+    onResetCustomTheme: () => themeService.resetCustomTheme(),
     canReloadCustomTheme: () => themeService.customThemePath !== null,
+    canResetCustomTheme: () =>
+      themeService.isCustomThemeActive || themeService.customThemePath !== null,
     onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),
@@ -713,13 +889,13 @@ shell = createAppShell(
       toggleChromePinnedWithOutline();
     },
     onZoomIn: () => {
-      fontScale.zoomIn();
+      changeReadingScale('in');
     },
     onZoomOut: () => {
-      fontScale.zoomOut();
+      changeReadingScale('out');
     },
     onZoomReset: () => {
-      fontScale.reset();
+      changeReadingScale('reset');
     },
     getFontScaleLabel: () => fontScale.label,
     // ---- reader 标签专用：阅读态菜单「标注」 ----
@@ -752,6 +928,7 @@ shell = createAppShell(
       if (outline !== undefined) {
         outline.retranslate();
       }
+      statusBar?.refresh(getActiveStatusSnapshot);
       // Refresh window title with localized app name.
       const tab = manager?.activeTab ?? null;
       if (tab !== null) {
@@ -885,9 +1062,11 @@ const editorScroller = shell.editorArea;
 manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
+  remoteImageLoadLabel: i18n.t('reader.remoteImageLoad'),
   mountEditor,
-  mountReader: async (host) =>
-    createReaderView(host, {
+  mountReader: async (host) => {
+    const { createReaderView } = await import('./reader/reader-view.js');
+    const reader = createReaderView(host, {
       readBytes: readReaderBytes,
       t: (key, vars) => i18n.t(key, vars),
       getContentHash: (path) => invoke<string>('content_hash', { path }),
@@ -897,32 +1076,26 @@ manager = new TabManager({
       notify: (message) => {
         void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
       },
-    }),
+    });
+    reader.subscribeState(() => {
+      const active = manager?.activeTab;
+      if (active?.kind === 'reader' && active.reader === reader) {
+        statusBar?.refresh(getActiveStatusSnapshot);
+      }
+    });
+    return reader;
+  },
   createHostElement: (tabId) => {
     const el = document.createElement('div');
     el.className = 'lightink-tab-host';
+    el.id = `lightink-panel-${tabId}`;
     el.dataset.tabId = tabId;
+    el.setAttribute('role', 'tabpanel');
+    el.setAttribute('aria-labelledby', `lightink-tab-${tabId}`);
     return el;
   },
   attachHost: (el) => {
     shell.editorArea.appendChild(el);
-    // 源码 textarea 的 input 仍走宿主监听；WYSIWYG 由 contentChangePlugin 广播。
-    const notifyHostContent = (): void => {
-      const id = el.dataset.tabId;
-      if (id !== undefined) {
-        manager.handleContentChanged(id);
-      }
-    };
-    el.addEventListener('input', notifyHostContent, true);
-    el.addEventListener(
-      'paste',
-      () => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(notifyHostContent);
-        });
-      },
-      true,
-    );
   },
   detachHost: (el) => {
     el.remove();
@@ -983,13 +1156,18 @@ manager = new TabManager({
   onActiveContentChanged: () => {
     outline.scheduleRefresh();
     // T5/R3：状态栏防抖刷新（内部在隐藏时短路不渲染）。
-    statusBar.scheduleUpdate(getActiveMarkdownForStatus);
+    statusBar.scheduleUpdate(getActiveStatusSnapshot);
     // 查找面板打开时：内容编辑后同步命中计数（WYSIWYG 插件已重算 decoration，
     // 源码模式需重收 matches；都不强制跳回首命中）。
     refreshFindOnContentChange();
   },
+  onSaveStatusChanged: (tabId) => {
+    if (manager?.activeTabId === tabId) {
+      statusBar?.refresh(getActiveStatusSnapshot);
+    }
+  },
   onFileOpened: (filePath) => {
-    void invoke('add_recent', { path: filePath }).catch(() => undefined);
+    void persistRecentMutation('add_recent', { path: filePath });
   },
   onFileSaved: (filePath, content) => {
     // R13：每次成功保存自动生成一份版本快照。
@@ -1077,32 +1255,90 @@ outline = createOutlineView({
 });
 shell.outlineSidebar.appendChild(outline.root);
 
-// T5/R3：字数状态栏。挂载于 shell 根部槽位；显隐偏好 localStorage 跨会话保持
-// （默认关闭），刷新由 TabManager 的 onActiveContentChanged 防抖驱动（见上）。
+// Document status bar: visible by default, with a persisted user override. Content and
+// cursor updates are debounced; save/conflict transitions refresh immediately.
 // 标签闭包现读 locale，语言切换后下次刷新即用新文案。
 statusBar = createStatusBar(document, shell.statusBarHost, {
   storage: window.localStorage,
-  labels: () =>
-    i18n.locale === 'en'
-      ? { words: 'Words', characters: 'Characters' }
-      : { words: '字数', characters: '字符' },
+  labels: () => ({
+    words: i18n.t('status.words'),
+    characters: i18n.t('status.characters'),
+    line: i18n.t('status.line'),
+    column: i18n.t('status.column'),
+    encoding: i18n.t('status.encoding'),
+    save: {
+      saved: i18n.t('status.save.saved'),
+      dirty: i18n.t('status.save.dirty'),
+      saving: i18n.t('status.save.saving'),
+      error: i18n.t('status.save.error'),
+      conflict: i18n.t('status.save.conflict'),
+    },
+    reader: {
+      phase: {
+        empty: i18n.t('status.reader.empty'),
+        loading: i18n.t('status.reader.loading'),
+        ready: i18n.t('status.reader.ready'),
+        cancelled: i18n.t('status.reader.cancelled'),
+        error: i18n.t('status.reader.error'),
+        destroyed: i18n.t('status.reader.destroyed'),
+      },
+      page: i18n.t('status.reader.page'),
+      chapter: i18n.t('status.reader.chapter'),
+      progress: i18n.t('status.reader.progress'),
+      zoom: i18n.t('status.reader.zoom'),
+    },
+  }),
 });
 
-/** 活动标签的 markdown（状态栏统计来源；与大纲同一事实源 editor.getMarkdown）。 */
-function getActiveMarkdownForStatus(): string | null {
-  const tab = activeMarkdownTab();
-  if (tab === null) {
-    return null;
+/** Build the active editor or Reader status from its owning instance. */
+function getActiveStatusSnapshot(): StatusBarSnapshot {
+  const tab = manager.activeTab;
+  if (tab === null) return null;
+  if (tab.kind === 'reader') {
+    return {
+      kind: 'reader',
+      state: tab.reader.state,
+      displayScale: tab.reader.state.scale * fontScale.scale,
+    };
   }
   try {
-    return tab.editor.getMarkdown();
+    const markdown = tab.editor.getMarkdown();
+    const source = sourceViews.get(tab.id);
+    const textarea =
+      source?.isSourceMode === true
+        ? tab.hostElement.querySelector<HTMLTextAreaElement>('textarea.lightink-source-editor')
+        : null;
+    const cursor =
+      textarea === null
+        ? (tab.editor.getCursorPosition() ?? { line: 1, column: 1 })
+        : cursorPositionFromOffset(textarea.value, textarea.selectionEnd);
+    return {
+      kind: 'markdown',
+      markdown,
+      saveStatus: manager.getSaveStatus(tab.id) ?? (tab.dirty ? 'dirty' : 'saved'),
+      cursor,
+    };
   } catch {
     return null;
   }
 }
 
+function changeReadingScale(action: 'in' | 'out' | 'reset'): void {
+  if (action === 'in') {
+    fontScale.zoomIn();
+  } else if (action === 'out') {
+    fontScale.zoomOut();
+  } else {
+    fontScale.reset();
+  }
+  statusBar?.refresh(getActiveStatusSnapshot);
+}
+
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
-statusBar.refresh(getActiveMarkdownForStatus);
+statusBar.refresh(getActiveStatusSnapshot);
+document.addEventListener('selectionchange', () => {
+  statusBar.scheduleUpdate(getActiveStatusSnapshot);
+});
 
 // R14：可选自动保存（默认关；偏好 localStorage 跨会话保持）。tick 前先提交
 // 活动标签的源码态编辑（与手动保存同口径），再扫全部有路径脏 tab 走同一保存流
@@ -1111,38 +1347,44 @@ autosave = createAutosave({
   storage: window.localStorage,
   tick: () => {
     commitActiveSourceMode();
-    void manager.autosaveDirtyTabs();
+    return manager.autosaveDirtyTabs();
+  },
+  onError: (error) => {
+    // eslint-disable-next-line no-console
+    console.error('[lightink/autosave] tick failed', error);
   },
 });
 
 /** R13：为活动文件弹出版本历史（列表/预览/恢复/手动存档）。 */
 function showVersionsForActive(): void {
   const tab = activeMarkdownTab();
-  const filePath = tab?.filePath ?? null;
-  if (filePath === null) {
+  if (tab === null || tab.filePath === null) {
     return;
   }
+  const filePath = tab.filePath;
   showVersionsModal(
     document,
-    {
-      list: () => invoke<VersionMeta[]>('list_versions', { filePath }),
-      read: (id) => invoke<string>('read_version', { filePath, versionId: id }),
-      restore: async (id) => {
-        const currentContent = tab?.editor.getMarkdown() ?? '';
-        const content = await invoke<string>('restore_version', {
-          filePath,
+    createBoundVersionActions({
+      targetId: tab.id,
+      filePath,
+      getTarget: (id) => {
+        const target = manager.tabList.find((candidate) => candidate.id === id) ?? null;
+        return target !== null && isMarkdownTab(target) ? target : null;
+      },
+      getContent: (target) => target.editor.getMarkdown(),
+      setContent: (target, content) => target.editor.setMarkdown(content),
+      listVersions: (path) => invoke<VersionMeta[]>('list_versions', { filePath: path }),
+      readVersion: (path, id) =>
+        invoke<string>('read_version', { filePath: path, versionId: id }),
+      restoreVersion: (path, id, currentContent) =>
+        invoke<string>('restore_version', {
+          filePath: path,
           versionId: id,
           currentContent,
-        });
-        tab?.editor.setMarkdown(content);
-        const activeId = manager.activeTabId;
-        if (activeId !== null) {
-          manager.handleContentChanged(activeId);
-        }
-      },
-      saveCurrent: () =>
-        invoke('create_version', { filePath, content: tab?.editor.getMarkdown() ?? '' }),
-    },
+        }),
+      createVersion: (path, content) =>
+        invoke('create_version', { filePath: path, content }),
+    }),
     {
       title: i18n.t('dialog.versions.title'),
       loading: i18n.t('dialog.loading'),
@@ -1199,7 +1441,6 @@ async function openLocalMdLink(path: string): Promise<void> {
 }
 
 // T7/R10：每标签的源码视图（惰性创建）。整窗 WYSIWYG ↔ 源码模式，单窗格无并排。
-const sourceViews = new Map<string, SourceView>();
 function toggleActiveSourceMode(): void {
   const tab = activeMarkdownTab();
   if (tab === null) return;
@@ -1209,6 +1450,7 @@ function toggleActiveSourceMode(): void {
     sourceViews.set(tab.id, view);
   }
   view.toggle();
+  statusBar.refresh(getActiveStatusSnapshot);
 }
 /** 源码态下把活动标签的 textarea 源码同步回编辑器（供保存/大纲读取一致）。 */
 function commitActiveSourceMode(): void {
@@ -1221,6 +1463,13 @@ function commitSourceMode(tabId: string): void {
   const view = sourceViews.get(tabId);
   if (view !== undefined && view.isSourceMode) {
     view.syncToEditor();
+  }
+}
+
+/** Commit every source textarea before application-exit dirty-state inspection. */
+function commitAllSourceModes(): void {
+  for (const tab of manager.tabList) {
+    commitSourceMode(tab.id);
   }
 }
 
@@ -1283,30 +1532,17 @@ function activeFindView(): ReturnType<typeof findReplaceViewForHost> {
   return findReplaceViewForHost(tab.hostElement);
 }
 
-/** 只接线一次：WYSIWYG 文档变更 + 查找状态 → 壳层刷新。 */
+/** 只接线一次：查找状态 → 壳层刷新。 */
 let contentObserversWired = false;
 
 /**
- * 文档变更 / 查找状态的全局观察者。
+ * 查找状态的全局观察者。文档变更由编辑器实例级回调直接绑定到所属标签。
  * 必须在应用启动时调用（不要等用户打开查找面板），否则字数栏与 1/N 不会动。
  * 注意：声明必须在调用点之前（避免 TDZ：contentObserversWired 未初始化就访问）。
  */
 function wireEditorContentObservers(): void {
   if (contentObserversWired) return;
   contentObserversWired = true;
-
-  // 可靠路径：PM 文档引用变化（键入/删除/粘贴/insert/替换）。
-  subscribeContentChange((view) => {
-    const tab = manager?.activeTab ?? null;
-    if (tab === null) return;
-    if (activeSourceTextarea() !== null) return;
-    // 只处理活动标签的 view（多标签各有一份插件）。
-    const activeView = findReplaceViewForHost(tab.hostElement);
-    if (activeView !== null && activeView !== view) return;
-    // 无 find view 时仍按 host 包含关系判定。
-    if (activeView === null && !tab.hostElement.contains(view.dom)) return;
-    manager.handleContentChanged(tab.id);
-  });
 
   // 查找插件状态变化（含 docChanged 后重收命中）：直接写面板计数。
   subscribeFindReplaceStatus((view, status) => {
@@ -1544,11 +1780,6 @@ function replaceSourceRange(
   }
 }
 
-function markActiveTabDirty(): void {
-  const id = manager?.activeTabId ?? null;
-  if (id !== null) manager.handleContentChanged(id);
-}
-
 function runReplaceCurrent(replacement: string): void {
   const query = findPanel?.getQuery() ?? '';
   const ta = activeSourceTextarea();
@@ -1569,14 +1800,11 @@ function runReplaceCurrent(replacement: string): void {
     const current = next[sourceFindActive];
     if (current !== undefined) selectSourceMatch(ta, current);
     syncFindPanelStatus(next.length, sourceFindActive);
-    markActiveTabDirty();
     return;
   }
   const view = activeFindView();
   if (view === null) return;
-  if (replaceCurrentMatch(view, replacement)) {
-    markActiveTabDirty();
-  }
+  replaceCurrentMatch(view, replacement);
   const state = readFindReplaceState(view);
   syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
 }
@@ -1591,15 +1819,13 @@ function runReplaceAll(replacement: string): void {
       const match = matches[i];
       if (match !== undefined) replaceSourceRange(ta, match.start, match.end, replacement);
     }
-    if (matches.length > 0) markActiveTabDirty();
     sourceFindActive = -1;
     syncFindPanelStatus(collectSourceMatches(ta.value, query).length, -1);
     return;
   }
   const view = activeFindView();
   if (view === null) return;
-  const count = replaceAllMatches(view, replacement);
-  if (count > 0) markActiveTabDirty();
+  replaceAllMatches(view, replacement);
   const state = readFindReplaceState(view);
   syncFindPanelStatus(state?.total ?? 0, state?.active ?? -1);
 }
@@ -1718,13 +1944,13 @@ const shortcuts = new ShortcutRegistry({
   'next-tab': () => cycleActiveTab(1),
   'prev-tab': () => cycleActiveTab(-1),
   'zoom-in': () => {
-    fontScale.zoomIn();
+    changeReadingScale('in');
   },
   'zoom-out': () => {
-    fontScale.zoomOut();
+    changeReadingScale('out');
   },
   'zoom-reset': () => {
-    fontScale.reset();
+    changeReadingScale('reset');
   },
 });
 shortcuts.attach(document);
@@ -1835,24 +2061,31 @@ function showTabContextMenu(tabId: string, x: number, y: number): void {
   const items = buildTabContextMenuItems(
     { hasFile, t: (key) => i18n.t(key) },
     {
-    close: () => void manager.closeTab(tabId),
-    closeOthers: () => {
-      for (const other of manager.tabList) {
-        if (other.id !== tabId) void manager.closeTab(other.id);
-      }
-    },
-    copyPath: () => {
-      if (tab?.filePath !== null && tab?.filePath !== undefined) {
-        void navigator.clipboard?.writeText(tab.filePath);
-      }
-    },
-    revealInFiles: () => {
-      // 「在文件管理器中显示」走 opener reveal_path_in_files（lib.rs 已注册，与 R14 链接
-      // 分类的 opener 能力同源）。能力未注册时忽略，避免阻塞右键菜单。
-      const path = tab?.filePath;
-      if (path === null || path === undefined) return;
-      void invoke('reveal_path_in_files', { path }).catch(() => undefined);
-    },
+      close: () => {
+        commitSourceMode(tabId);
+        void manager.closeTab(tabId);
+      },
+      closeOthers: () => {
+        void (async () => {
+          for (const other of [...manager.tabList]) {
+            if (other.id === tabId) continue;
+            commitSourceMode(other.id);
+            if (!(await manager.closeTab(other.id))) break;
+          }
+        })();
+      },
+      copyPath: () => {
+        if (tab?.filePath !== null && tab?.filePath !== undefined) {
+          void navigator.clipboard?.writeText(tab.filePath);
+        }
+      },
+      revealInFiles: () => {
+        // 「在文件管理器中显示」走 opener reveal_path_in_files（lib.rs 已注册，与 R14 链接
+        // 分类的 opener 能力同源）。能力未注册时忽略，避免阻塞右键菜单。
+        const path = tab?.filePath;
+        if (path === null || path === undefined) return;
+        void invoke('reveal_path_in_files', { path }).catch(() => undefined);
+      },
   });
   // Keep tabs chrome open while the menu is up; release on every close path.
   shell.setTabsHold(true);
@@ -1881,7 +2114,43 @@ function getShortcutBindings(): CheatBinding[] {
   }));
 }
 
-// R13：外部文件变更检测——窗口聚焦 + 定时（秒级）轮询活动文件 mtime。
+/** Protect native title-bar, system-menu, and shortcut initiated application exits. */
+function installApplicationCloseProtection(): void {
+  installWindowCloseProtection({
+    window,
+    isNative: '__TAURI_INTERNALS__' in window,
+    getNativeWindow: async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      return getCurrentWindow();
+    },
+    hasUnsavedChanges: () => {
+      commitAllSourceModes();
+      return manager.tabList.some((tab) => tab.kind === 'markdown' && tab.dirty);
+    },
+    confirmExit: () => {
+      const titles = manager.tabList
+        .filter((tab) => tab.kind === 'markdown' && tab.dirty)
+        .map((tab) => tab.title);
+      return showExitConfirmation(document, titles, {
+        title: i18n.t('dialog.exit.title'),
+        message: (documents) => i18n.t('dialog.exit.message', { documents }),
+        saveAll: i18n.t('dialog.exit.saveAll'),
+        discardAll: i18n.t('dialog.exit.discardAll'),
+        cancel: i18n.t('dialog.cancel'),
+      });
+    },
+    closeAllTabs: (action) => manager.closeAllTabs(action),
+    flushDirtySnapshots: () => manager.flushDirtySnapshots(),
+    reportError: (error) => {
+      // eslint-disable-next-line no-console
+      console.error('[lightink/window-close] close protection failed', error);
+    },
+  });
+}
+
+installApplicationCloseProtection();
+
+// R13：外部文件变更检测——窗口聚焦 + 定时（秒级）轮询活动文件 stat/指纹。
 // 检测逻辑与冲突/重载分派在 TabManager（可注入测试），这里只做时机触发。
 async function pollExternalChange(): Promise<void> {
   try {

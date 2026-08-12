@@ -4,14 +4,18 @@
  * 解包 PalmDB（PDB 头 + 记录索引），读 record 0 的 PalmDOC 头得到压缩方式、正文
  * 总长、文本记录数与加密标志；DRM（encryption≠0）立即报错。按记录拼装正文字节，
  * PalmDOC LZ77（compression==2）逐记录解压；无压缩（==1）原样。正文为 HTML，
- * 按 <mbp:pagebreak/> 切章并消毒。仅支持无 DRM 的经典 PalmDOC MOBI；KF8/AZW3
+ * 按 <mbp:pagebreak/> 切章并消毒。仅支持无 DRM 的经典 PalmDOC MOBI；KF8/MOBI8
  * 复杂版式与 HUFF/CDIC 压缩不在本任务范围（遇 HUFF 报错）。
  *
  * 纯二进制 + 字符串实现，node 可测（测试合成最小 PalmDOC MOBI）。
  */
 
 import { sanitizeHtml } from '../sanitize.js';
-import { ParseError, type ReaderContent } from './types.js';
+import {
+  ParseError,
+  ReaderCapabilityError,
+  type ReaderContent,
+} from './types.js';
 
 function be16(dv: DataView, off: number): number {
   return dv.getUint16(off, false);
@@ -106,11 +110,11 @@ export function parseMobi(bytes: Uint8Array): ReaderContent {
   const encryption = be16(r0, 12);
 
   if (encryption !== 0) {
-    throw new ParseError('MOBI 文件受 DRM 保护，仅支持无 DRM 文件');
+    throw new ReaderCapabilityError('mobiDrm');
   }
   if (compression !== 1 && compression !== 2) {
     // 17480 = HUFF/CDIC（复杂字典压缩），本任务不支持。
-    throw new ParseError('MOBI 使用了不支持的压缩方式（HUFF/CDIC），暂不支持');
+    throw new ReaderCapabilityError('mobiHuff');
   }
 
   // 编码：MOBI header（若有）的 codepage，否则 cp1252。
@@ -125,6 +129,10 @@ export function parseMobi(bytes: Uint8Array): ReaderContent {
     const cp = be32(r0, 28);
     if (cp === 65001) {
       codepage = 65001;
+    }
+    // MOBI header fileVersion >= 8 denotes KF8/MOBI8, which this PalmDOC parser cannot decode.
+    if (rec0.length >= 40 && be32(r0, 36) >= 8) {
+      throw new ReaderCapabilityError('mobiKf8');
     }
   }
 

@@ -9,6 +9,7 @@
 
 import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
+import type { MessageKey } from '../i18n/messages.js';
 import { BUILTIN_THEMES, type BuiltinThemeId } from '../theme/theme-service.js';
 import { createChromeController, type ChromeController } from './chrome-controller.js';
 import {
@@ -19,6 +20,7 @@ import {
 } from './chrome-prefs.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
+import { labelModal, mountModalFocus } from './modal-focus.js';
 
 export interface ShellTabInfo {
   id: string;
@@ -97,8 +99,13 @@ export interface AppShellActions {
   getCurrentThemeId(): string;
   /** 热重载自定义主题文件（R15：接通既有 reloadCustomThemeFile）。 */
   onReloadCustomTheme(): void;
+  /** Select and activate a custom CSS theme file. */
+  onSelectCustomTheme(): void;
+  /** Remove the custom theme and return to the default. */
+  onResetCustomTheme(): void;
   /** 是否存在可重载的自定义主题文件。 */
   canReloadCustomTheme(): boolean;
+  canResetCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
   /**
@@ -121,7 +128,7 @@ export interface AppShellActions {
   /** Current font scale label (e.g. `100%`) for the menu. */
   getFontScaleLabel(): string;
   /** Translate UI string (en / zh-CN). */
-  t(key: string, vars?: Readonly<Record<string, string>>): string;
+  t(key: MessageKey, vars?: Readonly<Record<string, string>>): string;
   /** Format shortcut for current OS (⌘ on macOS). */
   formatShortcut(combo: string): string;
   /** Current UI locale. */
@@ -251,7 +258,7 @@ export interface RecentsMenuActions {
 export function buildRecentsMenuItems(
   paths: readonly string[],
   actions: RecentsMenuActions,
-  t: (key: string) => string = (k) => k,
+  t: (key: MessageKey) => string = (k) => k,
 ): MenuItem[] {
   if (paths.length === 0) {
     return [
@@ -284,7 +291,7 @@ function sc(actions: AppShellActions, combo: string): string {
 }
 
 export function buildMenus(actions: AppShellActions): Menu[] {
-  const t = (key: string) => actions.t(key);
+  const t = (key: MessageKey) => actions.t(key);
   const insertItems: MenuItem[] = INSERT_ELEMENTS.map((element) =>
     menuItem(
       `insert-${element.id}`,
@@ -319,11 +326,26 @@ export function buildMenus(actions: AppShellActions): Menu[] {
     ),
     separator('view-theme-sep2'),
     menuItem(
+      'view-select-custom-theme',
+      () =>
+        actions.getCurrentThemeId() === 'custom'
+          ? `✓ ${t('theme.custom')}`
+          : t('theme.custom'),
+      actions.onSelectCustomTheme,
+    ),
+    menuItem(
       'view-reload-custom-theme',
       () => t('view.reloadCustomTheme'),
       actions.onReloadCustomTheme,
       '',
       () => actions.canReloadCustomTheme(),
+    ),
+    menuItem(
+      'view-reset-custom-theme',
+      () => t('view.resetCustomTheme'),
+      actions.onResetCustomTheme,
+      '',
+      () => actions.canResetCustomTheme(),
     ),
   ];
 
@@ -589,6 +611,8 @@ export function createAppShell(
 
   const tabBar = document.createElement('div');
   tabBar.id = 'lightink-tabbar';
+  tabBar.setAttribute('role', 'tablist');
+  tabBar.setAttribute('aria-label', actions.t('chrome.showTabs'));
 
   const editorArea = document.createElement('div');
   editorArea.id = 'lightink-editor-area';
@@ -617,6 +641,7 @@ export function createAppShell(
   const menuBar = createMenuBar({
     menus: initialMenus,
     loadingLabel: () => actions.t('menu.loading'),
+    overflowLabel: () => actions.t('menu.more'),
     onOpenChange: (openMenuId) => {
       const hold = openMenuId !== null;
       chrome.setHold('menu', hold);
@@ -633,7 +658,10 @@ export function createAppShell(
   function rebuildMenus(): void {
     const next = buildMenus(actions);
     wireHelpCheatsheet(next);
-    menuBar.rebuild(next, { loadingLabel: () => actions.t('menu.loading') });
+    menuBar.rebuild(next, {
+      loadingLabel: () => actions.t('menu.loading'),
+      overflowLabel: () => actions.t('menu.more'),
+    });
   }
 
   chromeHost.replaceChildren(menuTrigger, toolbar);
@@ -783,23 +811,21 @@ export function createAppShell(
     overlay.className = 'lightink-modal-overlay';
     const dialog = document.createElement('div');
     dialog.className = 'lightink-modal-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
     const title = document.createElement('div');
     title.className = 'lightink-modal-title';
     title.textContent = actions.t('help.cheatsheet');
+    labelModal(dialog, title);
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'lightink-modal-close';
     close.textContent = actions.t('dialog.close');
     dialog.append(title, renderCheatsheet(bindings), close);
     overlay.appendChild(dialog);
+    let releaseModal = (): void => overlay.remove();
     function dismiss(): void {
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-    }
-    function onKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        dismiss();
-      }
+      releaseModal();
     }
     overlay.addEventListener('pointerdown', (event) => {
       if (event.target === overlay) {
@@ -807,9 +833,10 @@ export function createAppShell(
       }
     });
     close.addEventListener('click', dismiss);
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(overlay);
-    close.focus();
+    releaseModal = mountModalFocus(document, overlay, dialog, {
+      initialFocus: close,
+      onEscape: dismiss,
+    });
   }
 
   function renderTabBar(
@@ -820,31 +847,67 @@ export function createAppShell(
     // Always render the full open-tab list; visibility is chrome pin/reveal CSS only.
     tabBar.replaceChildren(
       ...tabs.map((tab) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'lightink-tab';
-        btn.dataset.tabId = tab.id;
+        const item = document.createElement('div');
+        item.className = 'lightink-tab';
+        item.dataset.tabId = tab.id;
         if (tab.id === activeId) {
-          btn.classList.add('active');
+          item.classList.add('active');
         }
         if (tab.dirty) {
-          btn.classList.add('dirty');
+          item.classList.add('dirty');
         }
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'lightink-tab-button';
+        btn.id = `lightink-tab-${tab.id}`;
+        btn.setAttribute('role', 'tab');
+        btn.setAttribute('aria-selected', tab.id === activeId ? 'true' : 'false');
+        btn.setAttribute('aria-controls', `lightink-panel-${tab.id}`);
+        btn.tabIndex = tab.id === activeId ? 0 : -1;
         const label = document.createElement('span');
         label.className = 'lightink-tab-label';
         label.textContent = tab.dirty ? `● ${tab.title}` : tab.title;
         btn.appendChild(label);
         btn.addEventListener('click', () => callbacks.onSwitch(tab.id));
-        const close = document.createElement('span');
+        btn.addEventListener('keydown', (event) => {
+          const current = tabs.findIndex((candidate) => candidate.id === tab.id);
+          let next = current;
+          if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+          else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = tabs.length - 1;
+          else if (event.key === 'Delete') {
+            event.preventDefault();
+            callbacks.onClose(tab.id);
+            return;
+          } else {
+            return;
+          }
+          event.preventDefault();
+          const target = tabs[next];
+          if (target === undefined) return;
+          callbacks.onSwitch(target.id);
+          const targetItem = Array.from(tabBar.children).find(
+            (candidate) => (candidate as HTMLElement).dataset.tabId === target.id,
+          );
+          const targetButton = Array.from(targetItem?.children ?? []).find((child) =>
+            child.classList.contains('lightink-tab-button'),
+          );
+          (targetButton as HTMLButtonElement | undefined)?.focus();
+        });
+        const close = document.createElement('button');
+        close.type = 'button';
         close.className = 'lightink-tab-close';
         close.textContent = '×';
-        close.setAttribute('aria-label', `关闭 ${tab.title}`);
+        const closeLabel = actions.t('chrome.closeTab', { title: tab.title });
+        close.setAttribute('aria-label', closeLabel);
+        close.setAttribute('title', closeLabel);
         close.addEventListener('click', (e) => {
           e.stopPropagation();
           callbacks.onClose(tab.id);
         });
-        btn.appendChild(close);
-        return btn;
+        item.append(btn, close);
+        return item;
       }),
     );
   }

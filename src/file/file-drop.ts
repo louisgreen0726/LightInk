@@ -6,7 +6,7 @@
  * OS 文件——因此拖文件打开/插图必须在该事件层实现。本模块是文件分类的
  * 唯一 owner，供拖入、菜单打开、最近打开、CLI/关联入口复用：
  *   - .md/.markdown → 应用内开 markdown 标签；
- *   - 电子书（pdf/epub/mobi/azw3/fb2/cbz/txt）→ 应用内开只读 reader 标签；
+ *   - 电子书（pdf/epub/mobi/fb2/cbz/txt）→ 应用内开只读 reader 标签；
  *   - 图片扩展名（与 asset.rs 白名单一致）→ 落盘 assets 并插入活动编辑器；
  *   - 其余 → 不支持（调用方汇总提示）。
  */
@@ -19,7 +19,6 @@ export const READER_EXTS: ReadonlySet<string> = new Set([
   'pdf',
   'epub',
   'mobi',
-  'azw3',
   'fb2',
   'cbz',
   'txt',

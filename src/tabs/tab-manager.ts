@@ -43,11 +43,18 @@ import {
 import * as fileService from '../file/file-service.js';
 import type { FileStat } from '../file/file-service.js';
 import {
-  isDiskNewer,
+  hasFileStatChanged,
   type ExternalConflictChoice,
   type ExternalReloadChoice,
 } from '../file/external-change.js';
-import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './types.js';
+import type {
+  CloseAllAction,
+  CloseChoice,
+  DocumentSaveStatus,
+  MarkdownTabState,
+  ReaderTabState,
+  TabState,
+} from './types.js';
 
 /** reader 标签判别：reader 标签豁免全部可写编辑器路径。 */
 export function isMarkdownTab(tab: TabState): tab is MarkdownTabState {
@@ -107,7 +114,7 @@ export interface TabManagerDeps {
   writeSnapshot?: (key: string, content: string) => Promise<void>;
   clearSnapshot?: (key: string) => Promise<void>;
   readStaleSnapshot?: (path: string) => Promise<string | null>;
-  /** R13：取文件 mtime+size（默认为真实 Tauri stat_file 调用）。 */
+  /** R13：取文件元数据与内容指纹（默认为真实 Tauri stat_file 调用）。 */
   statFile?: (path: string) => Promise<FileStat>;
   /** 启动时枚举崩溃遗留的未命名草稿。 */
   listUntitledDrafts?: () => Promise<fileService.UntitledDraft[]>;
@@ -119,6 +126,8 @@ export interface TabManagerDeps {
    * 关闭活动标签且无后继（活动变为 null）。
    */
   onActiveContentChanged?: () => void;
+  /** Persistence-state transition for status surfaces; emitted only on change. */
+  onSaveStatusChanged?: (tabId: string, status: DocumentSaveStatus) => void;
   /**
    * T3/R3：活动标签切换完成后的回调（仅 switchTab 触发，内容变化不触发）。
    * main.ts 据此把共享滚动容器的 scrollTop 恢复到目标 markdown 标签的存储值
@@ -160,6 +169,8 @@ export interface TabManagerDeps {
    */
   formatUntitledRestoredTitle?: (n: number) => string;
   reportError?: (message: string, error: unknown) => void;
+  /** Localized command shown in blocked remote-image placeholders. */
+  remoteImageLoadLabel?: string;
   /** T4：图片落盘（生产为 asset-service 的 saveAsset）。 */
   saveAsset?: (
     docPath: string | null,
@@ -167,8 +178,6 @@ export interface TabManagerDeps {
     bytesBase64: string,
     ext: string,
   ) => Promise<string>;
-  /** T4：另存为后迁移该会话暂存图片到文档旁 assets/。 */
-  migrateStagingAssets?: (sessionId: string, docPath: string) => Promise<string[]>;
   /** 读取文档相对引用图片（base64），供编辑器把 assets/… 解析为 data URL 显示。 */
   readImageBase64?: (
     docPath: string | null,
@@ -188,6 +197,7 @@ type TabManagerOptionalUi =
   | 'onTabsChanged'
   | 'onActiveContentChanged'
   | 'onTabSwitched'
+  | 'onSaveStatusChanged'
   | 'onFileOpened'
   | 'onFileSaved'
   | 'onLinkNavigate'
@@ -208,8 +218,20 @@ export class TabManager {
   private counter = 0;
   private untitledCounter = 0;
   private snapshotTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** 进行中的快照写入 Promise（按标签 id），保存前需先等待以避免写/清竞态。 */
-  private snapshotWrites = new Map<string, Promise<void>>();
+  /** 每个标签完整的快照 write/clear Promise 链。 */
+  private snapshotQueues = new Map<string, Promise<void>>();
+  /** clear 提升 generation，使尚未开始的旧写入在执行时自动失效。 */
+  private snapshotGenerations = new Map<string, number>();
+  /** 同一标签的保存操作串行执行；失败会被队列尾吸收，不阻塞后续保存。 */
+  private saveQueues = new Map<string, Promise<void>>();
+  /** User-visible persistence state, separate from dirty so errors/conflicts remain explicit. */
+  private saveStatuses = new Map<string, DocumentSaveStatus>();
+  /** 同一标签的重复关闭请求共享一个操作，避免重复确认、销毁或数组删除。 */
+  private closingTabs = new Map<string, Promise<boolean>>();
+  /** 应用退出期间共享同一个批量关闭操作，避免与单标签关闭交错。 */
+  private closingAll: Promise<boolean> | null = null;
+  /** 编辑器内容每次成功变更后递增；用于约束异步保存完成时的快照清理。 */
+  private contentRevisions = new Map<string, number>();
   /** R13：外部变更弹窗进行中标志，避免轮询/保存前重复堆叠弹窗。 */
   private externalDialogOpen = false;
   /**
@@ -233,19 +255,20 @@ export class TabManager {
       statFile: fileService.statFile,
       listUntitledDrafts: fileService.listUntitledDrafts,
       saveAsset: assetService.saveAsset,
-      migrateStagingAssets: assetService.migrateStagingAssets,
       readImageBase64: assetService.readImageBase64,
       snapshotDebounceMs: DEFAULT_DEBOUNCE_MS,
       reportError: (message, error) => {
         // eslint-disable-next-line no-console
         console.error(`[lightink/tabs] ${message}`, error);
       },
+      remoteImageLoadLabel: 'Load remote image',
       formatUntitledTitle: (n) => `未命名-${n}`,
       formatUntitledRestoredTitle: (n) => `未命名-${n}（已恢复）`,
       ...deps,
       onTabsChanged: deps.onTabsChanged,
       onActiveContentChanged: deps.onActiveContentChanged,
       onTabSwitched: deps.onTabSwitched,
+      onSaveStatusChanged: deps.onSaveStatusChanged,
       onFileOpened: deps.onFileOpened,
       onFileSaved: deps.onFileSaved,
       onLinkNavigate: deps.onLinkNavigate,
@@ -268,6 +291,14 @@ export class TabManager {
 
   get activeTab(): TabState | null {
     return this.tabs.find((t) => t.id === this.activeId) ?? null;
+  }
+
+  getSaveStatus(id: string): DocumentSaveStatus | null {
+    const tab = this.tabs.find((candidate) => candidate.id === id);
+    if (tab === undefined || tab.kind !== 'markdown') {
+      return null;
+    }
+    return this.saveStatuses.get(id) ?? (tab.dirty ? 'dirty' : 'saved');
   }
 
   /** 新建未命名标签。快照键含跨会话唯一 token，避免复用覆盖崩溃草稿。 */
@@ -397,7 +428,13 @@ export class TabManager {
     const id = `tab-${this.counter}`;
     const host = this.deps.createHostElement(id);
     this.deps.attachHost(host);
-    const reader = await mountReader(host);
+    let reader: ReaderInstance;
+    try {
+      reader = await mountReader(host);
+    } catch (error) {
+      this.deps.detachHost(host);
+      throw error;
+    }
     const tab: ReaderTabState = {
       kind: 'reader',
       id,
@@ -425,80 +462,148 @@ export class TabManager {
 
   /** 保存：原子写成功 → 清脏标记 + 清对应崩溃快照。失败保持脏标记。 */
   async saveTab(id: string): Promise<boolean> {
+    if (this.closingAll !== null || this.closingTabs.has(id)) {
+      return false;
+    }
+    return this.enqueueSave(id, () => this.performSaveTab(id));
+  }
+
+  private async performSaveTab(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
     if (tab.kind !== 'markdown') {
       return false; // reader 标签只读，永不保存
     }
     if (tab.filePath === null) {
-      return this.saveTabAs(id);
+      return this.performSaveTabAs(id);
     }
     // 先停掉待写快照并等待进行中的快照写入完成，避免「写快照 IPC 晚于
     // 清快照 IPC 落盘」留下比文件新的孤儿快照。
     this.cancelPendingSnapshot(id);
-    await this.snapshotWrites.get(id)?.catch(() => undefined);
+    await this.waitForSnapshotQueue(id);
     const content = tab.editor.getMarkdown();
     // R13：写入前先比 mtime，发现外部变更即弹冲突、中止写入——即使轮询间隙
     // 也不静默覆盖（R13 核心禁令）。reload/keep 中止本次保存；overwrite 继续。
     const disposition = await this.checkBeforeSave(tab);
     if (disposition !== 'proceed') {
+      await this.flushSnapshot(id);
       return false;
     }
     const ok = await saveToPathFlow(this.deps.roundtrip, tab.filePath, content);
     if (!ok) {
+      this.setSaveStatus(id, 'error');
+      await this.flushSnapshot(id);
       return false;
     }
-    tab.lastSavedMarkdown = content;
-    tab.dirty = false;
-    // R13：自写（原子 persist）后必须更新基线，避免下次轮询误报自身保存为外部变更。
-    await this.recordBaseline(tab);
-    // 未命名时期的旧快照（若有）也一并清掉。
-    if (tab.syntheticId !== tab.filePath) {
-      await this.deps.clearSnapshot(tab.syntheticId).catch(() => undefined);
-    }
-    this.deps.onFileSaved?.(tab.filePath, content);
-    this.notifyChanged();
-    return true;
+    return this.finalizeSuccessfulSave(tab, tab.filePath, content, [
+      tab.filePath,
+      tab.syntheticId,
+    ]);
   }
 
   /** 另存为：弹对话框 → 写入新路径 → 更新标签路径/标题/脏标记。 */
   async saveTabAs(id: string): Promise<boolean> {
+    if (this.closingAll !== null || this.closingTabs.has(id)) {
+      return false;
+    }
+    return this.enqueueSave(id, () => this.performSaveTabAs(id));
+  }
+
+  private async performSaveTabAs(id: string): Promise<boolean> {
     const tab = this.requireTab(id);
     if (tab.kind !== 'markdown') {
       return false; // reader 标签只读，永不另存为
     }
     this.cancelPendingSnapshot(id);
-    await this.snapshotWrites.get(id)?.catch(() => undefined);
+    await this.waitForSnapshotQueue(id);
     const content = tab.editor.getMarkdown();
     const newPath = await saveAsFlow(
       this.deps.roundtrip,
+      tab.syntheticId,
       content,
       tab.filePath ?? undefined,
     );
     if (newPath === null) {
+      this.setSaveStatus(id, tab.dirty ? 'dirty' : 'saved');
+      await this.flushSnapshot(id);
       return false;
     }
-    // 从未命名（或旧路径）迁移：清掉旧键对应的快照。
     const oldKey = snapshotKeyOf(tab);
-    if (oldKey !== newPath) {
-      await this.deps.clearSnapshot(oldKey).catch(() => undefined);
-    }
     tab.filePath = newPath;
     tab.title = fileNameOf(newPath);
+    return this.finalizeSuccessfulSave(tab, newPath, content, [newPath, oldKey]);
+  }
+
+  private async finalizeSuccessfulSave(
+    tab: MarkdownTabState,
+    savedPath: string,
+    content: string,
+    snapshotKeys: readonly string[],
+  ): Promise<boolean> {
     tab.lastSavedMarkdown = content;
-    tab.dirty = false;
-    // T4：未命名时期粘贴的图片落在会话暂存目录；引用均为相对路径
-    // assets/...，按原名迁入新文档旁 assets/ 后引用保持有效，无需改写
-    // 文档内容。无暂存时 Rust 侧为 no-op。
-    try {
-      await this.deps.migrateStagingAssets(tab.syntheticId, newPath);
-    } catch (error) {
-      this.deps.reportError('迁移暂存图片失败', error);
-    }
-    // R13：另存为新路径后，以新路径的磁盘 stat 为检测基线。
+    // R13：自写（原子 persist）后必须更新基线，避免下次轮询误报自身保存为外部变更。
     await this.recordBaseline(tab);
-    this.deps.onFileSaved?.(newPath, content);
+    this.deps.onFileSaved?.(savedPath, content);
+
+    const current = this.readMarkdown(tab);
+    tab.dirty = current === null || current !== content;
+    if (!tab.dirty) {
+      const revision = this.contentRevisions.get(tab.id) ?? 0;
+      this.cancelPendingSnapshot(tab.id);
+      await this.waitForSnapshotQueue(tab.id);
+      const stillCurrent = this.readMarkdown(tab);
+      if (
+        stillCurrent === content &&
+        (this.contentRevisions.get(tab.id) ?? 0) === revision
+      ) {
+        await this.clearSnapshotKeys(tab.id, snapshotKeys);
+      }
+      // 清理快照本身也是异步的；返回前再次确认没有更晚编辑。
+      const afterCleanup = this.readMarkdown(tab);
+      tab.dirty = afterCleanup === null || afterCleanup !== content;
+    }
     this.notifyChanged();
-    return true;
+    this.setSaveStatus(tab.id, tab.dirty ? 'dirty' : 'saved');
+    return !tab.dirty;
+  }
+
+  private readMarkdown(tab: MarkdownTabState): string | null {
+    try {
+      return tab.editor.getMarkdown();
+    } catch {
+      return null;
+    }
+  }
+
+  private enqueueSave(id: string, operation: () => Promise<boolean>): Promise<boolean> {
+    const previous = this.saveQueues.get(id) ?? Promise.resolve();
+    const run = async (): Promise<boolean> => {
+      this.setSaveStatus(id, 'saving');
+      try {
+        const saved = await operation();
+        if (this.saveStatuses.get(id) === 'saving') {
+          const tab = this.tabs.find((candidate) => candidate.id === id);
+          if (tab !== undefined && tab.kind === 'markdown') {
+            this.setSaveStatus(id, tab.dirty ? 'dirty' : 'saved');
+          }
+        }
+        return saved;
+      } catch (error) {
+        this.setSaveStatus(id, 'error');
+        throw error;
+      }
+    };
+    const result = previous.then(run, run);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.saveQueues.set(id, tail);
+    void tail.then(() => {
+      if (this.saveQueues.get(id) === tail) {
+        this.saveQueues.delete(id);
+      }
+    });
+    return result;
   }
 
   /**
@@ -506,26 +611,164 @@ export class TabManager {
    * 正常关闭后清除对应崩溃快照并销毁编辑器与宿主 DOM。
    * 返回 true 表示标签已关闭。
    */
-  async closeTab(id: string): Promise<boolean> {
-    const tab = this.requireTab(id);
+  closeTab(id: string): Promise<boolean> {
+    if (this.closingAll !== null) {
+      return Promise.resolve(false);
+    }
+    const existing = this.closingTabs.get(id);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const pending = this.performCloseTab(id);
+    this.closingTabs.set(id, pending);
+    void pending.then(
+      () => this.clearClosingOperation(id, pending),
+      () => this.clearClosingOperation(id, pending),
+    );
+    return pending;
+  }
+
+  private clearClosingOperation(id: string, pending: Promise<boolean>): void {
+    if (this.closingTabs.get(id) === pending) {
+      this.closingTabs.delete(id);
+    }
+  }
+
+  /**
+   * Close every tab after the exit UI has selected Save All or Discard All.
+   * Save All persists every dirty document before any editor is destroyed, so
+   * a cancelled Save As, failed write, or newer edit leaves the full workspace
+   * available. The confirmation UI intentionally remains outside TabManager.
+   */
+  closeAllTabs(action: CloseAllAction): Promise<boolean> {
+    if (this.closingAll !== null) {
+      return this.closingAll;
+    }
+    if (this.closingTabs.size > 0) {
+      return Promise.resolve(false);
+    }
+    const pending = this.performCloseAllTabs(action);
+    this.closingAll = pending;
+    void pending.then(
+      () => this.clearCloseAllOperation(pending),
+      () => this.clearCloseAllOperation(pending),
+    );
+    return pending;
+  }
+
+  private clearCloseAllOperation(pending: Promise<boolean>): void {
+    if (this.closingAll === pending) {
+      this.closingAll = null;
+    }
+  }
+
+  private async performCloseAllTabs(action: CloseAllAction): Promise<boolean> {
+    const targets = [...this.tabs];
+    if (action === 'save') {
+      for (const tab of targets) {
+        if (tab.kind !== 'markdown' || !tab.dirty) continue;
+        const saved = await this.enqueueSave(tab.id, () => this.performSaveTab(tab.id));
+        if (!saved) {
+          return false;
+        }
+      }
+    }
+    await Promise.all(targets.map((tab) => this.saveQueues.get(tab.id)));
+
+    // A tab created or individually removed while native dialogs were open
+    // invalidates the preflight. Keep the current workspace instead of
+    // applying an exit decision to a different set of documents.
+    if (
+      this.tabs.length !== targets.length ||
+      targets.some((tab, index) => this.tabs[index] !== tab)
+    ) {
+      return false;
+    }
+
+    const inertStates = targets.map((tab) => tab.hostElement.inert);
+    for (const tab of targets) {
+      tab.hostElement.inert = true;
+    }
+    if (action === 'save') {
+      const hasNewerEdits = targets.some((tab) => {
+        if (tab.kind !== 'markdown') return false;
+        const current = this.readMarkdown(tab);
+        tab.dirty = current === null || current !== tab.lastSavedMarkdown;
+        return tab.dirty;
+      });
+      if (hasNewerEdits) {
+        targets.forEach((tab, index) => {
+          tab.hostElement.inert = inertStates[index] ?? false;
+        });
+        this.notifyChanged();
+        return false;
+      }
+    }
+
+    for (const tab of targets) {
+      this.cancelPendingSnapshot(tab.id);
+      await this.clearSnapshotKeys(tab.id, [snapshotKeyOf(tab)]);
+    }
+    for (const tab of targets) {
+      const destroy = tab.kind === 'markdown' ? tab.editor.destroy() : tab.reader.destroy();
+      await destroy.catch((error: unknown) => {
+        this.deps.reportError('销毁标签内容失败', error);
+      });
+    }
+
+    for (const tab of targets) {
+      this.deps.detachHost(tab.hostElement);
+    }
+    this.tabs = [];
+    this.activeId = null;
+    this.snapshotTimers.clear();
+    this.snapshotQueues.clear();
+    this.snapshotGenerations.clear();
+    this.saveQueues.clear();
+    this.saveStatuses.clear();
+    this.contentRevisions.clear();
+    this.autosaveConflictPrompted.clear();
+    this.externalUnreadableNotified.clear();
+    this.notifyChanged();
+    this.notifyActiveContentChanged();
+    return true;
+  }
+
+  private async performCloseTab(id: string): Promise<boolean> {
+    const tab = this.tabs.find((candidate) => candidate.id === id);
+    if (tab === undefined) {
+      return true;
+    }
+    let discardConfirmed = false;
     if (tab.dirty) {
       const choice = await this.deps.confirmClose(tab);
       if (choice === 'cancel') {
         return false;
       }
       if (choice === 'save') {
-        const saved = await this.saveTab(id);
+        const saved = await this.enqueueSave(id, () => this.performSaveTab(id));
         if (!saved) {
           return false; // 保存失败/另存为取消 → 不关闭
         }
+      } else {
+        discardConfirmed = true;
       }
     }
+    await this.saveQueues.get(id)?.catch(() => undefined);
+    if (!discardConfirmed && tab.dirty) {
+      return false;
+    }
+
+    const wasInert = tab.hostElement.inert;
+    tab.hostElement.inert = true;
     this.cancelPendingSnapshot(id);
     this.autosaveConflictPrompted.delete(id);
     this.externalUnreadableNotified.delete(id);
-    await this.deps.clearSnapshot(snapshotKeyOf(tab)).catch((error: unknown) => {
-      this.deps.reportError('清除快照失败', error);
-    });
+    await this.clearSnapshotKeys(id, [snapshotKeyOf(tab)]);
+    if (!discardConfirmed && tab.dirty) {
+      tab.hostElement.inert = wasInert;
+      return false;
+    }
     // reader 标签销毁阅读视图；markdown 标签销毁编辑器。reader 永不写快照，
     // 上面的 clearSnapshot 对其为 no-op。
     if (tab.kind === 'markdown') {
@@ -537,10 +780,17 @@ export class TabManager {
         this.deps.reportError('销毁阅读视图失败', error);
       });
     }
-    this.deps.detachHost(tab.hostElement);
-
     const index = this.tabs.indexOf(tab);
+    if (index < 0) {
+      return true;
+    }
+    this.deps.detachHost(tab.hostElement);
     this.tabs.splice(index, 1);
+    this.contentRevisions.delete(id);
+    this.saveQueues.delete(id);
+    this.saveStatuses.delete(id);
+    this.snapshotQueues.delete(id);
+    this.snapshotGenerations.delete(id);
     if (this.activeId === id) {
       const next = this.tabs[Math.min(index, this.tabs.length - 1)] ?? null;
       this.activeId = null;
@@ -584,7 +834,9 @@ export class TabManager {
     } catch {
       return; // 编辑器已销毁等异常时静默跳过
     }
+    this.contentRevisions.set(id, (this.contentRevisions.get(id) ?? 0) + 1);
     tab.dirty = current !== tab.lastSavedMarkdown;
+    this.setSaveStatus(id, tab.dirty ? 'dirty' : 'saved');
     if (tab.dirty) {
       this.scheduleSnapshot(tab, current);
     }
@@ -594,17 +846,27 @@ export class TabManager {
     }
   }
 
-  /** 立即写入该标签的待处理快照（测试与关闭前兜底用）。 */
-  flushSnapshot(id: string): void {
+  /** 立即写入该标签当前的 dirty 内容，并等待此前的全部快照操作。 */
+  flushSnapshot(id: string): Promise<void> {
     const timer = this.snapshotTimers.get(id);
     if (timer !== undefined) {
       clearTimeout(timer);
       this.snapshotTimers.delete(id);
-      const tab = this.tabs.find((t) => t.id === id);
-      if (tab !== undefined && tab.dirty) {
-        this.writeSnapshotNow(tab);
-      }
     }
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab !== undefined && tab.kind === 'markdown' && tab.dirty) {
+      return this.writeSnapshotNow(tab);
+    }
+    return this.waitForSnapshotQueue(id);
+  }
+
+  /** Flush every dirty document's pending recovery snapshot after exit cancellation. */
+  async flushDirtySnapshots(): Promise<void> {
+    await Promise.all(
+      this.tabs
+        .filter((tab): tab is MarkdownTabState => tab.kind === 'markdown' && tab.dirty)
+        .map((tab) => this.flushSnapshot(tab.id)),
+    );
   }
 
   /**
@@ -639,28 +901,43 @@ export class TabManager {
     const id = `tab-${this.counter}`;
     const host = this.deps.createHostElement(id);
     this.deps.attachHost(host);
-    const editor = await this.deps.mountEditor(host, {
-      initialMarkdown: args.initialMarkdown,
-      // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
-      // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
-      // （sessionId = syntheticId），保存时由 saveTabAs 迁移。
-      assetSaver: createAssetSaver({
-        saveAsset: this.deps.saveAsset,
-        sessionId: args.syntheticId,
-        getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
-      }),
-      // 图片显示：文档内 assets/… 相对引用经 Rust 解析为 data URL（按标签缓存，
-      // 另存为后文档路径变化自动换键重解析）。
-      imageSrcResolver: createImageSrcResolver({
-        readImageBase64: this.deps.readImageBase64,
-        sessionId: args.syntheticId,
-        getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
-      }),
-      onAssetError: (message, error) => this.deps.reportError(message, error),
-      onLinkNavigate: this.deps.onLinkNavigate,
-      confirmLinkOpen: this.deps.confirmLinkOpen,
-      onFoldChanged: this.deps.onFoldChanged,
-    });
+    let editor: EditorInstance | null = null;
+    try {
+      editor = await this.deps.mountEditor(host, {
+        initialMarkdown: args.initialMarkdown,
+        onContentChanged: () => this.handleContentChanged(id),
+        // T4：图片粘贴/拖拽落盘。saver 每次调用现读该标签当前路径 ——
+        // 另存为之后新图片直接落新文档旁 assets/；未保存时走会话暂存
+        // （sessionId = syntheticId），保存时由 saveTabAs 与文档一起提交。
+        assetSaver: createAssetSaver({
+          saveAsset: this.deps.saveAsset,
+          sessionId: args.syntheticId,
+          getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
+        }),
+        // 图片显示：文档内 assets/… 相对引用经 Rust 解析为 data URL（按标签缓存，
+        // 另存为后文档路径变化自动换键重解析）。
+        imageSrcResolver: createImageSrcResolver({
+          readImageBase64: this.deps.readImageBase64,
+          sessionId: args.syntheticId,
+          getDocPath: () => this.tabs.find((t) => t.id === id)?.filePath ?? null,
+        }),
+        remoteImageLoadLabel: this.deps.remoteImageLoadLabel,
+        onAssetError: (message, error) => this.deps.reportError(message, error),
+        onLinkNavigate: this.deps.onLinkNavigate,
+        confirmLinkOpen: this.deps.confirmLinkOpen,
+        // T4/R2：编辑器内点折叠三角切换后通知宿主刷新大纲折叠标记态。
+        onFoldChanged: this.deps.onFoldChanged,
+      });
+      await editor.ready;
+    } catch (error) {
+      if (editor !== null) {
+        await editor.destroy().catch((destroyError: unknown) => {
+          this.deps.reportError('清理挂载失败的编辑器失败', destroyError);
+        });
+      }
+      this.deps.detachHost(host);
+      throw error;
+    }
     const tab: MarkdownTabState = {
       kind: 'markdown',
       id,
@@ -675,14 +952,10 @@ export class TabManager {
       scrollTop: 0,
     };
     this.tabs.push(tab);
+    this.setSaveStatus(id, tab.dirty ? 'dirty' : 'saved');
     this.switchTab(id);
     // Immersive shell R4: after mount, place caret so typing can start without a click.
-    // ready is already resolved by mountEditor before return; still await for fakes/async mounts.
-    void tab.editor.ready.then(() => {
-      if (this.activeId === id) {
-        tab.editor.focus();
-      }
-    });
+    tab.editor.focus();
     return tab;
   }
 
@@ -691,33 +964,65 @@ export class TabManager {
     const timer = setTimeout(() => {
       this.snapshotTimers.delete(tab.id);
       if (tab.dirty) {
-        this.writeSnapshotNow(tab);
+        void this.writeSnapshotNow(tab);
       }
     }, this.deps.snapshotDebounceMs);
     this.snapshotTimers.set(tab.id, timer);
   }
 
-  private writeSnapshotNow(tab: TabState): void {
+  private writeSnapshotNow(tab: TabState): Promise<void> {
     if (tab.kind !== 'markdown') {
-      return; // reader 标签永不写崩溃快照
+      return Promise.resolve(); // reader 标签永不写崩溃快照
     }
     let content: string;
     try {
       content = tab.editor.getMarkdown();
     } catch {
-      return;
+      return Promise.resolve();
     }
-    const pending = this.deps
-      .writeSnapshot(snapshotKeyOf(tab), content)
-      .catch((error: unknown) => {
-        this.deps.reportError('写入快照失败', error);
-      })
-      .finally(() => {
-        if (this.snapshotWrites.get(tab.id) === pending) {
-          this.snapshotWrites.delete(tab.id);
-        }
-      });
-    this.snapshotWrites.set(tab.id, pending);
+    const generation = this.snapshotGenerations.get(tab.id) ?? 0;
+    const key = snapshotKeyOf(tab);
+    return this.enqueueSnapshotOperation(tab.id, async () => {
+      if ((this.snapshotGenerations.get(tab.id) ?? 0) !== generation) {
+        return;
+      }
+      await this.deps.writeSnapshot(key, content);
+    }, '写入快照失败');
+  }
+
+  private waitForSnapshotQueue(id: string): Promise<void> {
+    return this.snapshotQueues.get(id) ?? Promise.resolve();
+  }
+
+  private enqueueSnapshotOperation(
+    id: string,
+    operation: () => Promise<void>,
+    errorMessage: string,
+  ): Promise<void> {
+    const previous = this.snapshotQueues.get(id);
+    const started = previous === undefined ? operation() : previous.then(operation, operation);
+    const pending = started.catch((error: unknown) => {
+      this.deps.reportError(errorMessage, error);
+    });
+    this.snapshotQueues.set(id, pending);
+    void pending.then(() => {
+      if (this.snapshotQueues.get(id) === pending) {
+        this.snapshotQueues.delete(id);
+      }
+    });
+    return pending;
+  }
+
+  private clearSnapshotKeys(id: string, keys: readonly string[]): Promise<void> {
+    this.cancelPendingSnapshot(id);
+    this.snapshotGenerations.set(id, (this.snapshotGenerations.get(id) ?? 0) + 1);
+    return this.enqueueSnapshotOperation(
+      id,
+      async () => {
+        await Promise.all([...new Set(keys)].map((key) => this.deps.clearSnapshot(key)));
+      },
+      `清除快照失败: ${keys.join(', ')}`,
+    );
   }
 
   private cancelPendingSnapshot(id: string): void {
@@ -754,19 +1059,21 @@ export class TabManager {
     try {
       content = await this.deps.roundtrip.readFile(tab.filePath);
     } catch (error) {
+      this.setSaveStatus(tab.id, 'error');
       this.deps.reportError(`重新加载失败: ${tab.filePath}`, error);
       return;
     }
     tab.editor.setMarkdown(content);
     tab.lastSavedMarkdown = content;
     tab.dirty = false;
+    this.setSaveStatus(tab.id, 'saved');
     await this.recordBaseline(tab);
     this.notifyChanged();
     this.notifyActiveContentChanged();
   }
 
   /**
-   * R13 保存前闸门：写入前比 mtime，发现外部变更弹冲突对话框。
+   * R13 保存前闸门：写入前比较完整 FileStat，发现外部变更弹冲突对话框。
    *   - stat 失败 → 视为无可覆盖的外部内容，交 write_file 自然成败（proceed）；
    *   - 未变更 → proceed；
    *   - 变更 + overwrite → proceed（用户明确选择覆盖，非静默）；
@@ -783,9 +1090,10 @@ export class TabManager {
     } catch {
       return 'proceed';
     }
-    if (!isDiskNewer(tab.lastSavedMtime, disk)) {
+    if (!hasFileStatChanged(tab.lastSavedMtime, disk)) {
       return 'proceed';
     }
+    this.setSaveStatus(tab.id, 'conflict');
     // 即使未脏，覆盖也会丢磁盘新内容 → 必须让用户明确选择（R13）。
     this.externalDialogOpen = true;
     let choice: ExternalConflictChoice;
@@ -795,6 +1103,7 @@ export class TabManager {
       this.externalDialogOpen = false;
     }
     if (choice === 'overwrite') {
+      this.setSaveStatus(tab.id, 'saving');
       return 'proceed';
     }
     if (choice === 'reload') {
@@ -829,6 +1138,7 @@ export class TabManager {
         // 恢复可读：重置一次性提示标志（下段不可读期可再提示）。
         this.externalUnreadableNotified.delete(tab.id);
       } catch (error) {
+        this.setSaveStatus(tab.id, 'error');
         this.deps.reportError(`文件不可读或已被删除: ${tab.filePath}`, error);
         // stat 失败的可观察提示（Delivery Review P2[advisory]）：每段不可读期
         // 只浮出一次，避免 3s 轮询重复打扰；未注入时保持 console-only。
@@ -838,9 +1148,10 @@ export class TabManager {
         }
         return;
       }
-      if (!isDiskNewer(tab.lastSavedMtime, disk)) {
+      if (!hasFileStatChanged(tab.lastSavedMtime, disk)) {
         return;
       }
+      this.setSaveStatus(tab.id, 'conflict');
       this.externalDialogOpen = true;
       try {
         if (!tab.dirty) {
@@ -850,6 +1161,7 @@ export class TabManager {
           } else {
             // 忽略：以当前磁盘态为基线，避免每次轮询重复弹窗（接受内容分歧）。
             tab.lastSavedMtime = disk;
+            this.setSaveStatus(tab.id, 'saved');
           }
           return;
         }
@@ -888,7 +1200,7 @@ export class TabManager {
    * 否则后续手动保存的保存前闸门会被绕过（R13 核心禁令）。
    */
   async autosaveDirtyTabs(): Promise<void> {
-    if (this.externalDialogOpen || this.externalCheckRunning) {
+    if (this.closingAll !== null || this.externalDialogOpen || this.externalCheckRunning) {
       return;
     }
     for (const tab of [...this.tabs]) {
@@ -898,8 +1210,8 @@ export class TabManager {
       if (tab.lastSavedMtime !== null) {
         try {
           const disk = await this.deps.statFile(tab.filePath);
-          if (isDiskNewer(tab.lastSavedMtime, disk)) {
-            const key = `${disk.mtime_ms}:${disk.size}`;
+          if (hasFileStatChanged(tab.lastSavedMtime, disk)) {
+            const key = `${disk.mtime_ms}:${disk.size}:${disk.fingerprint}`;
             if (this.autosaveConflictPrompted.get(tab.id) === key) {
               continue; // 同一外部变更已提示过且用户选择保留内存：本次静默跳过。
             }
@@ -929,6 +1241,15 @@ export class TabManager {
 
   private notifyActiveContentChanged(): void {
     this.deps.onActiveContentChanged?.();
+  }
+
+  private setSaveStatus(id: string, status: DocumentSaveStatus): void {
+    const tab = this.tabs.find((candidate) => candidate.id === id);
+    if (tab === undefined || tab.kind !== 'markdown' || this.saveStatuses.get(id) === status) {
+      return;
+    }
+    this.saveStatuses.set(id, status);
+    this.deps.onSaveStatusChanged?.(id, status);
   }
 }
 

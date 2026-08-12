@@ -11,6 +11,7 @@
 import {
   buildHtmlDocument,
   embedImages,
+  UnsafeCssBoundaryError,
   type HtmlExportOptions,
 } from './html-export.js';
 import { buildPrintHtml, runPrint } from './pdf-export.js';
@@ -63,6 +64,8 @@ export interface ExportServiceDeps {
    * Windows/Linux 行为不变）。
    */
   readonly isMacOS?: () => boolean;
+  /** Localized explanation used when custom CSS crosses the HTML style boundary. */
+  readonly getUnsafeCssErrorMessage?: () => string;
   readonly reportError: (message: string, error: unknown) => void;
 }
 
@@ -91,6 +94,18 @@ interface AssembledExport {
   readonly options: HtmlExportOptions;
   /** 读取失败、保留原 src 的图片相对路径。 */
   readonly missingImages: readonly string[];
+}
+
+function reportDocumentBuildError(
+  deps: ExportServiceDeps,
+  fallbackMessage: string,
+  error: unknown,
+): void {
+  const message =
+    error instanceof UnsafeCssBoundaryError
+      ? (deps.getUnsafeCssErrorMessage?.() ?? fallbackMessage)
+      : fallbackMessage;
+  deps.reportError(message, error);
 }
 
 /**
@@ -138,14 +153,19 @@ export async function exportActiveTabHtml(deps: ExportServiceDeps): Promise<bool
     deps.reportError('没有可导出的活动标签', null);
     return false;
   }
-  const target = await deps.showHtmlSaveDialog(
-    defaultExportFileName(assembled.options.title),
-  );
+  let html: string;
+  try {
+    html = buildHtmlDocument(assembled.options);
+  } catch (error) {
+    reportDocumentBuildError(deps, '导出 HTML 失败', error);
+    return false;
+  }
+  const target = await deps.showHtmlSaveDialog(defaultExportFileName(assembled.options.title));
   if (target === null) {
     return false;
   }
   try {
-    await deps.writeFile(target, buildHtmlDocument(assembled.options));
+    await deps.writeFile(target, html);
     return true;
   } catch (error) {
     deps.reportError('导出 HTML 失败', error);
@@ -165,7 +185,13 @@ export async function exportActiveTabPdf(deps: ExportServiceDeps): Promise<boole
     deps.reportError('没有可导出的活动标签', null);
     return false;
   }
-  const html = buildPrintHtml(assembled.options);
+  let html: string;
+  try {
+    html = buildPrintHtml(assembled.options);
+  } catch (error) {
+    reportDocumentBuildError(deps, '导出 PDF 失败', error);
+    return false;
+  }
   const isMac = deps.isMacOS?.() === true;
 
   // 优先原生矢量 PDF（Windows WebView2 PrintToPdf / macOS WKWebView createPDF）：

@@ -11,20 +11,13 @@
  *     `getMarkdown/setMarkdown` 字符串往返；`enterSource` 取快照、`exitSource` 写回。
  *   - `SourceView`（DOM 层、挂载态）：在标签宿主上挂「透明 textarea + 背后高亮
  *     pre/code」叠加层——textarea 负责可编辑输入（透明文字、可见光标），pre/code 经
- *     highlight.js（markdown 语法，复用 code-highlight 的 highlightCode + 共享 hljs 单例）
+ *     highlight.js（Markdown grammar 首次进入时按需加载）
  *     提供语法高亮；二者按相同字体度量对齐。表面按内容撑高宿主，滚动交给
  *     #lightink-editor-area（与正常模式同一条编辑区进度条）。
  */
 
-import hljs from 'highlight.js/lib/core';
-import hljsMarkdown from 'highlight.js/lib/languages/markdown';
-
-import { highlightCode } from './plugins/code-highlight.js';
+import { ensureHighlightLanguage, highlightCode } from './plugins/code-highlight.js';
 import { convertHtmlToMarkdown } from './html-to-markdown.js';
-
-// 共享 hljs 单例（与 code-highlight.ts 同一实例）注册 markdown 语法，使 highlightCode
-// 能高亮 Markdown 源。仅注册一次。
-hljs.registerLanguage('markdown', hljsMarkdown);
 
 /** 编辑模式。 */
 export type EditorMode = 'wysiwyg' | 'source';
@@ -388,6 +381,12 @@ export class SourceView {
     this.codeEl = code;
     this.lastSynced = text;
 
+    void ensureHighlightLanguage('markdown').then((loaded) => {
+      if (loaded && this.codeEl === code && this.textarea !== null) {
+        code.innerHTML = renderHighlightedSource(this.textarea.value);
+      }
+    });
+
     const onResize = (): void => {
       this.syncSurfaceHeight();
     };
@@ -404,8 +403,8 @@ export class SourceView {
       this.codeEl.innerHTML = renderHighlightedSource(this.textarea.value);
     }
     this.syncSurfaceHeight();
-    // 即时同步（先于 host 的 handleContentChanged 冒泡）：让背后编辑器
-    // 跟随 textarea，使脏标记/崩溃快照/导出/大纲等所有读取 editor 的站点都读到最新源码。
+    // 即时同步到所属编辑器；实例级 onContentChanged 随事务更新脏标记、
+    // 崩溃快照和大纲，所有读取 editor 的站点都能看到最新源码。
     this.syncIfChanged();
   }
 

@@ -21,6 +21,7 @@ import type { Ctx } from '@milkdown/ctx';
 import { parserCtx } from '@milkdown/core';
 import { Plugin, PluginKey, TextSelection, type Transaction } from '@milkdown/prose/state';
 import type { EditorView } from '@milkdown/prose/view';
+import type { MessageKey } from '../../i18n/messages.js';
 
 import {
   filterInsertElements,
@@ -51,13 +52,13 @@ export function getSlashImageHandler(): SlashInteractiveHandler | null {
 }
 
 /** Optional host translator for slash chrome (empty state, etc.). */
-let slashTranslate: ((key: string) => string) | null = null;
+let slashTranslate: ((key: MessageKey) => string) | null = null;
 
-export function setSlashTranslate(t: ((key: string) => string) | null): void {
+export function setSlashTranslate(t: ((key: MessageKey) => string) | null): void {
   slashTranslate = t;
 }
 
-function i18nSlashLabel(key: string, fallback: string): string {
+function i18nSlashLabel(key: MessageKey, fallback: string): string {
   if (slashTranslate === null) return fallback;
   const value = slashTranslate(key);
   return value === key ? fallback : value;

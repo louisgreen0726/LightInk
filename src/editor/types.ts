@@ -80,6 +80,8 @@ export interface ParsedDocument {
 export interface MountOptions {
   /** Initial markdown to load into the editor. */
   readonly initialMarkdown?: string;
+  /** Called once for each document-changing transaction in this editor instance. */
+  readonly onContentChanged?: () => void;
   /** Whether the cursor-toggle behavior is on (default true). */
   readonly cursorToggle?: boolean;
   /**
@@ -111,6 +113,12 @@ export interface SelectionSummary {
   readonly empty: boolean;
 }
 
+/** One-based logical text position used by the document status bar. */
+export interface CursorPosition {
+  readonly line: number;
+  readonly column: number;
+}
+
 /** 光标处链接的信息（R7/R3 链接查询）。 */
 export interface CursorLink {
   readonly href: string;
@@ -130,6 +138,8 @@ export interface EditorInstance {
    * 供 R3 上下文菜单启用/禁用与动作使用。
    */
   getSelection(): SelectionSummary | null;
+  /** One-based cursor line/column in the rendered document text flow. */
+  getCursorPosition(): CursorPosition | null;
   /**
    * 光标处的链接（href + 文本）。光标不在链接上或编辑器未就绪时返回 null。
    * 供 R3 链接的打开/复制地址使用。

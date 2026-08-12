@@ -2,9 +2,8 @@
  * Code block syntax highlighting plugin (T5 / R4 + language switcher).
  *
  * Design:
- *   - Full `highlight.js` registration (all component-supported languages via
- *     `hljs.listLanguages()`). Desktop Tauri ships the installer bundle; full
- *     grammars avoid missing-language fallbacks when users pick any fence tag.
+ *   - `highlight.js/lib/core` stays in the startup bundle; common grammars are
+ *     registered on demand when their code fences first appear.
  *   - Pure logic remains headless-testable:
  *       resolveLanguage / tokenizeCode / highlightCode / listSupportedLanguages
  *   - ProseMirror decorations attach `hljs-*` classes; nodeView overlays a
@@ -12,16 +11,21 @@
  *   - Unlabeled fences / plain-text markers stay unhighlighted.
  */
 
-import hljs from 'highlight.js';
-
 import { $prose } from '@milkdown/utils';
 import { Plugin, PluginKey } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
 import type { EditorView } from '@milkdown/prose/view';
 import { Decoration, DecorationSet, type NodeView } from '@milkdown/prose/view';
+import {
+  ensureHighlightLanguage,
+  highlightEngine as hljs,
+  isHighlightLanguageLoaded,
+  resolveHighlightLanguage,
+  SUPPORTED_HIGHLIGHT_LANGUAGES,
+  type HighlightLanguage,
+} from './code-languages.js';
 
-// Full highlight.js already registers every shipped grammar on import.
-// listSupportedLanguages() exposes them for the code-block language picker.
+export { ensureHighlightLanguage, isHighlightLanguageLoaded } from './code-languages.js';
 
 /** Explicit plain-text fence markers (no highlight). */
 const PLAIN_TEXT_MARKERS: ReadonlySet<string> = new Set([
@@ -37,68 +41,38 @@ const PLAIN_TEXT_MARKERS: ReadonlySet<string> = new Set([
  * (e.g. mermaid diagrams rendered by a dedicated plugin).
  */
 /** Non-hljs fences rendered by dedicated plugins (mermaid / math). */
-export const SPECIAL_LANGUAGES: readonly string[] = ['mermaid', 'math', 'latex', 'katex'];
+export const SPECIAL_LANGUAGES = ['mermaid', 'math', 'latex', 'katex'] as const;
+type SpecialLanguage = (typeof SPECIAL_LANGUAGES)[number];
+
+function isSpecialLanguage(language: string): language is SpecialLanguage {
+  return SPECIAL_LANGUAGES.some((candidate) => candidate === language);
+}
 
 /**
- * Extra fence tags that hljs does not alias itself → registered language names.
- * Built-in aliases (js→javascript, ts→typescript, …) are indexed from hljs below.
- */
-const EXTRA_LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
-  'c++': 'cpp',
-  'c#': 'csharp',
-  cs: 'csharp',
-  golang: 'go',
-  html: 'xml',
-  htm: 'xml',
-  md: 'markdown',
-};
-
-/**
- * Map any accepted fence tag / alias → registered `listLanguages()` name.
- * Built once so resolveLanguage stays O(1) on every decoration pass.
- */
-const CANONICAL_LANGUAGE = (() => {
-  const map = new Map<string, string>();
-  for (const registered of hljs.listLanguages()) {
-    map.set(registered.toLowerCase(), registered);
-    const def = hljs.getLanguage(registered);
-    const aliases = def?.aliases ?? [];
-    for (const alias of aliases) {
-      map.set(String(alias).toLowerCase(), registered);
-    }
-  }
-  for (const [alias, target] of Object.entries(EXTRA_LANGUAGE_ALIASES)) {
-    if (hljs.getLanguage(target) !== undefined) {
-      map.set(alias.toLowerCase(), target);
-    }
-  }
-  return map;
-})();
-
 // ---------------------------------------------------------------------------
 // Pure helpers (headless-testable)
 // ---------------------------------------------------------------------------
 
 /**
- * Fence info-string → registered hljs language name; empty / plain / unknown → null.
- * Always returns a name from `listLanguages()` (aliases like `ts` → `typescript`).
+ * Fence info-string → supported language name; empty / plain / unknown → null.
+ * Grammar registration happens asynchronously after resolution.
  */
-export function resolveLanguage(infoString: string | null | undefined): string | null {
+export function resolveLanguage(
+  infoString: string | null | undefined,
+): HighlightLanguage | SpecialLanguage | null {
   if (infoString === null || infoString === undefined) return null;
   const tag = infoString.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   if (tag === '' || PLAIN_TEXT_MARKERS.has(tag)) return null;
-  if (SPECIAL_LANGUAGES.includes(tag)) return tag;
-  return CANONICAL_LANGUAGE.get(tag) ?? null;
+  if (isSpecialLanguage(tag)) return tag;
+  return resolveHighlightLanguage(tag);
 }
 
 /**
- * Languages offered in the code-block picker: full highlight.js set plus
- * special non-hljs tags (mermaid). Sorted, plain-text excluded.
+ * Stable picker options: explicitly supported on-demand grammars plus special
+ * fences handled by dedicated plugins. Sorted, plain-text excluded.
  */
 export function listSupportedLanguages(): readonly string[] {
-  const set = new Set<string>(
-    hljs.listLanguages().filter((name) => !PLAIN_TEXT_MARKERS.has(name)),
-  );
+  const set = new Set<string>(SUPPORTED_HIGHLIGHT_LANGUAGES);
   for (const name of SPECIAL_LANGUAGES) {
     set.add(name);
   }
@@ -237,6 +211,25 @@ export function buildCodeDecorations(doc: PMNode): DecorationSet {
     return false;
   });
   return DecorationSet.create(doc, decorations);
+}
+
+function documentHighlightLanguages(doc: PMNode): readonly HighlightLanguage[] {
+  const languages = new Set<HighlightLanguage>();
+  doc.descendants((node) => {
+    if (node.type.name !== 'code_block') return true;
+    const info =
+      typeof node.attrs['language'] === 'string' ? (node.attrs['language'] as string) : '';
+    const language = resolveLanguage(info);
+    if (
+      language !== null &&
+      !isSpecialLanguage(language) &&
+      !isHighlightLanguageLoaded(language)
+    ) {
+      languages.add(language);
+    }
+    return false;
+  });
+  return [...languages];
 }
 
 // ---------------------------------------------------------------------------
@@ -885,8 +878,37 @@ export const codeHighlightPlugin = $prose(
       state: {
         init: (_config, state) => buildCodeDecorations(state.doc),
         apply: (tr, old, _oldState, newState) => {
-          return tr.docChanged ? buildCodeDecorations(newState.doc) : old;
+          return tr.docChanged || tr.getMeta(codeHighlightPluginKey) === 'grammar-loaded'
+            ? buildCodeDecorations(newState.doc)
+            : old;
         },
+      },
+      view: (initialView) => {
+        let alive = true;
+        const requested = new Set<HighlightLanguage>();
+        const requestLanguages = (view: EditorView): void => {
+          for (const language of documentHighlightLanguages(view.state.doc)) {
+            if (requested.has(language)) continue;
+            requested.add(language);
+            void ensureHighlightLanguage(language).then((loaded) => {
+              requested.delete(language);
+              if (!loaded || !alive) return;
+              view.dispatch(view.state.tr.setMeta(codeHighlightPluginKey, 'grammar-loaded'));
+            });
+          }
+        };
+        requestLanguages(initialView);
+        return {
+          update: (view, previousState) => {
+            if (view.state.doc !== previousState.doc) {
+              requestLanguages(view);
+            }
+          },
+          destroy: () => {
+            alive = false;
+            requested.clear();
+          },
+        };
       },
       props: {
         decorations(state) {

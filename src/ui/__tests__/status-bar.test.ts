@@ -1,6 +1,6 @@
 /**
- * status-bar 测试（R3）：显隐偏好（chrome-prefs 模式克隆）、关闭即不渲染、
- * 防抖刷新、重新打开立即按当前文档重绘、口径文案格式。
+ * status-bar tests: visibility preference, persistence state, debounced document
+ * metrics, reopen refresh, and Unicode cursor positions.
  * node 环境无 DOM，用最小 fake（同 app-shell.test.ts 模式）。
  */
 
@@ -9,14 +9,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   STATUS_BAR_VISIBLE_STORAGE_KEY,
   createStatusBar,
+  cursorPositionFromOffset,
   formatWordStats,
   loadStatusBarVisible,
   saveStatusBarVisible,
+  type MarkdownStatusSnapshot,
+  type StatusBarLabels,
 } from '../status-bar.js';
 
 class FakeEl {
   id = '';
   className = '';
+  hidden = false;
+  dataset: Record<string, string> = {};
   children: FakeEl[] = [];
   parentNode: FakeEl | null = null;
   style: Record<string, string> = {};
@@ -42,6 +47,10 @@ class FakeEl {
     child.parentNode = this;
     this.children.push(child);
     return child;
+  }
+
+  append(...children: FakeEl[]): void {
+    children.forEach((child) => this.appendChild(child));
   }
 
   remove(): void {
@@ -78,10 +87,49 @@ function memoryStorage(initial: Record<string, string> = {}): {
   };
 }
 
-const zhLabels = (): { words: string; characters: string } => ({
+const zhLabels = (): StatusBarLabels => ({
   words: '字数',
   characters: '字符',
+  line: '行',
+  column: '列',
+  encoding: 'UTF-8',
+  save: {
+    saved: '已保存',
+    dirty: '已修改',
+    saving: '正在保存',
+    error: '保存失败',
+    conflict: '外部冲突',
+  },
+  reader: {
+    phase: {
+      empty: '阅读器',
+      loading: '正在加载',
+      ready: '阅读中',
+      cancelled: '加载已取消',
+      error: '加载失败',
+      destroyed: '阅读器已关闭',
+    },
+    page: '页',
+    chapter: '章',
+    progress: '进度',
+    zoom: '缩放',
+  },
 });
+
+function snapshot(
+  markdown: string,
+  saveStatus: MarkdownStatusSnapshot['saveStatus'] = 'saved',
+): MarkdownStatusSnapshot {
+  return { kind: 'markdown', markdown, saveStatus, cursor: { line: 2, column: 3 } };
+}
+
+function childByClass(root: FakeEl, className: string): FakeEl {
+  const found = root.children
+    .flatMap((child) => [child, ...child.children])
+    .find((child) => child.className === className);
+  if (found === undefined) throw new Error(`Missing child ${className}`);
+  return found;
+}
 
 function makeBar(
   host: FakeEl,
@@ -104,11 +152,11 @@ afterEach(() => {
 });
 
 describe('显隐偏好（localStorage，chrome-prefs 模式）', () => {
-  it('无存储 / 缺键 / 损坏值均回落默认（关闭）', () => {
-    expect(loadStatusBarVisible(null)).toBe(false);
-    expect(loadStatusBarVisible(memoryStorage())).toBe(false);
+  it('无存储 / 缺键 / 损坏值均回落默认（开启）', () => {
+    expect(loadStatusBarVisible(null)).toBe(true);
+    expect(loadStatusBarVisible(memoryStorage())).toBe(true);
     expect(loadStatusBarVisible(memoryStorage({ [STATUS_BAR_VISIBLE_STORAGE_KEY]: 'oops' }))).toBe(
-      false,
+      true,
     );
   });
 
@@ -125,27 +173,27 @@ describe('显隐偏好（localStorage，chrome-prefs 模式）', () => {
     const storage = memoryStorage();
     const host = new FakeEl('div');
     const bar = makeBar(host, { storage });
-    expect(bar.isVisible()).toBe(false);
+    expect(bar.isVisible()).toBe(true);
 
     bar.toggle();
-    expect(storage.store[STATUS_BAR_VISIBLE_STORAGE_KEY]).toBe('true');
+    expect(storage.store[STATUS_BAR_VISIBLE_STORAGE_KEY]).toBe('false');
 
-    // 模拟重启：同一 storage 新建实例恢复开启。
+    // 模拟重启：同一 storage 新建实例恢复关闭。
     const host2 = new FakeEl('div');
     const bar2 = makeBar(host2, { storage });
-    expect(bar2.isVisible()).toBe(true);
-    expect(host2.children).toHaveLength(1);
+    expect(bar2.isVisible()).toBe(false);
+    expect(host2.children).toHaveLength(0);
   });
 });
 
 describe('渲染与显隐', () => {
-  it('默认关闭：不挂载（关闭即不渲染）', () => {
+  it('显式关闭时不挂载也不渲染', () => {
     const host = new FakeEl('div');
-    const bar = makeBar(host, { storage: null });
+    const bar = makeBar(host, { storage: null, initiallyVisible: false });
     expect(bar.isVisible()).toBe(false);
     expect(host.children).toHaveLength(0);
     // 隐藏时 refresh 不渲染。
-    bar.refresh(() => '你好');
+    bar.refresh(() => snapshot('你好'));
     expect(host.children).toHaveLength(0);
   });
 
@@ -154,28 +202,74 @@ describe('渲染与显隐', () => {
     const bar = makeBar(host, { storage: null, initiallyVisible: true });
     expect(host.children).toHaveLength(1);
 
-    bar.refresh(() => '你好 hello');
+    bar.refresh(() => snapshot('你好 hello', 'dirty'));
     // 字数 = 2(你好) + 1(hello) = 3；字符 = 2 + 5 = 7。
-    expect(bar.element.textContent).toBe('字数 3 · 字符 7');
+    const root = bar.element as unknown as FakeEl;
+    expect(childByClass(root, 'lightink-status-save').textContent).toBe('已修改');
+    expect(childByClass(root, 'lightink-status-position').textContent).toBe('行 2, 列 3');
+    expect(childByClass(root, 'lightink-status-counts').textContent).toBe('字数 3 · 字符 7');
   });
 
-  it('getMarkdown 返回 null / 抛错时按空文档统计（不抛出）', () => {
+  it('无活动文档 / getter 抛错时隐藏内容（不抛出）', () => {
     const host = new FakeEl('div');
     const bar = makeBar(host, { storage: null, initiallyVisible: true });
     bar.refresh(() => null);
-    expect(bar.element.textContent).toBe('字数 0 · 字符 0');
+    expect((bar.element as unknown as FakeEl).hidden).toBe(true);
     bar.refresh(() => {
       throw new Error('editor gone');
     });
-    expect(bar.element.textContent).toBe('字数 0 · 字符 0');
+    expect((bar.element as unknown as FakeEl).hidden).toBe(true);
+  });
+
+  it('渲染 Reader 章节进度和有效缩放，并在加载时隐藏位置详情', () => {
+    const host = new FakeEl('div');
+    const bar = makeBar(host, { storage: null, initiallyVisible: true });
+    bar.refresh(() => ({
+      kind: 'reader',
+      state: {
+        phase: 'ready',
+        current: 2,
+        total: 4,
+        progress: 0.5,
+        scale: 1,
+        locationKind: 'chapter',
+      },
+      displayScale: 1.5,
+    }));
+
+    const root = bar.element as unknown as FakeEl;
+    expect(root.dataset.statusKind).toBe('reader');
+    expect(root.dataset.readerPhase).toBe('ready');
+    expect(root.dataset.saveStatus).toBeUndefined();
+    expect(childByClass(root, 'lightink-status-save').textContent).toBe('阅读中');
+    expect(childByClass(root, 'lightink-status-position').textContent).toBe('章 2/4');
+    expect(childByClass(root, 'lightink-status-encoding').textContent).toBe('进度 50%');
+    expect(childByClass(root, 'lightink-status-counts').textContent).toBe('缩放 150%');
+
+    bar.refresh(() => ({
+      kind: 'reader',
+      state: {
+        phase: 'loading',
+        current: 0,
+        total: 0,
+        progress: 0,
+        scale: 1,
+        locationKind: null,
+      },
+      displayScale: 1,
+    }));
+    expect(childByClass(root, 'lightink-status-save').textContent).toBe('正在加载');
+    expect(childByClass(root, 'lightink-status-position').hidden).toBe(true);
   });
 
   it('关闭后从 DOM 移除；重新打开立即按当前文档重绘（不等编辑）', () => {
     const host = new FakeEl('div');
     const bar = makeBar(host, { storage: null, initiallyVisible: true });
     let doc = '你好';
-    bar.refresh(() => doc);
-    expect(bar.element.textContent).toBe('字数 2 · 字符 2');
+    bar.refresh(() => snapshot(doc));
+    expect(childByClass(bar.element as unknown as FakeEl, 'lightink-status-counts').textContent).toBe(
+      '字数 2 · 字符 2',
+    );
 
     bar.setVisible(false);
     expect(host.children).toHaveLength(0);
@@ -184,7 +278,9 @@ describe('渲染与显隐', () => {
     doc = '你好世界 hello';
     bar.setVisible(true);
     expect(host.children).toHaveLength(1);
-    expect(bar.element.textContent).toBe('字数 5 · 字符 9');
+    expect(childByClass(bar.element as unknown as FakeEl, 'lightink-status-counts').textContent).toBe(
+      '字数 5 · 字符 9',
+    );
   });
 });
 
@@ -194,23 +290,25 @@ describe('防抖刷新（scheduleUpdate）', () => {
     const host = new FakeEl('div');
     const bar = makeBar(host, { storage: null, initiallyVisible: true, debounceMs: 300 });
     let doc = 'a';
-    bar.scheduleUpdate(() => doc);
+    bar.scheduleUpdate(() => snapshot(doc));
     doc = 'ab';
-    bar.scheduleUpdate(() => doc);
+    bar.scheduleUpdate(() => snapshot(doc));
     vi.advanceTimersByTime(299);
-    expect(bar.element.textContent).toBe('');
+    expect(childByClass(bar.element as unknown as FakeEl, 'lightink-status-counts').textContent).toBe('');
     doc = 'abc';
-    bar.scheduleUpdate(() => doc);
+    bar.scheduleUpdate(() => snapshot(doc));
     vi.advanceTimersByTime(300);
     // 'abc' = 1 个拉丁词、3 个非空白字符（仅渲染最后一次调度）。
-    expect(bar.element.textContent).toBe('字数 1 · 字符 3');
+    expect(childByClass(bar.element as unknown as FakeEl, 'lightink-status-counts').textContent).toBe(
+      '字数 1 · 字符 3',
+    );
   });
 
   it('隐藏时调度不启动计时器（不渲染）', () => {
     vi.useFakeTimers();
     const host = new FakeEl('div');
-    const bar = makeBar(host, { storage: null, debounceMs: 300 });
-    bar.scheduleUpdate(() => '你好');
+    const bar = makeBar(host, { storage: null, initiallyVisible: false, debounceMs: 300 });
+    bar.scheduleUpdate(() => snapshot('你好'));
     vi.advanceTimersByTime(1000);
     expect(host.children).toHaveLength(0);
   });
@@ -219,11 +317,10 @@ describe('防抖刷新（scheduleUpdate）', () => {
     vi.useFakeTimers();
     const host = new FakeEl('div');
     const bar = makeBar(host, { storage: null, initiallyVisible: true, debounceMs: 300 });
-    bar.scheduleUpdate(() => '你好');
+    bar.scheduleUpdate(() => snapshot('你好'));
     bar.destroy();
     vi.advanceTimersByTime(1000);
     expect(host.children).toHaveLength(0);
-    expect(bar.element.textContent).toBe('');
   });
 });
 
@@ -233,7 +330,16 @@ describe('formatWordStats 文案', () => {
       '字数 1,234 · 字符 5,678',
     );
     expect(
-      formatWordStats({ words: 1, characters: 2 }, { words: 'Words', characters: 'Characters' }),
+      formatWordStats(
+        { words: 1, characters: 2 },
+        { ...zhLabels(), words: 'Words', characters: 'Characters' },
+      ),
     ).toBe('Words 1 · Characters 2');
+  });
+});
+
+describe('cursorPositionFromOffset', () => {
+  it('counts CRLF lines and Unicode code points', () => {
+    expect(cursorPositionFromOffset('first\r\n你😀好', 11)).toEqual({ line: 2, column: 4 });
   });
 });

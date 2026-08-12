@@ -18,6 +18,15 @@ import { Decoration, DecorationSet, type EditorView } from '@milkdown/prose/view
 
 const PLUGIN_KEY = new PluginKey('lightink-task-checkbox');
 
+let taskCheckboxLabels = {
+  check: 'Mark complete',
+  uncheck: 'Mark incomplete',
+};
+
+export function setTaskCheckboxLabels(labels: { check: string; uncheck: string }): void {
+  taskCheckboxLabels = { ...labels };
+}
+
 export interface TaskItemPos {
   readonly pos: number;
   readonly checked: boolean;
@@ -69,7 +78,7 @@ export function toggleTaskChecked(view: EditorView, pos: number): boolean {
   return true;
 }
 
-function createCheckboxWidget(
+export function createTaskCheckboxWidget(
   checked: boolean,
   pos: number,
   getView: () => EditorView | null,
@@ -81,9 +90,11 @@ function createCheckboxWidget(
     : 'lightink-task-checkbox';
   btn.setAttribute('role', 'checkbox');
   btn.setAttribute('aria-checked', checked ? 'true' : 'false');
-  btn.setAttribute('aria-label', checked ? '标记为未完成' : '标记为完成');
+  const label = checked ? taskCheckboxLabels.uncheck : taskCheckboxLabels.check;
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('title', label);
   btn.contentEditable = 'false';
-  btn.tabIndex = -1;
+  btn.tabIndex = 0;
 
   // Prevent PM from taking focus / placing caret when pressing the box.
   btn.addEventListener('mousedown', (event) => {
@@ -97,6 +108,13 @@ function createCheckboxWidget(
     if (view !== null) {
       toggleTaskChecked(view, pos);
     }
+  });
+  btn.addEventListener('keydown', (event) => {
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const view = getView();
+    if (view !== null) toggleTaskChecked(view, pos);
   });
   return btn;
 }
@@ -112,7 +130,7 @@ function buildDecorations(
     decorations.push(
       Decoration.widget(
         pos + 1,
-        () => createCheckboxWidget(checked, pos, getView),
+        () => createTaskCheckboxWidget(checked, pos, getView),
         {
           side: -1,
           key: `task-cb-${pos}-${checked ? '1' : '0'}`,

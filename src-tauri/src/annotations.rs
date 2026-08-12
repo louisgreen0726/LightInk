@@ -11,16 +11,21 @@
 use std::fs;
 use std::path::Path;
 
+use crate::identifiers::validate_content_hash;
+
 const ANNOTATIONS_DIR: &str = "annotations";
 
 /// 标注文件路径：`<base_dir>/annotations/<content_hash>.json`。
-fn annotations_path(base_dir: &Path, content_hash: &str) -> std::path::PathBuf {
-    base_dir.join(ANNOTATIONS_DIR).join(format!("{}.json", content_hash))
+fn annotations_path(base_dir: &Path, content_hash: &str) -> Result<std::path::PathBuf, String> {
+    let content_hash = validate_content_hash(content_hash)?;
+    Ok(base_dir
+        .join(ANNOTATIONS_DIR)
+        .join(format!("{}.json", content_hash)))
 }
 
 /// 读标注 JSON。文件缺失或不可读返回空串（视为无标注，不报错、不阻断）。
 pub fn read_annotations_impl(base_dir: &Path, content_hash: &str) -> Result<String, String> {
-    let path = annotations_path(base_dir, content_hash);
+    let path = annotations_path(base_dir, content_hash)?;
     if !path.exists() {
         return Ok(String::new());
     }
@@ -34,9 +39,10 @@ pub fn write_annotations_impl(
     content_hash: &str,
     json: &str,
 ) -> Result<(), String> {
+    let path = annotations_path(base_dir, content_hash)?;
     let dir = base_dir.join(ANNOTATIONS_DIR);
     fs::create_dir_all(&dir).map_err(|e| format!("无法创建标注目录: {}", e))?;
-    crate::file::write_file_impl(&annotations_path(base_dir, content_hash), json)
+    crate::file::write_file_impl(&path, json)
 }
 
 fn resolve_base_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
@@ -72,6 +78,9 @@ pub fn write_annotations(
 mod tests {
     use super::*;
 
+    const HASH_A: &str = "0123456789abcdef";
+    const HASH_B: &str = "fedcba9876543210";
+
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp dir")
     }
@@ -79,7 +88,7 @@ mod tests {
     #[test]
     fn missing_annotations_return_empty() {
         let dir = temp_dir();
-        let got = read_annotations_impl(dir.path(), "abc123").unwrap();
+        let got = read_annotations_impl(dir.path(), HASH_A).unwrap();
         assert_eq!(got, "");
     }
 
@@ -87,27 +96,31 @@ mod tests {
     fn write_then_read_roundtrip() {
         let dir = temp_dir();
         let json = r#"{"annotations":[{"id":"a1","kind":"highlight"}]}"#;
-        write_annotations_impl(dir.path(), "hashA", json).unwrap();
-        let back = read_annotations_impl(dir.path(), "hashA").unwrap();
+        write_annotations_impl(dir.path(), HASH_A, json).unwrap();
+        let back = read_annotations_impl(dir.path(), HASH_A).unwrap();
         assert_eq!(back, json);
     }
 
     #[test]
     fn distinct_content_hashes_isolate_storage() {
         let dir = temp_dir();
-        write_annotations_impl(dir.path(), "hashA", r#"{"a":1}"#).unwrap();
-        write_annotations_impl(dir.path(), "hashB", r#"{"b":2}"#).unwrap();
+        write_annotations_impl(dir.path(), HASH_A, r#"{"a":1}"#).unwrap();
+        write_annotations_impl(dir.path(), HASH_B, r#"{"b":2}"#).unwrap();
         assert_ne!(
-            read_annotations_impl(dir.path(), "hashA").unwrap(),
-            read_annotations_impl(dir.path(), "hashB").unwrap()
+            read_annotations_impl(dir.path(), HASH_A).unwrap(),
+            read_annotations_impl(dir.path(), HASH_B).unwrap()
         );
     }
 
     #[test]
     fn annotations_dir_is_created() {
         let dir = temp_dir();
-        write_annotations_impl(dir.path(), "h", "{}").unwrap();
-        assert!(dir.path().join(ANNOTATIONS_DIR).join("h.json").exists());
+        write_annotations_impl(dir.path(), HASH_A, "{}").unwrap();
+        assert!(dir
+            .path()
+            .join(ANNOTATIONS_DIR)
+            .join(format!("{HASH_A}.json"))
+            .exists());
     }
 
     #[test]
@@ -117,10 +130,20 @@ mod tests {
         // 这里写一段非 UTF-8 字节会令 read_to_string 失败 → 视为空。
         let path = dir.path().join(ANNOTATIONS_DIR);
         fs::create_dir_all(&path).unwrap();
-        fs::write(path.join("bad.json"), b"\xff\xfe\x00").unwrap();
+        fs::write(path.join(format!("{HASH_A}.json")), b"\xff\xfe\x00").unwrap();
         // read_to_string 对非 UTF-8 失败 → unwrap_or_default 返回 ""。
-        let got = read_annotations_impl(dir.path(), "bad").unwrap();
+        let got = read_annotations_impl(dir.path(), HASH_A).unwrap();
         assert_eq!(got, "");
+    }
+
+    #[test]
+    fn rejects_invalid_content_hashes_before_path_construction() {
+        let dir = temp_dir();
+        for hash in ["", "ABCDEF0123456789", "../annotations", "0123456789abcde"] {
+            assert!(read_annotations_impl(dir.path(), hash).is_err());
+            assert!(write_annotations_impl(dir.path(), hash, "{}").is_err());
+        }
+        assert!(!dir.path().join(ANNOTATIONS_DIR).exists());
     }
 
     #[test]
@@ -133,10 +156,18 @@ mod tests {
         let mtime_before = fs::metadata(&src).unwrap().modified().unwrap();
         let hash = crate::asset::content_hash_hex(content);
         write_annotations_impl(dir.path(), &hash, r#"{"version":1,"annotations":[]}"#).unwrap();
-        assert_eq!(fs::read(&src).unwrap(), content, "source content must not change");
+        assert_eq!(
+            fs::read(&src).unwrap(),
+            content,
+            "source content must not change"
+        );
         let mtime_after = fs::metadata(&src).unwrap().modified().unwrap();
         assert_eq!(mtime_before, mtime_after, "source mtime must not change");
         // 标注确实写到了 annotations/<hash>.json，而非源文件。
-        assert!(dir.path().join(ANNOTATIONS_DIR).join(format!("{hash}.json")).exists());
+        assert!(dir
+            .path()
+            .join(ANNOTATIONS_DIR)
+            .join(format!("{hash}.json"))
+            .exists());
     }
 }

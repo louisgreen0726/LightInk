@@ -2,7 +2,7 @@
  * `file-dialog` — 系统文件对话框封装（T3）。
  *
  * 基于 @tauri-apps/plugin-dialog。打开与另存为使用不同过滤器：
- *   - 打开：Markdown + 电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）+ 全部；
+ *   - 打开：Markdown + 电子书（PDF/EPUB/MOBI/FB2/CBZ/TXT）+ 全部；
  *   - 另存为：仅 Markdown（reader 标签只读，不可另存为）。
  *
  * 在无窗口的测试环境里该模块会被 `vi.mock('@tauri-apps/plugin-dialog')`
@@ -18,7 +18,7 @@ const MARKDOWN_FILTERS = [
 
 /** 只读电子书过滤器（仅出现在「打开」对话框）。 */
 const READER_FILTERS = [
-  { name: 'eBook', extensions: ['pdf', 'epub', 'mobi', 'azw3', 'fb2', 'cbz', 'txt'] },
+  { name: 'eBook', extensions: ['pdf', 'epub', 'mobi', 'fb2', 'cbz', 'txt'] },
 ];
 
 const ALL_FILES_FILTER = { name: 'All Files', extensions: ['*'] };

@@ -33,7 +33,7 @@ interface TabBase {
   /** 最近一次已保存（或初始加载）的内容，用于比较得出脏标记。 */
   lastSavedMarkdown: string;
   /**
-   * R13：最近一次加载/保存成功时记录的磁盘 `FileStat`（mtime+size），作为
+   * R13：最近一次加载/保存成功时记录的磁盘 `FileStat`（元数据+内容指纹），作为
    * 外部变更检测基线。未命名标签、stat 失败或 reader 标签为 null（不参与检测）。
    */
   lastSavedMtime: FileStat | null;
@@ -54,7 +54,7 @@ export interface MarkdownTabState extends TabBase {
 }
 
 /**
- * 只读阅读标签（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）。不挂编辑器，
+ * 只读阅读标签（PDF/EPUB/MOBI/FB2/CBZ/TXT）。不挂编辑器，
  * dirty 恒为 false，永不进入保存/快照/外部变更检测等可写路径
  * （见 tab-manager 各方法的 kind 守卫）。持有一个 ReaderInstance，
  * 生命周期由 TabManager 管理。
@@ -68,5 +68,11 @@ export interface ReaderTabState extends TabBase {
 /** 单个标签页的完整会话状态（markdown 编辑标签或只读 reader 标签）。 */
 export type TabState = MarkdownTabState | ReaderTabState;
 
+/** User-visible persistence state for an editable document. */
+export type DocumentSaveStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
+
 /** 关闭未保存标签时用户的三选一。 */
 export type CloseChoice = 'save' | 'discard' | 'cancel';
+
+/** Application-exit action after the confirmation UI has resolved cancellation. */
+export type CloseAllAction = Exclude<CloseChoice, 'cancel'>;

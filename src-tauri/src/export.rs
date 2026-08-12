@@ -6,17 +6,19 @@
 //! src/export/pdf-export.ts），这里不做 PDF 生成。
 //!
 //! 路径解析规则（与 asset.rs 的落盘布局对应）：
-//!   - 文档已保存（`doc_path` 为 Some）→ 相对 `<文档目录>/` 解析；
+//!   - 文档已保存（`doc_path` 为 Some）→ 仅在 `<文档目录>/assets/` 解析；
 //!   - 文档未保存 → 相对应用数据目录下 `staging-assets/<session_id>/`
 //!     解析，此时相对路径必须位于 `assets/` 前缀之下（剥离前缀后即为
 //!     暂存目录内的文件名）。
 //!
-//! 安全：相对路径逐段校验，拒绝 `..`、盘符/UNC、绝对路径段，杜绝路径
-//! 穿越；会话 id 消毒规则与 asset.rs 一致。base64 编码器为本模块自带
-//! 实现（asset.rs 只有解码器），不引入新 crate。
+//! 安全：相对路径逐段校验并在读取前 canonicalize，拒绝 `..`、盘符/UNC、
+//! 绝对路径与 symlink 越界；会话 id 验证规则与 asset.rs 一致。base64
+//! 编码器为本模块自带实现（asset.rs 只有解码器），不引入新 crate。
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::identifiers::validate_session_id;
 
 /// 文档旁的图片目录名（与 asset.rs 同一约定）。
 const ASSETS_DIR_NAME: &str = "assets";
@@ -29,8 +31,7 @@ const STAGING_DIR_NAME: &str = "staging-assets";
 
 /// 编码标准 base64（含 `=` 填充；空输入编码为空串）。
 pub fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = u32::from(chunk[0]);
@@ -60,6 +61,9 @@ pub fn encode_base64(bytes: &[u8]) -> String {
 /// 相对路径消毒：按 `/` 与 `\` 切段，剔除空段与 `.`，拒绝 `..` 与含
 /// 盘符/冒号的段。返回安全的相对段序列；空路径报错。
 fn sanitize_rel_path(rel_path: &str) -> Result<Vec<String>, String> {
+    if rel_path.starts_with('/') || rel_path.starts_with('\\') {
+        return Err(format!("图片路径必须是相对路径: {:?}", rel_path));
+    }
     let mut parts: Vec<String> = Vec::new();
     for seg in rel_path.split(['/', '\\']) {
         if seg.is_empty() || seg == "." {
@@ -76,74 +80,85 @@ fn sanitize_rel_path(rel_path: &str) -> Result<Vec<String>, String> {
     Ok(parts)
 }
 
-/// 会话 id 消毒（与 asset.rs 同一规则）：只保留字母数字/`-`/`_`。
-fn sanitize_session_id(session_id: &str) -> Result<String, String> {
-    let cleaned: String = session_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        return Err("会话 id 不能为空".to_owned());
+fn canonicalize_path(path: &Path, description: &str) -> Result<PathBuf, String> {
+    fs::canonicalize(path).map_err(|e| format!("无法解析{} {}: {}", description, path.display(), e))
+}
+
+fn require_path_within(path: &Path, root: &Path, description: &str) -> Result<(), String> {
+    if path == root || !path.starts_with(root) {
+        return Err(format!(
+            "{}必须位于允许的 assets 目录内: {}",
+            description,
+            path.display()
+        ));
     }
-    Ok(cleaned)
+    Ok(())
 }
 
 /// 读取相对路径图片并返回 base64。
 ///
-/// - `doc_dir` 为 Some：解析 `<doc_dir>/<rel_path>`；
+/// - `doc_dir` 为 Some：`rel_path` 必须位于 `assets/`，解析为
+///   `<doc_dir>/assets/<path>`；
 /// - 为 None（文档未保存）：`rel_path` 必须以 `assets/` 开头，剥离后解析
 ///   `<staging_root>/staging-assets/<session_id>/<name>`；`session_id`
 ///   缺失时报错。
-/// 导出图片读取上限：超过即拒绝（全量读入 + base64 会放大约 4/3 倍并
-/// 经 IPC 返回，超大文件会导致卡顿/内存峰值）。
-const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
-
 pub fn read_image_base64_impl(
     doc_dir: Option<&Path>,
     staging_root: &Path,
     session_id: Option<&str>,
     rel_path: &str,
 ) -> Result<String, String> {
+    let session_id = session_id.map(validate_session_id).transpose()?;
     let parts = sanitize_rel_path(rel_path)?;
-    let full: PathBuf = match doc_dir {
-        Some(dir) => parts.iter().fold(dir.to_path_buf(), |acc, p| acc.join(p)),
+    if parts.first().map(String::as_str) != Some(ASSETS_DIR_NAME) || parts.len() < 2 {
+        return Err(format!(
+            "图片路径必须位于 {}/ 之下: {:?}",
+            ASSETS_DIR_NAME, rel_path
+        ));
+    }
+
+    let (allowed_root, full): (PathBuf, PathBuf) = match doc_dir {
+        Some(dir) => {
+            let canonical_doc = canonicalize_path(dir, "文档目录")?;
+            let assets_root = canonicalize_path(&dir.join(ASSETS_DIR_NAME), "资源目录")?;
+            require_path_within(&assets_root, &canonical_doc, "资源目录")?;
+            let full = parts[1..]
+                .iter()
+                .fold(assets_root.clone(), |acc, part| acc.join(part));
+            (assets_root, full)
+        }
         None => {
-            let session = session_id
-                .ok_or_else(|| "文档未保存且缺少会话 id，无法定位暂存图片".to_owned())?;
-            if parts.first().map(String::as_str) != Some(ASSETS_DIR_NAME) || parts.len() < 2 {
-                return Err(format!(
-                    "暂存图片路径必须位于 {}/ 之下: {:?}",
-                    ASSETS_DIR_NAME, rel_path
-                ));
-            }
-            let mut base = staging_root
-                .join(STAGING_DIR_NAME)
-                .join(sanitize_session_id(session)?);
-            for part in &parts[1..] {
-                base = base.join(part);
-            }
-            base
+            let session =
+                session_id.ok_or_else(|| "文档未保存且缺少会话 id，无法定位暂存图片".to_owned())?;
+            let staging_assets = staging_root.join(STAGING_DIR_NAME);
+            let canonical_base = canonicalize_path(staging_root, "应用数据目录")?;
+            let canonical_staging = canonicalize_path(&staging_assets, "暂存资源根目录")?;
+            require_path_within(&canonical_staging, &canonical_base, "暂存资源根目录")?;
+            let session_root = canonicalize_path(&staging_assets.join(session), "会话资源目录")?;
+            require_path_within(&session_root, &canonical_staging, "会话资源目录")?;
+            let full = parts[1..]
+                .iter()
+                .fold(session_root.clone(), |acc, part| acc.join(part));
+            (session_root, full)
         }
     };
-    let size = fs::metadata(&full)
-        .map_err(|e| format!("无法读取图片 {}: {}", full.display(), e))?
-        .len();
-    if size > MAX_IMAGE_BYTES {
+    let full = canonicalize_path(&full, "图片")?;
+    require_path_within(&full, &allowed_root, "图片")?;
+    let metadata =
+        fs::metadata(&full).map_err(|e| format!("无法读取图片 {}: {}", full.display(), e))?;
+    if !metadata.is_file() {
+        return Err(format!("图片路径不是普通文件: {}", full.display()));
+    }
+    let size = metadata.len();
+    if size > crate::asset::MAX_IMAGE_BYTES {
         return Err(format!(
             "图片过大（{} 字节，上限 {} 字节）: {}",
             size,
-            MAX_IMAGE_BYTES,
+            crate::asset::MAX_IMAGE_BYTES,
             full.display()
         ));
     }
-    let bytes =
-        fs::read(&full).map_err(|e| format!("无法读取图片 {}: {}", full.display(), e))?;
+    let bytes = fs::read(&full).map_err(|e| format!("无法读取图片 {}: {}", full.display(), e))?;
     Ok(encode_base64(&bytes))
 }
 
@@ -366,7 +381,15 @@ mod tests {
             sanitize_rel_path("assets\\./sub\\x.png").unwrap(),
             vec!["assets", "sub", "x.png"]
         );
-        for bad in ["../x.png", "assets/../../etc", "C:/x.png", "", "./"] {
+        for bad in [
+            "../x.png",
+            "assets/../../etc",
+            "C:/x.png",
+            "/assets/x.png",
+            "\\\\server\\assets\\x.png",
+            "",
+            "./",
+        ] {
             assert!(sanitize_rel_path(bad).is_err(), "should reject {:?}", bad);
         }
     }
@@ -379,18 +402,15 @@ mod tests {
         let doc_dir = dir.path().join("docs");
         fs::create_dir_all(doc_dir.join("assets")).unwrap();
         fs::write(doc_dir.join("assets").join("a.png"), b"\x89PNG fake").unwrap();
-        let b64 = read_image_base64_impl(Some(&doc_dir), dir.path(), None, "assets/a.png")
-            .expect("read");
+        let b64 =
+            read_image_base64_impl(Some(&doc_dir), dir.path(), None, "assets/a.png").expect("read");
         assert_eq!(b64, encode_base64(b"\x89PNG fake"));
     }
 
     #[test]
     fn reads_image_from_session_staging_when_unsaved() {
         let dir = temp_dir();
-        let staged = dir
-            .path()
-            .join(STAGING_DIR_NAME)
-            .join("untitled-ab12");
+        let staged = dir.path().join(STAGING_DIR_NAME).join("untitled-ab12");
         fs::create_dir_all(&staged).unwrap();
         fs::write(staged.join("b.gif"), b"GIF89a").unwrap();
         let b64 = read_image_base64_impl(None, dir.path(), Some("untitled-ab12"), "assets/b.gif")
@@ -404,34 +424,40 @@ mod tests {
         // 缺 session id
         assert!(read_image_base64_impl(None, dir.path(), None, "assets/a.png").is_err());
         // 暂存模式拒绝 assets/ 之外的路径
-        assert!(
-            read_image_base64_impl(None, dir.path(), Some("s"), "other/a.png").is_err()
-        );
+        assert!(read_image_base64_impl(None, dir.path(), Some("s"), "other/a.png").is_err());
+    }
+
+    #[test]
+    fn saved_document_requires_assets_prefix() {
+        let dir = temp_dir();
+        let doc_dir = dir.path().join("docs");
+        fs::create_dir_all(doc_dir.join("assets")).unwrap();
+        fs::write(doc_dir.join("outside.png"), b"outside").unwrap();
+
+        assert!(read_image_base64_impl(Some(&doc_dir), dir.path(), None, "outside.png").is_err());
+        assert!(read_image_base64_impl(Some(&doc_dir), dir.path(), None, "./outside.png").is_err());
     }
 
     #[test]
     fn rejects_traversal_and_reports_missing() {
         let dir = temp_dir();
         let doc_dir = dir.path().join("docs");
-        fs::create_dir_all(&doc_dir).unwrap();
-        assert!(
-            read_image_base64_impl(Some(&doc_dir), dir.path(), None, "../secret.png").is_err()
-        );
+        fs::create_dir_all(doc_dir.join(ASSETS_DIR_NAME)).unwrap();
+        assert!(read_image_base64_impl(Some(&doc_dir), dir.path(), None, "../secret.png").is_err());
         let err = read_image_base64_impl(Some(&doc_dir), dir.path(), None, "assets/nope.png")
             .expect_err("must fail");
-        assert!(err.contains("无法读取图片"), "unexpected: {}", err);
+        assert!(err.contains("无法解析图片"), "unexpected: {}", err);
     }
 
     #[test]
-    fn staging_session_id_is_sanitized() {
+    fn staging_session_id_is_rejected_instead_of_rewritten() {
         let dir = temp_dir();
-        let cleaned = "___evil____x"; // "../evil/../x" 消毒后
-        let staged = dir.path().join(STAGING_DIR_NAME).join(cleaned);
+        let staged = dir.path().join(STAGING_DIR_NAME).join("valid-session");
         fs::create_dir_all(&staged).unwrap();
         fs::write(staged.join("c.png"), b"png-c").unwrap();
-        let b64 = read_image_base64_impl(None, dir.path(), Some("../evil/../x"), "assets/c.png")
-            .expect("read with sanitized session");
-        assert_eq!(b64, encode_base64(b"png-c"));
+        assert!(
+            read_image_base64_impl(None, dir.path(), Some("../evil/../x"), "assets/c.png").is_err()
+        );
     }
 
     #[test]
@@ -442,10 +468,28 @@ mod tests {
         // 用稀疏文件快速构造超限体积
         let big = doc_dir.join("assets").join("big.png");
         let f = fs::File::create(&big).unwrap();
-        f.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        f.set_len(crate::asset::MAX_IMAGE_BYTES + 1).unwrap();
         drop(f);
         let err = read_image_base64_impl(Some(&doc_dir), dir.path(), None, "assets/big.png")
             .expect_err("must fail on oversize");
         assert!(err.contains("图片过大"), "unexpected: {}", err);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escape_from_assets_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let doc_dir = dir.path().join("docs");
+        let assets = doc_dir.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        let secret = dir.path().join("secret.png");
+        fs::write(&secret, b"secret").unwrap();
+        symlink(&secret, assets.join("linked.png")).unwrap();
+
+        let error = read_image_base64_impl(Some(&doc_dir), dir.path(), None, "assets/linked.png")
+            .expect_err("symlink escape must fail");
+        assert!(error.contains("assets 目录内"), "unexpected: {}", error);
     }
 }

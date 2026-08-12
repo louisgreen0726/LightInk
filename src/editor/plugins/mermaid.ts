@@ -54,6 +54,7 @@
  *     shows as `lightink-mermaid-pending` source.
  */
 import { $prose } from '@milkdown/utils';
+import { appendPreviewEditButton } from './preview-edit-button.js';
 import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state';
 import type { Node as PMNode } from '@milkdown/prose/model';
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/prose/view';
@@ -303,6 +304,7 @@ export function buildMermaidDecorations(
           el.setAttribute('data-mermaid-preview', '');
           // mermaid 在 securityLevel:'strict' 下已对 SVG 消毒。
           el.innerHTML = svg;
+          appendPreviewEditButton(el, MERMAID_EDIT_TITLE, () => onEditRequest?.(blockPos));
           el.addEventListener('dblclick', (event) => {
             event.preventDefault();
             event.stopPropagation();

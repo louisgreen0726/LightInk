@@ -109,7 +109,7 @@ pub fn first_supported_from_urls(urls: impl IntoIterator<Item = url::Url>) -> Op
 }
 
 /// 以只读 reader 标签打开的电子书扩展名（小写，与前端 file-drop.ts READER_EXTS 一致）。
-const READER_EXTS: &[&str] = &["pdf", "epub", "mobi", "azw3", "fb2", "cbz", "txt"];
+const READER_EXTS: &[&str] = &["pdf", "epub", "mobi", "fb2", "cbz", "txt"];
 
 /// 把路径参数规范化为用于扩展名判断的候选字符串：`file://` URL 取 path 段
 /// （避免 query/fragment 干扰），其余原样返回。不访问文件系统。
@@ -202,6 +202,7 @@ mod tests {
             extract_file_arg(&argv(&["lightink", "readme.md.txt"])),
             Some("readme.md.txt".to_string())
         );
+        assert!(extract_file_arg(&argv(&["lightink", "unsupported.azw3"])).is_none());
     }
 
     #[test]
@@ -262,8 +263,8 @@ mod tests {
 
     #[test]
     fn resolve_dotdot_against_cwd() {
-        let resolved = resolve_file_arg(&argv(&["lightink", "sub\\..\\note.md"]), Some("/home/user"))
-            .unwrap();
+        let resolved =
+            resolve_file_arg(&argv(&["lightink", "sub\\..\\note.md"]), Some("/home/user")).unwrap();
         assert_eq!(
             resolved,
             std::path::PathBuf::from("/home/user")

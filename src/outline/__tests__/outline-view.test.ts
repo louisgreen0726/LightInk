@@ -517,6 +517,7 @@ describe('createOutlineView + TabManager', () => {
         return state.content;
       },
       getSelection: () => null,
+      getCursorPosition: () => null,
       getLinkAtCursor: () => null,
       getLinkAtPoint: () => null,
       toggleMark: () => undefined,

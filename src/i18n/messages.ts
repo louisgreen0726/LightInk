@@ -16,13 +16,14 @@ export const LOCALE_LABELS: Readonly<Record<LocaleId, string>> = {
 
 type Dict = Readonly<Record<string, string>>;
 
-const en: Dict = {
+const en = {
   // Menus
   'menu.file': 'File',
   'menu.edit': 'Edit',
   'menu.insert': 'Insert',
   'menu.view': 'View',
   'menu.help': 'Help',
+  'menu.more': 'More commands',
 
   'file.new': 'New',
   'file.open': 'Open',
@@ -45,6 +46,7 @@ const en: Dict = {
   'view.theme': 'Theme',
   'view.toggleTheme': 'Toggle Theme (Light/Dark)',
   'view.reloadCustomTheme': 'Reload Custom Theme',
+  'view.resetCustomTheme': 'Reset Custom Theme',
   'view.pinChrome': 'Pin Navigation',
   'view.unpinChrome': 'Unpin Navigation',
   'view.fullscreen': 'Full Screen',
@@ -61,6 +63,7 @@ const en: Dict = {
   'theme.cool-light': 'Cool Light',
   'theme.dark': 'Ink Dark',
   'theme.midnight': 'Midnight',
+  'theme.custom': 'Custom Theme…',
 
   'chrome.showMenu': 'Show menu bar',
   'chrome.showTabs': 'Show tab bar',
@@ -73,6 +76,27 @@ const en: Dict = {
   'outline.noTab': 'No active tab',
   'outline.empty': 'No headings',
   'outline.resize': 'Drag to resize outline',
+
+  'status.words': 'Words',
+  'status.characters': 'Characters',
+  'status.line': 'Ln',
+  'status.column': 'Col',
+  'status.encoding': 'UTF-8',
+  'status.save.saved': 'Saved',
+  'status.save.dirty': 'Modified',
+  'status.save.saving': 'Saving',
+  'status.save.error': 'Save failed',
+  'status.save.conflict': 'External conflict',
+  'status.reader.empty': 'Reader',
+  'status.reader.loading': 'Loading',
+  'status.reader.ready': 'Reading',
+  'status.reader.cancelled': 'Load cancelled',
+  'status.reader.error': 'Load failed',
+  'status.reader.destroyed': 'Reader closed',
+  'status.reader.page': 'Page',
+  'status.reader.chapter': 'Chapter',
+  'status.reader.progress': 'Progress',
+  'status.reader.zoom': 'Zoom',
 
   'format.bold': 'Bold',
   'format.italic': 'Italic',
@@ -98,13 +122,43 @@ const en: Dict = {
   'error.openFile': 'Could not open “{path}”: the file may have been moved or deleted.',
   'error.openFileMissing': 'Could not open “{path}”: file not found or unreadable.',
   'error.exportFailed': 'Export failed',
+  'error.exportUnsafeCss':
+    'Export stopped because the custom theme CSS contains a reserved </style sequence.',
   'error.recentRemoved': 'Removed from recent files.',
+  'error.recentsPersistFailed':
+    'Could not update recent files. Your documents are unaffected.',
+  'error.customTheme': 'Could not load the custom theme.\n{detail}',
   'error.unsupportedType':
-    'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT), and images are supported.',
+    'Unsupported file type: {names}\nMarkdown, eBooks (PDF/EPUB/MOBI/FB2/CBZ/TXT), and images are supported.',
   'reader.empty': 'Open an eBook to start reading.',
+  'reader.loading': 'Loading document…',
+  'reader.cancelled': 'Document loading was cancelled.',
+  'reader.failed': 'Document loading failed.',
   'reader.chapter': 'Chapter {n}',
   'reader.loadFailed': 'Could not open this eBook:\n{detail}',
+  'reader.fileTooLarge': 'File is too large ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.archiveEntries':
+    'Archive has too many entries ({actual}; limit {limit}).',
+  'reader.limit.archiveTotalBytes':
+    'Archive expands beyond the total size limit ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.archiveEntryBytes':
+    'An archive entry is too large ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.archiveCompressionRatio':
+    'An archive entry has an unsafe compression ratio ({actual}:1; limit {limit}:1).',
+  'reader.limit.readerImageBytes':
+    'A packaged image is too large ({actual} bytes; limit {limit} bytes).',
+  'reader.limit.pdfPages': 'PDF has too many pages ({actual}; limit {limit}).',
+  'reader.limit.cbzPages': 'CBZ has too many image pages ({actual}; limit {limit}).',
+  'reader.capability.mobiDrm': 'This MOBI file is DRM-protected and cannot be opened.',
+  'reader.capability.mobiKf8':
+    'KF8/MOBI8 is not supported. LightInk currently supports unencrypted PalmDOC/MOBI6 only.',
+  'reader.capability.mobiHuff':
+    'HUFF/CDIC-compressed MOBI is not supported. LightInk currently supports unencrypted PalmDOC/MOBI6 only.',
+  'reader.warning.epubStylesIgnored':
+    'Some publisher styles were ignored to keep this book safe to read.',
+  'reader.remoteImageLoad': 'Load remote image',
   'annotation.sidebar': 'Annotations',
+  'annotation.closeSidebar': 'Close annotations',
   'annotation.empty': 'No annotations yet. Select text to highlight.',
   'annotation.jump': 'Go to',
   'annotation.remove': 'Remove',
@@ -115,8 +169,8 @@ const en: Dict = {
   'annotation.loadFailed': 'Could not load annotations for this document.',
   'annotation.saveFailed': 'Could not save annotations; kept in memory.',
   'slash.noMatch': 'No matches',
-  'math.editTitle': 'Double-click to edit formula source',
-  'mermaid.editTitle': 'Double-click to edit flowchart source',
+  'math.editTitle': 'Edit formula source',
+  'mermaid.editTitle': 'Edit flowchart source',
 
   'help.cheatsheet': 'Keyboard Shortcuts',
   'dialog.close': 'Close',
@@ -188,6 +242,11 @@ const en: Dict = {
   // Dialogs / misc
   'dialog.closeTab.title': 'Close Tab',
   'dialog.closeTab.message': '“{title}” has unsaved changes.\nSave before closing?',
+  'dialog.exit.title': 'Unsaved Documents',
+  'dialog.exit.message':
+    'The following documents have unsaved changes:\n\n{documents}\n\nSave all before exiting?',
+  'dialog.exit.saveAll': 'Save All',
+  'dialog.exit.discardAll': 'Discard All',
   'dialog.save': 'Save',
   'dialog.discard': 'Don’t Save',
   'dialog.cancel': 'Cancel',
@@ -227,18 +286,23 @@ const en: Dict = {
   'task.unchecked': 'Todo',
   'task.another': 'Another todo',
   'task.checked': 'Done',
+  'task.markComplete': 'Mark complete',
+  'task.markIncomplete': 'Mark incomplete',
   'list.item': 'List item',
   'heading.default': 'Heading',
   'table.col1': 'Column 1',
   'table.col2': 'Column 2',
-};
+} as const satisfies Dict;
 
-const zhCN: Dict = {
+export type MessageKey = keyof typeof en;
+
+const zhCN = {
   'menu.file': '文件',
   'menu.edit': '编辑',
   'menu.insert': '插入',
   'menu.view': '视图',
   'menu.help': '帮助',
+  'menu.more': '更多命令',
 
   'file.new': '新建',
   'file.open': '打开',
@@ -261,6 +325,7 @@ const zhCN: Dict = {
   'view.theme': '主题',
   'view.toggleTheme': '切换主题（浅/深）',
   'view.reloadCustomTheme': '重新加载自定义主题',
+  'view.resetCustomTheme': '恢复默认主题',
   'view.pinChrome': '固定导航栏',
   'view.unpinChrome': '取消固定导航栏',
   'view.fullscreen': '全屏',
@@ -277,6 +342,7 @@ const zhCN: Dict = {
   'theme.cool-light': '云白浅色',
   'theme.dark': '墨夜深色',
   'theme.midnight': '深空深色',
+  'theme.custom': '自定义主题…',
 
   'chrome.showMenu': '显示菜单栏',
   'chrome.showTabs': '显示标签栏',
@@ -289,6 +355,27 @@ const zhCN: Dict = {
   'outline.noTab': '无活动标签',
   'outline.empty': '暂无标题',
   'outline.resize': '拖动调整大纲宽度',
+
+  'status.words': '字数',
+  'status.characters': '字符',
+  'status.line': '行',
+  'status.column': '列',
+  'status.encoding': 'UTF-8',
+  'status.save.saved': '已保存',
+  'status.save.dirty': '已修改',
+  'status.save.saving': '正在保存',
+  'status.save.error': '保存失败',
+  'status.save.conflict': '外部冲突',
+  'status.reader.empty': '阅读器',
+  'status.reader.loading': '正在加载',
+  'status.reader.ready': '阅读中',
+  'status.reader.cancelled': '加载已取消',
+  'status.reader.error': '加载失败',
+  'status.reader.destroyed': '阅读器已关闭',
+  'status.reader.page': '页',
+  'status.reader.chapter': '章',
+  'status.reader.progress': '进度',
+  'status.reader.zoom': '缩放',
 
   'format.bold': '加粗',
   'format.italic': '斜体',
@@ -314,13 +401,39 @@ const zhCN: Dict = {
   'error.openFile': '无法打开「{path}」：文件可能已被移动或删除。',
   'error.openFileMissing': '无法打开「{path}」：文件不存在或无法读取。',
   'error.exportFailed': '导出失败',
+  'error.exportUnsafeCss': '导出已停止：自定义主题 CSS 含有保留的 </style 终止序列。',
   'error.recentRemoved': '已从最近打开中移除。',
+  'error.recentsPersistFailed': '无法更新最近打开列表，文档内容不受影响。',
+  'error.customTheme': '无法加载自定义主题。\n{detail}',
   'error.unsupportedType':
-    '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/AZW3/FB2/CBZ/TXT）或图片。',
+    '不支持的文件类型：{names}\n可拖入 Markdown、电子书（PDF/EPUB/MOBI/FB2/CBZ/TXT）或图片。',
   'reader.empty': '打开一本电子书开始阅读。',
+  'reader.loading': '正在加载文档…',
+  'reader.cancelled': '文档加载已取消。',
+  'reader.failed': '文档加载失败。',
   'reader.chapter': '第 {n} 章',
   'reader.loadFailed': '无法打开此电子书：\n{detail}',
+  'reader.fileTooLarge': '文件过大（{actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.archiveEntries': '压缩包条目过多（实际 {actual}；上限 {limit}）。',
+  'reader.limit.archiveTotalBytes':
+    '压缩包展开后的总大小超限（实际 {actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.archiveEntryBytes':
+    '压缩包中的单个条目过大（实际 {actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.archiveCompressionRatio':
+    '压缩包中的条目压缩比不安全（实际 {actual}:1；上限 {limit}:1）。',
+  'reader.limit.readerImageBytes':
+    '书籍中的图片过大（实际 {actual} 字节；上限 {limit} 字节）。',
+  'reader.limit.pdfPages': 'PDF 页数过多（实际 {actual}；上限 {limit}）。',
+  'reader.limit.cbzPages': 'CBZ 图片页数过多（实际 {actual}；上限 {limit}）。',
+  'reader.capability.mobiDrm': '此 MOBI 文件受 DRM 保护，无法打开。',
+  'reader.capability.mobiKf8':
+    '暂不支持 KF8/MOBI8；LightInk 当前仅支持未加密的 PalmDOC/MOBI6。',
+  'reader.capability.mobiHuff':
+    '暂不支持使用 HUFF/CDIC 压缩的 MOBI；LightInk 当前仅支持未加密的 PalmDOC/MOBI6。',
+  'reader.warning.epubStylesIgnored': '为保证阅读安全，已忽略书籍中的部分出版样式。',
+  'reader.remoteImageLoad': '加载远程图片',
   'annotation.sidebar': '标注',
+  'annotation.closeSidebar': '关闭标注侧栏',
   'annotation.empty': '暂无标注。选中正文即可添加高亮。',
   'annotation.jump': '跳转',
   'annotation.remove': '移除',
@@ -331,8 +444,8 @@ const zhCN: Dict = {
   'annotation.loadFailed': '无法加载本文档的标注。',
   'annotation.saveFailed': '标注保存失败，已保留在内存中。',
   'slash.noMatch': '无匹配项',
-  'math.editTitle': '双击编辑公式源码',
-  'mermaid.editTitle': '双击编辑流程图源码',
+  'math.editTitle': '编辑公式源码',
+  'mermaid.editTitle': '编辑流程图源码',
 
   'help.cheatsheet': '快捷键速查',
   'dialog.close': '关闭',
@@ -400,6 +513,11 @@ const zhCN: Dict = {
 
   'dialog.closeTab.title': '关闭标签',
   'dialog.closeTab.message': '「{title}」有未保存的更改。\n保存后再关闭？',
+  'dialog.exit.title': '尚未保存的文档',
+  'dialog.exit.message':
+    '以下文档包含尚未保存的更改：\n\n{documents}\n\n是否全部保存后退出？',
+  'dialog.exit.saveAll': '全部保存',
+  'dialog.exit.discardAll': '全部丢弃',
   'dialog.save': '保存',
   'dialog.discard': '不保存',
   'dialog.cancel': '取消',
@@ -439,27 +557,27 @@ const zhCN: Dict = {
   'task.unchecked': '未完成任务',
   'task.another': '另一个任务',
   'task.checked': '已完成任务',
+  'task.markComplete': '标记为完成',
+  'task.markIncomplete': '标记为未完成',
   'list.item': '列表项',
   'heading.default': '标题',
   'table.col1': '列1',
   'table.col2': '列2',
-};
+} as const satisfies Readonly<Record<MessageKey, string>>;
 
-const CATALOG: Readonly<Record<LocaleId, Dict>> = {
+const CATALOG: Readonly<Record<LocaleId, Readonly<Record<MessageKey, string>>>> = {
   en,
   'zh-CN': zhCN,
 };
 
-export type MessageKey = keyof typeof en;
-
 export function translate(
   locale: LocaleId,
-  key: string,
+  key: MessageKey,
   vars?: Readonly<Record<string, string>>,
 ): string {
   const dict = CATALOG[locale] ?? CATALOG[DEFAULT_LOCALE];
   const fallback = CATALOG.en;
-  let text = dict[key] ?? fallback[key] ?? key;
+  let text: string = dict[key] ?? fallback[key] ?? key;
   if (vars !== undefined) {
     for (const [k, v] of Object.entries(vars)) {
       text = text.split(`{${k}}`).join(v);

@@ -154,6 +154,22 @@ export function isEditableTarget(target: unknown): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+/** Global commands yield while focus is inside an application modal. */
+export function isModalTarget(target: unknown): boolean {
+  let current = target as {
+    getAttribute?: (name: string) => string | null;
+    parentElement?: unknown;
+    parentNode?: unknown;
+  } | null;
+  const visited = new Set<unknown>();
+  while (current !== null && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    if (current.getAttribute?.('aria-modal') === 'true') return true;
+    current = (current.parentElement ?? current.parentNode ?? null) as typeof current;
+  }
+  return false;
+}
+
 /** Function keys and other non-text global chords that must work inside the editor. */
 export function isGlobalFunctionKey(key: string): boolean {
   return /^f([1-9]|1[0-2])$/.test(key.toLowerCase());
@@ -201,6 +217,7 @@ export class ShortcutRegistry {
    * 功能键（F1–F12 等）即使焦点在编辑器内仍生效（如 F11 全屏）。
    */
   handleKeyDown(event: KeyboardEventLike): boolean {
+    if (isModalTarget(event.target)) return false;
     for (const action of Object.keys(this.handlers) as ShortcutAction[]) {
       const handler = this.handlers[action];
       if (handler === undefined) {

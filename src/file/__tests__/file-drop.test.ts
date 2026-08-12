@@ -36,8 +36,8 @@ describe('planDroppedFiles', () => {
       'h.PDF',
       'i.EPUB',
     ]);
-    expect(plan.reader).toHaveLength(9);
-    expect(plan.unsupported).toEqual([]);
+    expect(plan.reader).toHaveLength(8);
+    expect(plan.unsupported).toEqual(['d.azw3']);
   });
 
   it('扩展名大小写不敏感；无扩展名与末尾点归入不支持', () => {

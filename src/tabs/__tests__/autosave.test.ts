@@ -82,7 +82,7 @@ describe('自动保存偏好（localStorage）', () => {
 });
 
 describe('createAutosave 调度', () => {
-  it('默认关闭时不启动定时器；开启后到点触发 tick 并持久化', () => {
+  it('默认关闭时不启动定时器；开启后到点触发 tick 并持久化', async () => {
     const storage = makeStorage();
     const timer = makeManualTimer();
     const tick = vi.fn();
@@ -102,6 +102,8 @@ describe('createAutosave 调度', () => {
     expect(loadAutosaveEnabled(storage)).toBe(true);
 
     timer.fire();
+    await Promise.resolve();
+    await Promise.resolve();
     timer.fire();
     expect(tick).toHaveBeenCalledTimes(2);
 
@@ -146,6 +148,62 @@ describe('createAutosave 调度', () => {
     timer.fire();
     expect(tick).not.toHaveBeenCalled();
   });
+
+  it('skips overlapping ticks and resumes after the active tick settles', async () => {
+    const timer = makeManualTimer();
+    let finishTick: (() => void) | undefined;
+    const tick = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishTick = resolve;
+        }),
+    );
+    const controller = createAutosave({
+      storage: makeStorage(),
+      tick,
+      initiallyEnabled: true,
+      setIntervalFn: timer.setIntervalFn,
+      clearIntervalFn: timer.clearIntervalFn,
+    });
+
+    timer.fire();
+    timer.fire();
+    expect(tick).toHaveBeenCalledOnce();
+    finishTick!();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    timer.fire();
+    expect(tick).toHaveBeenCalledTimes(2);
+    finishTick!();
+    await controller.dispose();
+  });
+
+  it('dispose waits for the active tick and prevents later ticks', async () => {
+    const timer = makeManualTimer();
+    let finishTick: (() => void) | undefined;
+    const tick = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishTick = resolve;
+        }),
+    );
+    const controller = createAutosave({
+      storage: makeStorage(),
+      tick,
+      initiallyEnabled: true,
+      setIntervalFn: timer.setIntervalFn,
+      clearIntervalFn: timer.clearIntervalFn,
+    });
+    timer.fire();
+    const disposed = controller.dispose();
+    expect(timer.hasTimer()).toBe(false);
+    timer.fire();
+    expect(tick).toHaveBeenCalledOnce();
+
+    finishTick!();
+    await disposed;
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -166,6 +224,7 @@ function makeFakeEditor(initial: string): EditorInstance & { content: string } {
       return state.content;
     },
     getSelection: () => null,
+    getCursorPosition: () => null,
     getLinkAtCursor: () => null,
     getLinkAtPoint: () => null,
     toggleMark: () => undefined,
@@ -192,7 +251,9 @@ interface Harness {
   manager: TabManager;
   editors: Array<EditorInstance & { content: string }>;
   roundtrip: RoundtripDeps;
-  statFile: Mock<(path: string) => Promise<{ mtime_ms: number; size: number }>>;
+  statFile: Mock<
+    (path: string) => Promise<{ mtime_ms: number; size: number; fingerprint: string }>
+  >;
   confirmExternalConflict: Mock<
     (tab: Pick<TabState, 'title' | 'filePath'>) => Promise<ExternalConflictChoice>
   >;
@@ -203,12 +264,16 @@ function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
   const roundtrip: RoundtripDeps = {
     readFile: vi.fn(async () => '磁盘内容'),
     writeFile: vi.fn(async () => undefined),
-    clearSnapshot: vi.fn(async () => undefined),
+    saveDocumentAs: vi.fn(async () => undefined),
     showOpenDialog: vi.fn(async () => null),
     showSaveDialog: vi.fn(async () => null),
     reportError: vi.fn(),
   };
-  const statFile: Harness['statFile'] = vi.fn(async () => ({ mtime_ms: 1000, size: 0 }));
+  const statFile: Harness['statFile'] = vi.fn(async () => ({
+    mtime_ms: 1000,
+    size: 0,
+    fingerprint: '1000:0',
+  }));
   const confirmExternalConflict: Harness['confirmExternalConflict'] = vi.fn(
     async () => 'keep' as ExternalConflictChoice,
   );
@@ -293,7 +358,7 @@ describe('TabManager.autosaveDirtyTabs', () => {
     const harness = makeHarness();
     const tab = await openDirtyFileTab(harness, '/docs/conflict.md', '内存编辑');
     // 打开基线 mtime=1000；模拟外部写入使磁盘更新。
-    harness.statFile.mockResolvedValue({ mtime_ms: 2000, size: 0 });
+    harness.statFile.mockResolvedValue({ mtime_ms: 2000, size: 0, fingerprint: '2000:0' });
 
     await harness.manager.autosaveDirtyTabs();
 
@@ -332,7 +397,7 @@ describe('TabManager.autosaveDirtyTabs', () => {
   it('冲突去重：同一外部变更只弹一次（keep 后下 tick 静默跳过），磁盘再变会再提示', async () => {
     const harness = makeHarness();
     const tab = await openDirtyFileTab(harness, '/docs/dup.md', '内存编辑');
-    harness.statFile.mockResolvedValue({ mtime_ms: 2000, size: 0 });
+    harness.statFile.mockResolvedValue({ mtime_ms: 2000, size: 0, fingerprint: '2000:0' });
 
     await harness.manager.autosaveDirtyTabs(); // 首次：弹冲突（keep），不写盘
     expect(harness.confirmExternalConflict).toHaveBeenCalledTimes(1);
@@ -343,7 +408,11 @@ describe('TabManager.autosaveDirtyTabs', () => {
     expect(harness.confirmExternalConflict).toHaveBeenCalledTimes(1);
     expect(tab.dirty).toBe(true);
 
-    harness.statFile.mockResolvedValue({ mtime_ms: 3000, size: 1 }); // 磁盘再次外部变更
+    harness.statFile.mockResolvedValue({
+      mtime_ms: 3000,
+      size: 1,
+      fingerprint: '3000:1',
+    }); // 磁盘再次外部变更
     await harness.manager.autosaveDirtyTabs(); // 新磁盘态：再次提示
     expect(harness.confirmExternalConflict).toHaveBeenCalledTimes(2);
     expect(harness.roundtrip.writeFile).not.toHaveBeenCalled();

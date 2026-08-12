@@ -19,6 +19,7 @@
  */
 
 import { buildOutline, type OutlineItem } from './outline-model.js';
+import type { MessageKey } from '../i18n/messages.js';
 
 /** 渲染侧标题选择器：与 buildOutline 收集的 heading 一一对应（文档顺序）。 */
 const HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
@@ -58,7 +59,7 @@ export interface OutlineViewDeps {
   /** 重算防抖间隔（毫秒），默认 250。 */
   debounceMs?: number;
   /** Translate UI strings (en / zh-CN). */
-  t?: (key: string) => string;
+  t?: (key: MessageKey) => string;
   /**
    * Persist outline width. Production: window.localStorage.
    * Tests may inject a Map-backed fake.
@@ -158,7 +159,7 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   const storage =
     deps.storage ??
     (typeof window !== 'undefined' ? window.localStorage : undefined);
-  const t = (key: string): string => {
+  const t = (key: MessageKey): string => {
     if (deps.t !== undefined) {
       const translated = deps.t(key);
       // Host may return the key itself for missing entries — fall back.

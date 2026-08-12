@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AnnotationWriteQueue,
   parseAnnotations,
   serializeAnnotations,
   type Annotation,
@@ -14,7 +15,15 @@ const sample: Annotation[] = [
   {
     id: 'h1',
     kind: 'highlight',
-    locator: { format: 'flow', chapter: 0, domPath: 'p#x', start: 10, end: 20 },
+    locator: {
+      format: 'flow',
+      chapter: 0,
+      start: 10,
+      end: 20,
+      quote: '原文片段',
+      prefix: '前文',
+      suffix: '后文',
+    },
     quote: '原文片段',
     createdAt: 1700000000000,
   },
@@ -27,7 +36,14 @@ const sample: Annotation[] = [
   {
     id: 'n1',
     kind: 'note',
-    locator: { format: 'text', start: 100, end: 150 },
+    locator: {
+      format: 'text',
+      start: 100,
+      end: 150,
+      quote: '',
+      prefix: '',
+      suffix: '',
+    },
     note: '一段笔记',
     createdAt: 1700000000002,
   },
@@ -41,12 +57,29 @@ const sample: Annotation[] = [
 
 describe('serialize/parse 往返', () => {
   it('序列化后解析等价（各格式定位器保留）', () => {
-    const back = parseAnnotations(serializeAnnotations(sample));
+    const json = serializeAnnotations(sample);
+    expect(JSON.parse(json)).toMatchObject({ version: 2 });
+    const back = parseAnnotations(json);
     expect(back).toHaveLength(sample.length);
     expect(back.map((a) => a.id)).toEqual(['h1', 'b1', 'n1', 'c1']);
-    expect(back[0]!.locator).toEqual({ format: 'flow', chapter: 0, domPath: 'p#x', start: 10, end: 20 });
+    expect(back[0]!.locator).toEqual({
+      format: 'flow',
+      chapter: 0,
+      start: 10,
+      end: 20,
+      quote: '原文片段',
+      prefix: '前文',
+      suffix: '后文',
+    });
     expect(back[1]!.locator).toEqual({ format: 'pdf', page: 5, quote: '页脚' });
-    expect(back[2]!.locator).toEqual({ format: 'text', start: 100, end: 150 });
+    expect(back[2]!.locator).toEqual({
+      format: 'text',
+      start: 100,
+      end: 150,
+      quote: '',
+      prefix: '',
+      suffix: '',
+    });
     expect(back[3]!.locator).toEqual({ format: 'cbz', page: 12 });
     expect(back[0]!.quote).toBe('原文片段');
     expect(back[2]!.note).toBe('一段笔记');
@@ -74,7 +107,7 @@ describe('parseAnnotations 损坏/空处理', () => {
 
   it('过滤掉结构不合规的条目，保留合规的', () => {
     const mixed = {
-      version: 1,
+      version: 2,
       annotations: [
         sample[0],
         { id: 'bad', kind: 'highlight' }, // 缺 locator/createdAt
@@ -84,5 +117,115 @@ describe('parseAnnotations 损坏/空处理', () => {
     };
     const back = parseAnnotations(JSON.stringify(mixed));
     expect(back.map((a) => a.id)).toEqual(['h1', 'b1']);
+  });
+
+  it('best-effort migrates valid v1 flow locators', () => {
+    const back = parseAnnotations(JSON.stringify({
+      version: 1,
+      annotations: [{
+        id: 'legacy',
+        kind: 'highlight',
+        locator: { format: 'flow', chapter: 2, domPath: 'p:nth-child(1)', start: 4, end: 10 },
+        quote: 'legacy',
+        createdAt: 1,
+      }],
+    }));
+
+    expect(back).toEqual([{
+      id: 'legacy',
+      kind: 'highlight',
+      locator: {
+        format: 'flow',
+        chapter: 2,
+        start: 4,
+        end: 10,
+        quote: 'legacy',
+        prefix: '',
+        suffix: '',
+      },
+      quote: 'legacy',
+      note: undefined,
+      createdAt: 1,
+    }]);
+  });
+});
+
+interface Deferred {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('AnnotationWriteQueue', () => {
+  it('serializes rapid writes for the same content hash', async () => {
+    const queue = new AnnotationWriteQueue();
+    const first = deferred();
+    const firstStarted = deferred();
+    const writes: string[] = [];
+    const write = async (_hash: string, json: string): Promise<void> => {
+      writes.push(json);
+      if (json === 'first') {
+        firstStarted.resolve();
+        await first.promise;
+      }
+    };
+
+    const saveFirst = queue.enqueue('aaaaaaaaaaaaaaaa', 'first', write);
+    const saveSecond = queue.enqueue('aaaaaaaaaaaaaaaa', 'second', write);
+    await firstStarted.promise;
+    expect(writes).toEqual(['first']);
+    first.resolve();
+
+    await expect(Promise.all([saveFirst, saveSecond])).resolves.toEqual([true, true]);
+    expect(writes).toEqual(['first', 'second']);
+  });
+
+  it('skips queued writes invalidated before they start', async () => {
+    const queue = new AnnotationWriteQueue();
+    const first = deferred();
+    const firstStarted = deferred();
+    const writes: string[] = [];
+    const write = async (_hash: string, json: string): Promise<void> => {
+      writes.push(json);
+      if (json === 'first') {
+        firstStarted.resolve();
+        await first.promise;
+      }
+    };
+
+    const saveFirst = queue.enqueue('aaaaaaaaaaaaaaaa', 'first', write);
+    const saveSecond = queue.enqueue('aaaaaaaaaaaaaaaa', 'stale', write);
+    await firstStarted.promise;
+    queue.invalidate();
+    first.resolve();
+
+    await expect(saveFirst).resolves.toBe(false);
+    await expect(saveSecond).resolves.toBe(false);
+    expect(writes).toEqual(['first']);
+  });
+
+  it('continues after a failed write', async () => {
+    const queue = new AnnotationWriteQueue();
+    const errors: string[] = [];
+    const writes: string[] = [];
+    const write = async (_hash: string, json: string): Promise<void> => {
+      writes.push(json);
+      if (json === 'bad') throw new Error('disk full');
+    };
+
+    const failed = queue.enqueue('aaaaaaaaaaaaaaaa', 'bad', write, () => errors.push('bad'));
+    const recovered = queue.enqueue('aaaaaaaaaaaaaaaa', 'good', write);
+
+    await expect(failed).resolves.toBe(false);
+    await expect(recovered).resolves.toBe(true);
+    expect(writes).toEqual(['bad', 'good']);
+    expect(errors).toEqual(['bad']);
   });
 });

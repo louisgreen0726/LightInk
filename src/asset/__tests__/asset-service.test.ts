@@ -11,6 +11,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import {
+  assertImageByteLength,
   bytesToBase64,
   createAssetSaver,
   createImageSrcResolver,
@@ -18,7 +19,8 @@ import {
   extFromMime,
   fileNameStem,
   importImageAsset,
-  migrateStagingAssets,
+  MAX_IMAGE_BYTES,
+  saveDocumentAs,
   mimeFromExt,
   readImageBase64,
   saveAsset,
@@ -39,6 +41,11 @@ describe('bytesToBase64', () => {
     expect(bytesToBase64(new TextEncoder().encode('Hello'))).toBe('SGVsbG8=');
     expect(bytesToBase64(new Uint8Array([0xfb, 0xff]))).toBe('+/8=');
     expect(bytesToBase64(new Uint8Array([]))).toBe('');
+  });
+
+  it('accepts the image boundary and rejects one extra byte before encoding', () => {
+    expect(() => assertImageByteLength(MAX_IMAGE_BYTES)).not.toThrow();
+    expect(() => assertImageByteLength(MAX_IMAGE_BYTES + 1)).toThrow(/too large/i);
   });
 
   it('handles buffers larger than the chunk size', () => {
@@ -105,13 +112,13 @@ describe('invoke wrappers', () => {
     await expect(saveAsset(null, 's', 'QUJD', 'png')).rejects.toBe('磁盘已满');
   });
 
-  it('migrateStagingAssets passes session and doc path', async () => {
+  it('saveDocumentAs passes the complete transaction payload', async () => {
     invokeMock.mockResolvedValue(['assets/img-x.png']);
-    const moved = await migrateStagingAssets('untitled-a1', 'C:\\docs\\a.md');
-    expect(moved).toEqual(['assets/img-x.png']);
-    expect(invokeMock).toHaveBeenCalledWith('migrate_staging_assets', {
+    await saveDocumentAs('untitled-a1', 'C:\\docs\\a.md', '# body');
+    expect(invokeMock).toHaveBeenCalledWith('save_document_as', {
       sessionId: 'untitled-a1',
       docPath: 'C:\\docs\\a.md',
+      content: '# body',
     });
   });
 });

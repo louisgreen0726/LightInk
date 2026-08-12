@@ -1,14 +1,17 @@
 /**
  * `cbz` — Comic Book ZIP 解析（ebook-reader T5）。
  *
- * CBZ 是图片 zip：按自然序（page2 < page10）取出图片条目，逐页作为 <img> 渲染。
- * `listImageEntries` 是纯函数（过滤图片 + 自然排序），node 可测；`renderCbzInto`
- * 懒加载 jszip 并把图片以 data URL 插入容器（DOM，真实渲染留手工验证）。
+ * CBZ 是图片 zip：按自然序（page2 < page10）取出图片条目，并仅为视口附近页面
+ * 解压图片和创建 object URL。离开缓存窗口的页面会立即释放 URL。
  */
 
 import { ParseError } from './types.js';
+import { openSafeArchive } from './safe-archive.js';
+import { enforcePageCount } from './page-limits.js';
+import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 
 const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+const CBZ_CACHE_RADIUS = 2;
 
 function extOf(name: string): string {
   const dot = name.lastIndexOf('.');
@@ -65,35 +68,225 @@ export function listImageEntries(names: readonly string[]): string[] {
   return images.sort(naturalCompare);
 }
 
-/**
- * 把 CBZ 字节渲染为容器内的逐页 <img>（jszip 懒加载）。图片以 base64 data URL 内联。
- * 空图片集抛 ParseError。DOM 渲染为手工验证（无 jsdom/canvas）。
- */
-export async function renderCbzInto(bytes: Uint8Array, container: HTMLElement): Promise<void> {
-  const JSZip = (await import('jszip')).default;
-  let zip;
+export interface CbzRenderHandle {
+  readonly totalPages: number;
+  readonly currentPage: number;
+  scrollToPage(page: number): void;
+  destroy(): Promise<void>;
+}
+
+/** Build stable page slots and materialize only a small window of image data. */
+export async function renderCbzInto(
+  bytes: Uint8Array,
+  container: HTMLElement,
+  signal?: AbortSignal,
+): Promise<CbzRenderHandle> {
+  const archive = await openSafeArchive(bytes, 'CBZ', signal);
+  let initialized = false;
   try {
-    zip = await JSZip.loadAsync(bytes);
-  } catch {
-    throw new ParseError('CBZ 文件损坏或不是有效的 zip 容器');
-  }
-  const images = listImageEntries(Object.keys(zip.files));
-  if (images.length === 0) {
-    throw new ParseError('CBZ 未找到图片页');
-  }
-  container.replaceChildren();
-  for (const name of images) {
-    const file = zip.file(name);
-    if (file === null) {
-      continue;
+    const images = listImageEntries(archive.entries.map((entry) => entry.filename));
+    if (images.length === 0) {
+      throw new ParseError('CBZ 未找到图片页');
     }
-    const data = await file.async('base64');
-    const ext = extOf(name);
-    const mime = ext === 'jpg' ? 'jpeg' : ext;
-    const img = document.createElement('img');
-    img.className = 'lightink-reader-page';
-    img.alt = name;
-    img.src = `data:image/${mime};base64,${data}`;
-    container.appendChild(img);
+    enforcePageCount('cbz', images.length);
+    container.replaceChildren();
+    const slots = images.map((_name, index) => {
+      const slot = document.createElement('div');
+      slot.className = 'lightink-reader-page-slot lightink-reader-cbz-slot';
+      slot.dataset.pageIndex = String(index);
+      slot.setAttribute('aria-label', `${index + 1} / ${images.length}`);
+      container.appendChild(slot);
+      return slot;
+    });
+
+    const materialized = new Map<number, { image: HTMLImageElement; url: string }>();
+    const pending = new Map<number, Promise<void>>();
+    const visible = new Set<number>();
+    let wantedPages = new Set<number>([0]);
+    let currentPage = 1;
+    let destroyed = false;
+    let destruction: Promise<void> | null = null;
+    let observer: IntersectionObserver | null = null;
+
+    const releasePage = (index: number): void => {
+      const page = materialized.get(index);
+      if (page === undefined) {
+        return;
+      }
+      materialized.delete(index);
+      page.image.remove();
+      URL.revokeObjectURL(page.url);
+    };
+
+    const loadPage = (index: number): Promise<void> => {
+      if (
+        index < 0 ||
+        index >= images.length ||
+        destroyed ||
+        materialized.has(index)
+      ) {
+        return Promise.resolve();
+      }
+      const existing = pending.get(index);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const operation = (async () => {
+        throwIfReaderLoadCancelled(signal);
+        const name = images[index]!;
+        const file = archive.file(name);
+        if (file === null) {
+          return;
+        }
+        const data = await file.readBytes(signal);
+        throwIfReaderLoadCancelled(signal);
+        if (destroyed || !wantedPages.has(index)) {
+          return;
+        }
+        const ext = extOf(name);
+        const mime = ext === 'jpg' ? 'jpeg' : ext;
+        const imageBytes = Uint8Array.from(data);
+        const url = URL.createObjectURL(
+          new Blob([imageBytes.buffer], { type: `image/${mime}` }),
+        );
+        if (destroyed || signal?.aborted === true) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        const image = document.createElement('img');
+        image.className = 'lightink-reader-page';
+        image.alt = name;
+        image.src = url;
+        image.addEventListener(
+          'load',
+          () => {
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              slots[index]!.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+            }
+          },
+          { once: true },
+        );
+        materialized.set(index, { image, url });
+        slots[index]!.appendChild(image);
+      })().finally(() => {
+        pending.delete(index);
+      });
+      pending.set(index, operation);
+      return operation;
+    };
+
+    const loadWindow = (center: number): void => {
+      const wanted = new Set<number>();
+      const centers = visible.size === 0 ? [center] : [...visible];
+      for (const visibleIndex of centers) {
+        for (
+          let index = Math.max(0, visibleIndex - CBZ_CACHE_RADIUS);
+          index <= Math.min(images.length - 1, visibleIndex + CBZ_CACHE_RADIUS);
+          index += 1
+        ) {
+          wanted.add(index);
+        }
+      }
+      for (const index of materialized.keys()) {
+        if (!wanted.has(index)) {
+          releasePage(index);
+        }
+      }
+      wantedPages = wanted;
+      for (const index of wanted) {
+        void loadPage(index).catch((error: unknown) => {
+          if (signal?.aborted !== true && !destroyed) {
+            // eslint-disable-next-line no-console
+            console.error('[lightink/reader] CBZ page decode failed', error);
+          }
+        });
+      }
+    };
+
+    const syncCurrentPage = (): void => {
+      const scrollTop = container.scrollTop;
+      let closest = 0;
+      let distance = Number.POSITIVE_INFINITY;
+      for (let index = 0; index < slots.length; index += 1) {
+        const slot = slots[index]!;
+        const nextDistance = Math.abs(slot.offsetTop - scrollTop);
+        if (nextDistance < distance) {
+          closest = index;
+          distance = nextDistance;
+        }
+      }
+      currentPage = closest + 1;
+      if (observer === null) {
+        loadWindow(closest);
+      }
+    };
+    container.addEventListener('scroll', syncCurrentPage, { passive: true });
+
+    if (typeof IntersectionObserver !== 'undefined') {
+      observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            const index = Number((entry.target as HTMLElement).dataset.pageIndex);
+            if (entry.isIntersecting) {
+              visible.add(index);
+              currentPage = index + 1;
+            } else {
+              visible.delete(index);
+            }
+          }
+          loadWindow(currentPage - 1);
+        },
+        { root: container, rootMargin: '200% 0px 200% 0px' },
+      );
+      slots.forEach((slot) => observer?.observe(slot));
+    }
+
+    // Ensure the first page is visible even before the observer's initial callback.
+    await loadPage(0);
+    loadWindow(0);
+
+    const destroy = (): Promise<void> => {
+      if (destruction !== null) {
+        return destruction;
+      }
+      destroyed = true;
+      observer?.disconnect();
+      container.removeEventListener('scroll', syncCurrentPage);
+      for (const index of [...materialized.keys()]) {
+        releasePage(index);
+      }
+      destruction = (async () => {
+        await Promise.allSettled(pending.values());
+        await archive.close().catch(() => undefined);
+      })();
+      return destruction;
+    };
+    const onAbort = (): void => {
+      void destroy();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    initialized = true;
+    return {
+      totalPages: images.length,
+      get currentPage() {
+        return currentPage;
+      },
+      scrollToPage(page) {
+        const index = Math.min(images.length - 1, Math.max(0, Math.floor(page) - 1));
+        currentPage = index + 1;
+        visible.clear();
+        loadWindow(index);
+        slots[index]?.scrollIntoView({ block: 'start' });
+      },
+      destroy: async () => {
+        signal?.removeEventListener('abort', onAbort);
+        await destroy();
+      },
+    };
+  } finally {
+    if (!initialized) {
+      await archive.close().catch(() => undefined);
+    }
   }
 }

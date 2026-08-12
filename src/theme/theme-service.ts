@@ -105,9 +105,14 @@ export class ThemeService {
   constructor(deps: ThemeServiceDeps) {
     this.deps = deps;
     const saved = deps.storage?.getItem(THEME_STORAGE_KEY) ?? null;
-    // 非法/缺失存储值一律回退默认护眼浅色。
-    this.current = isBuiltinThemeId(saved) ? saved : DEFAULT_THEME_ID;
     this.customPath = deps.storage?.getItem(CUSTOM_THEME_PATH_KEY) ?? null;
+    const savedCustom = saved === CUSTOM_THEME_ID && this.customPath !== null;
+    // Custom CSS is injected asynchronously by restorePersistedCustomTheme.
+    this.current = savedCustom
+      ? CUSTOM_THEME_ID
+      : isBuiltinThemeId(saved)
+        ? saved
+        : DEFAULT_THEME_ID;
     this.deps.root.setAttribute('data-theme', this.current);
   }
 
@@ -177,6 +182,26 @@ export class ThemeService {
     const cssText = await this.deps.readFile(target);
     this.loadCustomTheme(cssText, target);
     return true;
+  }
+
+  /** Restore a persisted custom file after startup dependency construction. */
+  async restorePersistedCustomTheme(): Promise<boolean> {
+    if (
+      this.current !== CUSTOM_THEME_ID ||
+      this.customPath === null ||
+      this.deps.readFile === undefined
+    ) {
+      return false;
+    }
+    try {
+      const cssText = await this.deps.readFile(this.customPath);
+      this.loadCustomTheme(cssText, this.customPath);
+      return true;
+    } catch (error) {
+      // Retain the path for an explicit retry without claiming unloaded CSS is active.
+      this.apply(DEFAULT_THEME_ID);
+      throw error;
+    }
   }
 
   /** 移除自定义主题并回到默认护眼浅色。 */
