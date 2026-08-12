@@ -109,6 +109,7 @@ function makeHarness(overrides: Partial<TabManagerDeps> = {}): Harness {
       snapshots.delete(key);
     }),
     readStaleSnapshot: vi.fn(async () => null),
+    reportError: vi.fn(),
     // R13：默认 stat 返回稳定基线（mtime=1000），外部变更测试用 overrides 覆盖。
     statFile: vi.fn(async () => ({
       mtime_ms: 1000,
