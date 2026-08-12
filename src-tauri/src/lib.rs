@@ -150,6 +150,20 @@ mod tests {
     use super::validate_external_url;
 
     #[test]
+    fn main_window_can_destroy_after_close_confirmation() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("default capability must be valid JSON");
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("default capability permissions must be an array");
+
+        assert!(permissions.iter().any(|permission| {
+            permission.as_str() == Some("core:window:allow-destroy")
+        }));
+    }
+
+    #[test]
     fn accepts_only_canonical_browser_schemes() {
         assert_eq!(
             validate_external_url("HTTPS://Example.COM/path")
