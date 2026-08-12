@@ -158,9 +158,9 @@ mod tests {
             .as_array()
             .expect("default capability permissions must be an array");
 
-        assert!(permissions.iter().any(|permission| {
-            permission.as_str() == Some("core:window:allow-destroy")
-        }));
+        assert!(permissions
+            .iter()
+            .any(|permission| { permission.as_str() == Some("core:window:allow-destroy") }));
     }
 
     #[test]

@@ -13,11 +13,12 @@ LightInk is a Tauri desktop application. Frontend TypeScript lives in `src/`, or
 - `npm test`: run all Vitest suites once; use `npm test -- src/editor` to target a feature.
 - `npm run test:watch`: rerun frontend tests during development.
 - `cargo test --manifest-path src-tauri/Cargo.toml`: run backend tests.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: verify Rust formatting; CI fails the build on any diff, so run `cargo fmt --manifest-path src-tauri/Cargo.toml` before committing Rust changes.
 - `npm run tauri:build`: produce platform-specific installers.
 
 ## Coding Style & Naming Conventions
 
-Use strict TypeScript and ES modules. Follow existing files: two-space indentation, semicolons, single quotes, and explicit types at public boundaries. Name files and modules in kebab-case (`file-service.ts`), functions and variables in camelCase, and types/classes in PascalCase. Rust code should follow `rustfmt` defaults and snake_case naming. No standalone formatter or linter is configured; `npm run build` is the required static check. Keep feature logic in its owning directory rather than adding broad utility modules.
+Use strict TypeScript and ES modules. Follow existing files: two-space indentation, semicolons, single quotes, and explicit types at public boundaries. Name files and modules in kebab-case (`file-service.ts`), functions and variables in camelCase, and types/classes in PascalCase. Rust code should follow `rustfmt` defaults and snake_case naming; `cargo fmt -- --check` is enforced in CI and must pass clean. No standalone formatter or linter is configured; `npm run build` is the required static check. Keep feature logic in its owning directory rather than adding broad utility modules.
 
 ## Testing Guidelines
 
@@ -29,6 +30,6 @@ History generally uses concise, imperative subjects with Conventional Commit pre
 
 ## Version Release Process
 
-Keep the release version identical in `package.json`, both root entries in `package-lock.json`, `src-tauri/Cargo.toml`, the LightInk entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Before tagging, run `npm run build`, `npm test`, and `cargo test --manifest-path src-tauri/Cargo.toml`. Commit with a subject such as `chore(release): v0.1.1`, push `main`, then create and push an annotated tag: `git tag -a v0.1.1 -m "LightInk v0.1.1"` and `git push origin v0.1.1`.
+Keep the release version identical in `package.json`, both root entries in `package-lock.json`, `src-tauri/Cargo.toml`, the LightInk entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Before tagging, run `npm run build`, `npm test`, `cargo test --manifest-path src-tauri/Cargo.toml`, and `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`. Commit with a subject such as `chore(release): v0.1.1`, push `main`, then create and push an annotated tag: `git tag -a v0.1.1 -m "LightInk v0.1.1"` and `git push origin v0.1.1`.
 
 Do not manually create or publish the GitHub Release before pushing the tag; `.github/workflows/release.yml` owns Release creation and asset upload. Wait for both the platform build matrix and `Verify release assets` job to pass. Confirm the public Release contains `.msi`, `.exe`, `.dmg`, `.deb`, and `.AppImage` files. Never move an existing release tag; fix the issue and publish a new patch version.
