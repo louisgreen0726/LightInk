@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildOutline } from '../outline-model.js';
+import { buildOutline, leafHeadingAnchors } from '../outline-model.js';
 
 describe('buildOutline', () => {
   it('无标题时返回空数组', () => {
@@ -103,5 +103,26 @@ describe('buildOutline', () => {
       [2, '引用内标题', 1],
       [1, '末尾', 2],
     ]);
+  });
+});
+
+describe('leafHeadingAnchors', () => {
+  it('有更深子标题的标题不是叶子；叶子标题返回其 anchor', () => {
+    const items = buildOutline('# A\n\n## A1\n\n### A1a\n\n# B\n\n## B1\n');
+    expect([...leafHeadingAnchors(items)].sort((a, b) => a - b)).toEqual([2, 4]);
+  });
+
+  it('全部平级标题均为叶子', () => {
+    const items = buildOutline('# 一\n\n# 二\n\n# 三\n');
+    expect([...leafHeadingAnchors(items)].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it('单标题为叶子', () => {
+    const items = buildOutline('# 唯一\n');
+    expect([...leafHeadingAnchors(items)]).toEqual([0]);
+  });
+
+  it('空大纲返回空集合', () => {
+    expect(leafHeadingAnchors([]).size).toBe(0);
   });
 });

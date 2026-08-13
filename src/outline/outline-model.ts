@@ -78,3 +78,20 @@ export function buildOutline(markdown: string): OutlineItem[] {
     anchor: index,
   }));
 }
+
+/**
+ * 计算大纲中的「叶子标题」序号锚点集合：某标题之后到下一个同级或更高级标题
+ * 之前没有任何更深子标题（level 更大），即该标题无子标题。无子标题的标题
+ * 在大纲中不渲染展开/折叠三角（outline-view 据此跳过折叠标记）。
+ */
+export function leafHeadingAnchors(items: readonly OutlineItem[]): Set<number> {
+  const leaves = new Set<number>();
+  for (let i = 0; i < items.length; i++) {
+    const next = items[i + 1];
+    // 下一个标题更深 → 有子标题；否则（同级 / 更高级 / 已是末尾）→ 叶子。
+    if (next === undefined || next.level <= items[i].level) {
+      leaves.add(items[i].anchor);
+    }
+  }
+  return leaves;
+}

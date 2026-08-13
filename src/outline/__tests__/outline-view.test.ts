@@ -222,23 +222,27 @@ describe('createOutlineView 渲染', () => {
 });
 
 describe('createOutlineView 折叠标记（T4/R2）', () => {
-  it('注入 toggleFoldAtOrdinal 时渲染折叠标记，折叠序号标 is-folded', () => {
+  it('注入 toggleFoldAtOrdinal 时为有子标题的标题渲染折叠标记，叶子标题不渲染', () => {
     const toggleFoldAtOrdinal = vi.fn();
     const view = createOutlineView({
       doc: fakeDocument(),
       getActiveHost: () => null,
-      // 同级标题：折叠「一」不影响「二」的可见性。
-      getActiveMarkdown: () => '# 一\n\n# 二\n',
+      // 一 / 二 有子标题；一.1 / 二.1 是叶子（无子标题）。
+      getActiveMarkdown: () => '# 一\n\n## 一.1\n\n# 二\n\n## 二.1\n',
       toggleFoldAtOrdinal,
       getFoldedOrdinals: () => [0], // 第 0 个标题「一」已折叠
     });
     const items = bodyOf(view).children;
-    const marker0 = items[0]?.firstChild as FakeElement;
-    const marker1 = items[1]?.firstChild as FakeElement;
-    expect(marker0?.classList.contains('lightink-outline-fold')).toBe(true);
-    expect(marker0?.classList.contains('is-folded')).toBe(true);
-    expect(marker1?.classList.contains('lightink-outline-fold')).toBe(true);
-    expect(marker1?.classList.contains('is-folded')).toBe(false);
+    // 「一」（anchor 0，非叶子，已折叠）→ 有标记且 is-folded。
+    expect(items[0]?.firstChild?.classList.contains('lightink-outline-fold')).toBe(true);
+    expect(items[0]?.firstChild?.classList.contains('is-folded')).toBe(true);
+    // 「一.1」（anchor 1，叶子）→ 无标记。
+    expect(items[1]?.firstChild).toBeUndefined();
+    // 「二」（anchor 2，非叶子，未折叠）→ 有标记但非 is-folded。
+    expect(items[2]?.firstChild?.classList.contains('lightink-outline-fold')).toBe(true);
+    expect(items[2]?.firstChild?.classList.contains('is-folded')).toBe(false);
+    // 「二.1」（anchor 3，叶子）→ 无标记。
+    expect(items[3]?.firstChild).toBeUndefined();
     view.destroy();
   });
 

@@ -19,7 +19,7 @@
  * 样式类见 src/ui/theme.css，配色全部取主题令牌。
  */
 
-import { buildOutline, type OutlineItem } from './outline-model.js';
+import { buildOutline, leafHeadingAnchors, type OutlineItem } from './outline-model.js';
 import type { MessageKey } from '../i18n/messages.js';
 
 /** 渲染侧标题选择器：与 buildOutline 收集的 heading 一一对应（文档顺序）。 */
@@ -270,6 +270,8 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
       return;
     }
     const foldedOrdinals = new Set(deps.getFoldedOrdinals?.() ?? []);
+    // 叶子标题（无子标题）不渲染折叠三角。
+    const leafAnchors = leafHeadingAnchors(items);
     // 大纲与编辑器折叠保持独立：编辑器侧折叠只隐藏编辑器正文，大纲始终渲染
     // 完整标题列表（不在大纲中级联隐藏子条目），折叠态仅以左侧标记呈现。
     body.replaceChildren(
@@ -283,8 +285,9 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
         el.addEventListener('click', () => scrollToItem(item));
         // T4/R2：折叠标记作为 item 的首个子 span（仅在注入了 toggleFoldAtOrdinal 时
         // 渲染——测试不注入，故 body.children 仍是纯 item 按钮，既有断言不变）。
-        // 标记点击 stopPropagation 不触发条目跳转，单独联动编辑器折叠。
-        if (deps.toggleFoldAtOrdinal !== undefined) {
+        // 叶子标题（无子标题）无折叠三角；标记点击 stopPropagation 不触发条目
+        // 跳转，单独联动编辑器折叠。
+        if (deps.toggleFoldAtOrdinal !== undefined && !leafAnchors.has(item.anchor)) {
           const isFolded = foldedOrdinals.has(item.anchor);
           const marker = doc.createElement('span');
           marker.classList.add('lightink-outline-fold');
