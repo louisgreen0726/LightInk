@@ -10,6 +10,7 @@
 
 import { ParseError } from './types.js';
 import { enforcePageCount } from './page-limits.js';
+import { findPdfMatches } from '../search-panel.js';
 import {
   isReaderLoadCancelled,
   ReaderLoadCancelledError,
@@ -477,20 +478,15 @@ export async function renderPdfInto(
   };
 
   const search = async (query: string): Promise<PdfSearchMatch[]> => {
-    const needle = query.trim().toLowerCase();
-    if (needle.length === 0 || destroyed || isAborted()) {
+    if (query.trim().length === 0 || destroyed || isAborted()) {
       return [];
     }
-    const matches: PdfSearchMatch[] = [];
+    // 逐页懒取文本后复用 findPdfMatches（单一匹配实现，测试锁定行为）。
+    const texts: string[] = [];
     for (let index = 0; index < total && !destroyed && !isAborted(); index += 1) {
-      const text = (await ensurePageText(index)).toLowerCase();
-      let at = text.indexOf(needle);
-      while (at >= 0) {
-        matches.push({ page: index + 1, start: at, end: at + needle.length });
-        at = text.indexOf(needle, at + needle.length);
-      }
+      texts.push(await ensurePageText(index));
     }
-    return matches;
+    return findPdfMatches(texts, query);
   };
 
   return {

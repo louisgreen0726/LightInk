@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  canWrapSearchMark,
   createSearchPanel,
   findPdfMatches,
   nextMatchIndex,
@@ -99,6 +100,23 @@ describe('搜索命中 overlay', () => {
     expect(marked.className).toBe('lightink-reader-search-mark');
     // 重复包裹同一 key：调用方经 existing 检查跳过（此处直接验证不再嵌套 span）。
     expect(root.querySelector('[data-search-key="1:4:8"] span')).toBeNull();
+  });
+
+  it('canWrapSearchMark：部分填充层跳过、填充完成后可包裹、已包裹后幂等拒绝', () => {
+    // pdfjs 异步分批追加：层当前只有 6 个字符，命中 [4,8) 未填充完。
+    const root = layer('前缀文字', '命中');
+    expect(canWrapSearchMark(root, '1:4:8', 8)).toBe(false);
+
+    // 后续批次到达，层填充完成。
+    const span = document.createElement('span');
+    span.textContent = '目标';
+    root.appendChild(span);
+    expect(canWrapSearchMark(root, '1:4:8', 8)).toBe(true);
+
+    // 包裹后同 key 幂等拒绝（observer 重触发不再包裹）。
+    const range = offsetRangeFrom(root, 4, 8)!;
+    wrapTextRangeWithSpan(root, range, 'lightink-reader-search-mark', '1:4:8');
+    expect(canWrapSearchMark(root, '1:4:8', 8)).toBe(false);
   });
 });
 

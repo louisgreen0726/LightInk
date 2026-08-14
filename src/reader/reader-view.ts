@@ -36,10 +36,10 @@ import {
 } from './selection-toolbar.js';
 import { showNoteDialog } from './note-dialog.js';
 import {
+  canWrapSearchMark,
   createSearchPanel,
   nextMatchIndex,
   offsetRangeFrom,
-  textLengthOf,
   unwrapSpans,
   wrapTextRangeWithSpan,
   type PdfSearchMatch,
@@ -229,6 +229,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let pdfSearch: { query: string; matches: PdfSearchMatch[]; active: number } | null = null;
   let searchGeneration = 0;
   let searchDebounce: ReturnType<typeof setTimeout> | null = null;
+  /** 激活跳转待滚动的命中 key（页:起:止）：命中首次就绪时滚动一次后清除。 */
+  let pendingSearchScrollKey: string | null = null;
   const annotationWriteQueue = new AnnotationWriteQueue();
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
@@ -779,10 +781,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   /**
    * 在当前已渲染文本层上叠加搜索命中 overlay（全部命中 + 当前命中双样式）。
-   * scrollToCurrent 仅在命中被激活（查询/跳转）时为 true——observer 驱动的重渲染
-   * 不得回吸视口，否则搜索期间任意页懒渲染都会把阅读位置拽回当前命中。
+   * 幂等：已有 key 戳记的 overlay 只校正类名不重包裹（防 observer 自激循环）；
+   * 层文本未填充到命中末尾时跳过（防部分包裹定格，等后续批次重试）。
+   * 激活滚动经 pendingScrollKey：命中首次就绪（含远页文本层异步出现）时滚动一次，
+   * observer 驱动的重渲染不回吸视口。
    */
-  const renderPdfSearchMarks = (scrollToCurrent = false): void => {
+  const renderPdfSearchMarks = (): void => {
     const state = pdfSearch;
     if (state === null) {
       return;
@@ -809,31 +813,29 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           span.classList.toggle('lightink-reader-search-mark--current', isCurrent);
           span.classList.toggle('lightink-reader-search-mark', !isCurrent);
         }
+      } else if (canWrapSearchMark(layer, key, match.end)) {
+        const located = offsetRangeFrom(layer, match.start, match.end);
+        if (located !== null) {
+          wrapTextRangeWithSpan(
+            layer,
+            located,
+            match === current
+              ? 'lightink-reader-search-mark--current'
+              : 'lightink-reader-search-mark',
+            key,
+          );
+        }
+      } else {
+        // 层文本尚未填充到命中末尾：等 observer 后续批次重试。
         continue;
       }
-      // pdfjs 异步分批追加 span：层文本尚未填充到命中末尾时跳过，
-      // 等 observer 在后续批次到达时重试（避免部分包裹被 key 戳记永久定格）。
-      if (textLengthOf(layer) < match.end) {
-        continue;
+      // 激活滚动：该命中即 pending 目标且为当前命中时，滚动一次即清除。
+      if (match === current && pendingSearchScrollKey === key) {
+        pendingSearchScrollKey = null;
+        layer
+          .querySelector('.lightink-reader-search-mark--current')
+          ?.scrollIntoView({ block: 'nearest' });
       }
-      const located = offsetRangeFrom(layer, match.start, match.end);
-      if (located === null) {
-        continue;
-      }
-      wrapTextRangeWithSpan(
-        layer,
-        located,
-        match === current
-          ? 'lightink-reader-search-mark--current'
-          : 'lightink-reader-search-mark',
-        key,
-      );
-    }
-    if (scrollToCurrent) {
-      // 当前命中滚入视口（页高超过视口时页级跳转不足以定位）。
-      pageHost
-        .querySelector('.lightink-reader-search-mark--current')
-        ?.scrollIntoView({ block: 'nearest' });
     }
   };
 
@@ -859,10 +861,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         pdfSearch = { query, matches, active: matches.length > 0 ? 0 : -1 };
         searchPanel?.setStatus(matches.length, pdfSearch.active);
         if (matches.length > 0) {
-          handle.scrollToPage(matches[0]!.page);
+          const first = matches[0]!;
+          pendingSearchScrollKey = `${first.page}:${first.start}:${first.end}`;
+          handle.scrollToPage(first.page);
           syncPageState();
         }
-        renderPdfSearchMarks(true);
+        renderPdfSearchMarks();
       })();
     }, 200);
   };
@@ -879,9 +883,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     state.active = index;
     const match = state.matches[index]!;
+    pendingSearchScrollKey = `${match.page}:${match.start}:${match.end}`;
     pdfHandle.scrollToPage(match.page);
     syncPageState();
-    renderPdfSearchMarks(true);
+    renderPdfSearchMarks();
     searchPanel?.setStatus(state.matches.length, index);
   };
 
@@ -891,6 +896,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       clearTimeout(searchDebounce);
       searchDebounce = null;
     }
+    pendingSearchScrollKey = null;
     pdfSearch = null;
     clearPdfSearchMarks();
     searchPanel?.close();
@@ -912,6 +918,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       root.appendChild(searchPanel.element);
     }
     searchPanel.open();
+    // 重开面板：此前 closePdfSearch 已清状态，过期 N/M 计数需以当前 query 重跑恢复。
+    const query = searchPanel.getQuery();
+    if (query.trim() !== '') {
+      runPdfSearch(query);
+    } else {
+      searchPanel.setStatus(0, -1);
+    }
   };
 
   /** 在 sandbox 正文文本节点中包裹高亮 quote（flow/txt）；PDF 走文本层渲染。 */
@@ -1440,6 +1453,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         clearTimeout(searchDebounce);
         searchDebounce = null;
       }
+      pendingSearchScrollKey = null;
       pdfSearch = null;
       searchPanel?.destroy();
       searchPanel = null;

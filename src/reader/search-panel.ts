@@ -17,22 +17,38 @@ export interface PdfSearchMatch {
   end: number;
 }
 
-/** 在页文本数组（1:1 对应页码）中查找全部命中（大小写不敏感），按页序返回。空查询返回空。 */
+/**
+ * 在页文本数组（1:1 对应页码）中查找全部命中（大小写不敏感），按页序返回。空查询返回空。
+ * 大小写变形长度保护：小写化改变 UTF-16 长度的文本/查询（如 İ）会使偏移与 DOM 文本
+ * 坐标系错位，此时该页退化为大小写敏感匹配，保持坐标系一致。
+ */
 export function findPdfMatches(
   pageTexts: readonly string[],
   query: string,
 ): PdfSearchMatch[] {
-  const needle = query.trim().toLowerCase();
-  if (needle.length === 0) {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
     return [];
   }
+  const loweredNeedle = trimmed.toLowerCase();
   const matches: PdfSearchMatch[] = [];
   for (let index = 0; index < pageTexts.length; index += 1) {
-    const text = pageTexts[index]!.toLowerCase();
-    let at = text.indexOf(needle);
+    const text = pageTexts[index]!;
+    const loweredText = text.toLowerCase();
+    let hay: string;
+    let needle: string;
+    if (loweredText.length === text.length && loweredNeedle.length === trimmed.length) {
+      hay = loweredText;
+      needle = loweredNeedle;
+    } else {
+      // 小写化改变 UTF-16 长度（如 İ）：退化大小写敏感，偏移保持与 DOM 文本对齐。
+      hay = text;
+      needle = trimmed;
+    }
+    let at = hay.indexOf(needle);
     while (at >= 0) {
       matches.push({ page: index + 1, start: at, end: at + needle.length });
-      at = text.indexOf(needle, at + needle.length);
+      at = hay.indexOf(needle, at + needle.length);
     }
   }
   return matches;
@@ -116,6 +132,8 @@ export function createSearchPanel(deps: SearchPanelDeps): SearchPanel {
       }
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      // 不冒泡：避免一次 Escape 同时关闭搜索面板与其外层（如标注侧栏）。
+      event.stopPropagation();
       deps.onClose();
     }
   });
@@ -218,6 +236,17 @@ export function textLengthOf(root: Node): number {
     length += node.nodeValue?.length ?? 0;
   }
   return length;
+}
+
+/**
+ * overlay 包裹判定：已有该 key 的 overlay（幂等，防 observer 自激循环）或
+ * 层文本尚未填充到命中末尾（防部分包裹被 key 戳记定格）时不可包裹。
+ */
+export function canWrapSearchMark(layer: HTMLElement, key: string, end: number): boolean {
+  if (layer.querySelector(`[data-search-key="${key.replace(/["\\]/g, '\\$&')}"]`) !== null) {
+    return false;
+  }
+  return textLengthOf(layer) >= end;
 }
 
 /** root 拼接文本的 [start, end) 偏移 → Range（与文本层 anchor 同一坐标系）。 */

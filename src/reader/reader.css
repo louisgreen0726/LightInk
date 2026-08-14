@@ -113,11 +113,14 @@
 }
 
 .lightink-reader-text-layer .lightink-reader-search-mark {
+  /* 脱离后代选择器的绝对定位（对齐 pdfjs .appended 约定），命中片段保持在文档流内。 */
+  position: initial;
   background: var(--lightink-selection);
   color: transparent;
 }
 
 .lightink-reader-text-layer .lightink-reader-search-mark--current {
+  position: initial;
   background: var(--lightink-accent);
   color: transparent;
   outline: 1px solid var(--lightink-fg);
