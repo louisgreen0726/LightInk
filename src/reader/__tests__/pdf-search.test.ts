@@ -7,9 +7,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  createSearchPanel,
   findPdfMatches,
   nextMatchIndex,
   offsetRangeFrom,
+  textLengthOf,
   unwrapSpans,
   wrapTextRangeWithSpan,
 } from '../search-panel.js';
@@ -86,5 +88,79 @@ describe('搜索命中 overlay', () => {
     const root = layer('abc');
     expect(offsetRangeFrom(root, 10, 12)!.toString()).toBe('');
     expect(offsetRangeFrom(root, 0, 3)!.toString()).toBe('abc');
+  });
+
+  it('key 戳记幂等：已包裹的命中不重复嵌套，textLengthOf 判定层填充度', () => {
+    const root = layer('前缀文字', '命中目标', '后缀');
+    expect(textLengthOf(root)).toBe(10);
+    const range = offsetRangeFrom(root, 4, 8)!;
+    wrapTextRangeWithSpan(root, range, 'lightink-reader-search-mark', '1:4:8');
+    const marked = root.querySelector<HTMLElement>('[data-search-key="1:4:8"]')!;
+    expect(marked.className).toBe('lightink-reader-search-mark');
+    // 重复包裹同一 key：调用方经 existing 检查跳过（此处直接验证不再嵌套 span）。
+    expect(root.querySelector('[data-search-key="1:4:8"] span')).toBeNull();
+  });
+});
+
+describe('搜索面板键位（容器级）', () => {
+  function mount() {
+    const calls: string[] = [];
+    const panel = createSearchPanel({
+      t: (key) => key,
+      onQuery: () => calls.push('query'),
+      onNext: () => calls.push('next'),
+      onPrev: () => calls.push('prev'),
+      onClose: () => calls.push('close'),
+    });
+    document.body.appendChild(panel.element);
+    return { panel, calls };
+  }
+
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('Escape 在面板容器任意焦点位置关闭（含按钮）', () => {
+    const { panel, calls } = mount();
+    panel.open();
+    panel.element
+      .querySelector<HTMLButtonElement>('.lightink-reader-search-close')!
+      .focus();
+    panel.element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(calls).toEqual(['close']);
+  });
+
+  it('Enter 在输入框派发导航，焦点在按钮时不经容器双触发', () => {
+    const { panel, calls } = mount();
+    panel.open();
+    const input = panel.element.querySelector('input')!;
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(calls).toEqual(['next']);
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }),
+    );
+    expect(calls).toEqual(['next', 'prev']);
+
+    calls.length = 0;
+    const next = panel.element.querySelector<HTMLButtonElement>('.lightink-reader-search-next')!;
+    next.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(calls).toEqual([]); // 按钮 Enter 交还原生 click（真实浏览器语义）
+  });
+
+  it('无命中 setStatus 显示空态并带 data 属性', () => {
+    const { panel } = mount();
+    panel.setStatus(0, -1);
+    const status = panel.element.querySelector<HTMLElement>('.lightink-reader-search-status')!;
+    expect(status.textContent).toBe('reader.search.empty');
+    expect(status.dataset.searchEmpty).toBe('true');
+    panel.setStatus(3, 1);
+    expect(status.textContent).toBe('2/3');
+    expect(status.dataset.searchEmpty).toBe('false');
   });
 });

@@ -39,6 +39,7 @@ import {
   createSearchPanel,
   nextMatchIndex,
   offsetRangeFrom,
+  textLengthOf,
   unwrapSpans,
   wrapTextRangeWithSpan,
   type PdfSearchMatch,
@@ -776,8 +777,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   };
 
-  /** 在当前已渲染文本层上叠加搜索命中 overlay（全部命中 + 当前命中双样式）。 */
-  const renderPdfSearchMarks = (): void => {
+  /**
+   * 在当前已渲染文本层上叠加搜索命中 overlay（全部命中 + 当前命中双样式）。
+   * scrollToCurrent 仅在命中被激活（查询/跳转）时为 true——observer 驱动的重渲染
+   * 不得回吸视口，否则搜索期间任意页懒渲染都会把阅读位置拽回当前命中。
+   */
+  const renderPdfSearchMarks = (scrollToCurrent = false): void => {
     const state = pdfSearch;
     if (state === null) {
       return;
@@ -806,6 +811,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }
         continue;
       }
+      // pdfjs 异步分批追加 span：层文本尚未填充到命中末尾时跳过，
+      // 等 observer 在后续批次到达时重试（避免部分包裹被 key 戳记永久定格）。
+      if (textLengthOf(layer) < match.end) {
+        continue;
+      }
       const located = offsetRangeFrom(layer, match.start, match.end);
       if (located === null) {
         continue;
@@ -819,10 +829,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         key,
       );
     }
-    // 当前命中滚入视口（页高超过视口时页级跳转不足以定位）。
-    pageHost
-      .querySelector('.lightink-reader-search-mark--current')
-      ?.scrollIntoView({ block: 'nearest' });
+    if (scrollToCurrent) {
+      // 当前命中滚入视口（页高超过视口时页级跳转不足以定位）。
+      pageHost
+        .querySelector('.lightink-reader-search-mark--current')
+        ?.scrollIntoView({ block: 'nearest' });
+    }
   };
 
   /** 执行搜索（去抖 200ms：快速输入时不叠加全文档扫描）：命中后跳到首个并渲染 overlay。 */
@@ -831,12 +843,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (handle === null) {
       return;
     }
+    // 入口即换代：等待去抖窗口内的旧 in-flight 结果与未 fire 的旧定时器同代失效。
+    const generation = ++searchGeneration;
     if (searchDebounce !== null) {
       clearTimeout(searchDebounce);
     }
     searchDebounce = setTimeout(() => {
       searchDebounce = null;
-      const generation = ++searchGeneration;
       void (async () => {
         const matches = await handle.search(query);
         if (destroyed || generation !== searchGeneration || handle !== pdfHandle) {
@@ -849,7 +862,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           handle.scrollToPage(matches[0]!.page);
           syncPageState();
         }
-        renderPdfSearchMarks();
+        renderPdfSearchMarks(true);
       })();
     }, 200);
   };
@@ -868,7 +881,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     const match = state.matches[index]!;
     pdfHandle.scrollToPage(match.page);
     syncPageState();
-    renderPdfSearchMarks();
+    renderPdfSearchMarks(true);
     searchPanel?.setStatus(state.matches.length, index);
   };
 

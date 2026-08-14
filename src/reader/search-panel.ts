@@ -207,6 +207,19 @@ export function unwrapSpans(root: ParentNode, className: string): void {
   }
 }
 
+/** root 拼接文本总长（判断 pdfjs 文本层是否已填充到命中末尾，避免部分包裹）。 */
+export function textLengthOf(root: Node): number {
+  const owner = root.nodeType === Node.DOCUMENT_NODE
+    ? (root as Document)
+    : root.ownerDocument ?? document;
+  const walker = owner.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let length = 0;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    length += node.nodeValue?.length ?? 0;
+  }
+  return length;
+}
+
 /** root 拼接文本的 [start, end) 偏移 → Range（与文本层 anchor 同一坐标系）。 */
 export function offsetRangeFrom(root: Node, start: number, end: number): Range | null {
   const owner = root.nodeType === Node.DOCUMENT_NODE
