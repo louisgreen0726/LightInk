@@ -1,10 +1,13 @@
+// @vitest-environment jsdom
+
 /**
  * reader-view 骨架测试：挂载结构（滚动/页两种宿主 + 空态占位）、i18n、销毁移除 DOM。
- * node 环境，最小 fake document（项目无 jsdom/happy-dom）。
+ * 骨架用例沿用最小 fake document；划选工具栏用例（R3）用 jsdom 真实 DOM。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createReaderView } from '../reader-view.js';
+import { createSelectionToolbar, toolbarPosition } from '../selection-toolbar.js';
 
 /** 最小 fake 元素：覆盖 createReaderView 用到的 DOM 表面。 */
 class FakeEl {
@@ -94,17 +97,20 @@ class FakeDoc {
 
 const originalDocument = (globalThis as { document?: unknown }).document;
 
-beforeEach(() => {
-  (globalThis as { document: unknown }).document = new FakeDoc();
-});
+/** 骨架用例沿用 fake document；工具栏用例（文件尾 describe）用 jsdom 真实 DOM。 */
+function useFakeDocument(): void {
+  beforeEach(() => {
+    (globalThis as { document: unknown }).document = new FakeDoc();
+  });
 
-afterEach(() => {
-  if (originalDocument === undefined) {
-    delete (globalThis as { document?: unknown }).document;
-  } else {
-    (globalThis as { document: unknown }).document = originalDocument;
-  }
-});
+  afterEach(() => {
+    if (originalDocument === undefined) {
+      delete (globalThis as { document?: unknown }).document;
+    } else {
+      (globalThis as { document?: unknown }).document = originalDocument;
+    }
+  });
+}
 
 function asHost(): HTMLElement {
   return new FakeEl('div') as unknown as HTMLElement;
@@ -115,6 +121,8 @@ function asFake(el: HTMLElement): FakeEl {
 }
 
 describe('createReaderView 骨架', () => {
+  useFakeDocument();
+
   it('挂载滚动/页两种宿主与空态占位', () => {
     const host = asHost();
     createReaderView(host);
@@ -160,5 +168,71 @@ describe('createReaderView 骨架', () => {
     expect(asFake(host).children).toHaveLength(1);
     await b.destroy();
     expect(asFake(host).children).toHaveLength(0);
+  });
+});
+
+describe('划选工具栏（selection-toolbar）', () => {
+  const buttonByAction = (toolbar: ReturnType<typeof createSelectionToolbar>, action: string) =>
+    toolbar.element.querySelector<HTMLButtonElement>(
+      `.lightink-reader-selection-action--${action}`,
+    );
+
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('显示高亮/笔记按钮，取消高亮按需出现', () => {
+    const toolbar = createSelectionToolbar({ t: (key) => key, onAction: () => undefined });
+    document.body.appendChild(toolbar.element);
+
+    toolbar.showAt({ left: 100, top: 100, width: 80, height: 20 }, { canRemoveHighlight: false });
+    expect(toolbar.isVisible()).toBe(true);
+    expect(buttonByAction(toolbar, 'highlight')!.textContent).toBe('annotation.highlight');
+    expect(buttonByAction(toolbar, 'note')!.textContent).toBe('annotation.note');
+    expect(buttonByAction(toolbar, 'removeHighlight')!.hidden).toBe(true);
+
+    toolbar.showAt({ left: 100, top: 100, width: 80, height: 20 }, { canRemoveHighlight: true });
+    expect(buttonByAction(toolbar, 'removeHighlight')!.hidden).toBe(false);
+    toolbar.hide();
+    expect(toolbar.isVisible()).toBe(false);
+  });
+
+  it('点击动作派发回调并隐藏工具栏', () => {
+    const actions: string[] = [];
+    const toolbar = createSelectionToolbar({ t: (key) => key, onAction: (a) => actions.push(a) });
+    document.body.appendChild(toolbar.element);
+
+    toolbar.showAt({ left: 100, top: 100, width: 80, height: 20 }, { canRemoveHighlight: false });
+    buttonByAction(toolbar, 'highlight')!.click();
+    expect(actions).toEqual(['highlight']);
+    expect(toolbar.isVisible()).toBe(false);
+  });
+
+  it('点击工具栏外部隐藏且不派发动作', () => {
+    const actions: string[] = [];
+    const toolbar = createSelectionToolbar({ t: (key) => key, onAction: (a) => actions.push(a) });
+    document.body.appendChild(toolbar.element);
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+
+    toolbar.showAt({ left: 100, top: 100, width: 80, height: 20 }, { canRemoveHighlight: false });
+    outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(toolbar.isVisible()).toBe(false);
+    expect(actions).toEqual([]);
+  });
+
+  it('工具栏定位：优先选区上方，越顶下移并夹在视口内', () => {
+    const rect = { left: 200, top: 300, width: 100, height: 20 };
+    const toolbarSize = { width: 160, height: 32 };
+    const viewport = { width: 1280, height: 800 };
+    // 上方放得下：贴选区上沿。
+    expect(toolbarPosition(rect, toolbarSize, viewport)).toEqual({ left: 170, top: 264 });
+    // 选区贴近顶部：下移到选区下方。
+    expect(toolbarPosition({ ...rect, top: 10 }, toolbarSize, viewport)).toEqual({ left: 170, top: 34 });
+    // 视口窄于工具栏：左移被夹在边距。
+    expect(toolbarPosition({ left: -50, top: 300, width: 0, height: 20 }, toolbarSize, viewport)).toEqual({
+      left: 4,
+      top: 264,
+    });
   });
 });

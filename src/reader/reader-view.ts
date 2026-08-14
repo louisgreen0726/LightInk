@@ -29,6 +29,10 @@ import {
   resolveTextQuoteRange,
 } from './annotation-locator.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
+import {
+  createSelectionToolbar,
+  type SelectionToolbar,
+} from './selection-toolbar.js';
 import type {
   ReaderInstance,
   ReaderLoadOptions,
@@ -173,6 +177,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let sidebarBackdrop: HTMLButtonElement | null = null;
   /** 标注侧栏默认隐藏；桌面占据固定列，窄窗切换为覆盖式 drawer。 */
   let sidebarVisible = false;
+  /** 划选工具栏（R3）：划选后确认再产生标注；懒创建（标注启用时）。 */
+  let selectionToolbar: SelectionToolbar | null = null;
+  /** mouseup 时捕获的待确认划选（locator + quote + 命中的已有高亮 id）。 */
+  let pendingSelection: {
+    locator: Locator;
+    quote: string;
+    existingHighlightId: string | null;
+  } | null = null;
   let loadedExt = '';
   let loadGeneration = 0;
   let activeLoadController: AbortController | null = null;
@@ -264,6 +276,70 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }
       },
     );
+  };
+
+  /** 移除标注（侧栏/划选工具栏共用）：更新集合、清正文 mark、保存。 */
+  const removeAnnotationById = (id: string): void => {
+    annotations = annotations.filter((a) => a.id !== id);
+    for (const doc of flowDocuments()) {
+      removeTextRangeMarks(doc.body, id);
+    }
+    sidebar?.render(annotations);
+    void saveAnnotations();
+  };
+
+  const hideSelectionToolbar = (): void => {
+    pendingSelection = null;
+    selectionToolbar?.hide();
+  };
+
+  /** 工具栏动作派发（R3）：确认后才创建/移除标注。 */
+  const ensureSelectionToolbar = (): void => {
+    if (selectionToolbar !== null || deps.writeAnnotations === undefined) {
+      return;
+    }
+    selectionToolbar = createSelectionToolbar({
+      t,
+      onAction: (action) => {
+        const pending = pendingSelection;
+        pendingSelection = null;
+        if (pending === null) {
+          return;
+        }
+        if (action === 'removeHighlight') {
+          if (pending.existingHighlightId !== null) {
+            removeAnnotationById(pending.existingHighlightId);
+          }
+          return;
+        }
+        let note: string | undefined;
+        if (action === 'note') {
+          const input =
+            typeof window !== 'undefined' && typeof window.prompt === 'function'
+              ? window.prompt(t('annotation.notePrompt'))
+              : null;
+          if (input === null) {
+            return;
+          }
+          note = input;
+        }
+        annotations = [
+          ...annotations,
+          {
+            id: newAnnotationId(),
+            kind: action === 'note' ? 'note' : 'highlight',
+            locator: pending.locator,
+            quote: pending.quote,
+            note,
+            createdAt: Date.now(),
+          },
+        ];
+        renderHighlights();
+        sidebar?.render(annotations);
+        void saveAnnotations();
+      },
+    });
+    root.appendChild(selectionToolbar.element);
   };
 
   /** 当前阅读位置的定位器（书签/笔记用）。 */
@@ -445,12 +521,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           ?.scrollIntoView({ block: 'center' });
       },
       onRemove: (annotation) => {
-        annotations = annotations.filter((a) => a.id !== annotation.id);
-        for (const doc of flowDocuments()) {
-          removeTextRangeMarks(doc.body, annotation.id);
-        }
-        sidebar?.render(annotations);
-        void saveAnnotations();
+        removeAnnotationById(annotation.id);
       },
     });
     sidebar.element.setAttribute('aria-hidden', sidebarVisible ? 'false' : 'true');
@@ -531,19 +602,22 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   };
 
-  const captureFlowSelection = (
+  /**
+   * 划选 mouseup（flow/txt，iframe 内）：捕获待确认划选并唤起工具栏（R3）。
+   * 不再直接建标注——高亮/笔记经工具栏确认，取消高亮在选中已有 mark 时可用。
+   */
+  const onFlowSelectionMouseUp = (
     selection: Selection | null,
     chapter: number,
     body: HTMLElement,
+    frame: HTMLIFrameElement,
   ): void => {
     if (deps.writeAnnotations === undefined) {
       return;
     }
     const text = selection?.toString().trim() ?? '';
-    if (text.length === 0) {
-      return;
-    }
-    if (selection === null || selection.rangeCount === 0) {
+    if (selection === null || selection.rangeCount === 0 || text.length === 0) {
+      hideSelectionToolbar();
       return;
     }
     const locator = flowLocatorFromRange(
@@ -555,18 +629,36 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (locator === null) {
       return;
     }
-    const annotation: Annotation = {
-      id: newAnnotationId(),
-      kind: 'highlight',
+    // 选区锚点落在已有高亮 <mark data-annotation-id> 内时提供"取消高亮"。
+    const anchorNode = selection.anchorNode;
+    const anchorElement =
+      anchorNode === null
+        ? null
+        : anchorNode.nodeType === 1
+          ? (anchorNode as Element)
+          : anchorNode.parentElement;
+    const existingMark = anchorElement?.closest('[data-annotation-id]') ?? null;
+    pendingSelection = {
       locator,
       quote: text,
-      createdAt: Date.now(),
+      existingHighlightId: existingMark?.getAttribute('data-annotation-id') ?? null,
     };
-    annotations = [...annotations, annotation];
-    renderHighlights();
-    sidebar?.render(annotations);
-    void saveAnnotations();
-    selection?.removeAllRanges();
+    ensureSelectionToolbar();
+    if (selectionToolbar === null) {
+      return;
+    }
+    // iframe 内 rect 是 frame 视口坐标，叠加 frame 偏移换算为外层 client 坐标。
+    const rangeRect = selection.getRangeAt(0).getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    selectionToolbar.showAt(
+      {
+        left: rangeRect.left + frameRect.left,
+        top: rangeRect.top + frameRect.top,
+        width: rangeRect.width,
+        height: rangeRect.height,
+      },
+      { canRemoveHighlight: existingMark !== null },
+    );
   };
 
   const renderChapters = (chapters: ReaderChapter[]): void => {
@@ -649,7 +741,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
         };
         const onMouseUp = (): void => {
-          captureFlowSelection(frameWindow.getSelection(), frameChapter, frameDocument.body);
+          onFlowSelectionMouseUp(
+            frameWindow.getSelection(),
+            frameChapter,
+            frameDocument.body,
+            frame,
+          );
         };
         frameDocument.addEventListener('click', onClick);
         frameDocument.addEventListener('mouseup', onMouseUp);
@@ -769,10 +866,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   // PDF 连续滚动：←/→ 滚到上/下一页，+/- 缩放，0 还原。
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && sidebarVisible) {
-      setSidebarVisible(false);
-      event.preventDefault();
-      return;
+    if (event.key === 'Escape') {
+      if (selectionToolbar?.isVisible() === true) {
+        hideSelectionToolbar();
+        event.preventDefault();
+        return;
+      }
+      if (sidebarVisible) {
+        setSidebarVisible(false);
+        event.preventDefault();
+        return;
+      }
     }
     const handle = pdfHandle;
     if (handle === null) {
@@ -835,6 +939,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
       activeLoadController?.abort();
       annotationWriteQueue.invalidate();
+      hideSelectionToolbar();
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
@@ -958,6 +1063,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       sidebar = null;
       sidebarBackdrop?.remove();
       sidebarBackdrop = null;
+      selectionToolbar?.destroy();
+      selectionToolbar = null;
+      pendingSelection = null;
       scrollHost.removeEventListener('scroll', onFlowScroll);
       pageHost.removeEventListener('scroll', onPageScroll);
       setReaderPhase('destroyed', true);

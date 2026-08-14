@@ -94,6 +94,38 @@
   color: transparent;
 }
 
+/* 划选工具栏（R3）：选区附近浮动，点击外部/Escape 消失。 */
+.lightink-reader-selection-toolbar {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--lightink-bg-elevated);
+  border: 1px solid var(--lightink-border);
+  border-radius: 4px;
+  box-shadow: var(--lightink-shadow);
+}
+
+.lightink-reader-selection-action {
+  padding: 0.2rem 0.55rem;
+  font: inherit;
+  font-size: var(--lightink-font-size-ui, 0.8rem);
+  color: var(--lightink-fg);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.lightink-reader-selection-action:hover {
+  background: var(--lightink-accent-soft);
+}
+
+.lightink-reader-selection-action--removeHighlight {
+  color: var(--lightink-danger);
+}
+
 .lightink-reader-cbz-slot {
   width: min(100%, 64rem);
   aspect-ratio: 2 / 3;
