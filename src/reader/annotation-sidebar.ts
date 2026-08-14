@@ -122,7 +122,12 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
 
     const text = document.createElement('span');
     text.className = 'lightink-reader-sidebar-text';
-    text.textContent = annotation.quote ?? annotation.note ?? deps.t(`annotation.kind.${annotation.kind}`);
+    // 笔记优先显示备注（fallback quote），避免 quote 遮蔽备注（R4 编辑结果可见）。
+    const body =
+      annotation.kind === 'note'
+        ? annotation.note ?? annotation.quote
+        : annotation.quote ?? annotation.note;
+    text.textContent = body ?? deps.t(`annotation.kind.${annotation.kind}`);
 
     li.append(kind, text);
 
@@ -176,7 +181,11 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     if (visible.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'lightink-reader-sidebar-empty';
-      empty.textContent = deps.t('annotation.empty');
+      // 区分"文档无任何标注"与"当前筛选无匹配"（跨文档保留的筛选不再误报空文档）。
+      empty.textContent =
+        annotations.length === 0
+          ? deps.t('annotation.empty')
+          : deps.t('annotation.filter.empty');
       list.appendChild(empty);
       return;
     }

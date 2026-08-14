@@ -317,9 +317,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }
         if (action === 'note') {
           void (async () => {
+            const generation = loadGeneration;
             const input = await showNoteDialog(document, '', { t });
             if (input === null) {
               return; // 取消：保留选区、不产生标注
+            }
+            if (destroyed || generation !== loadGeneration) {
+              return; // 弹层期间已切换文档/销毁：丢弃迟到保存
             }
             pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
             appendAnnotation('note', pending.locator, pending.quote, input);
@@ -457,9 +461,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const addAnnotation = (kind: AnnotationKind): void => {
     if (kind === 'note') {
       void (async () => {
+        const generation = loadGeneration;
         const input = await showNoteDialog(document, '', { t });
         if (input === null) {
           return;
+        }
+        if (destroyed || generation !== loadGeneration) {
+          return; // 弹层期间已切换文档/销毁：丢弃迟到保存
         }
         appendAnnotation('note', currentPositionLocator(), undefined, input);
       })();
@@ -538,9 +546,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       },
       onEditNote: (annotation) => {
         void (async () => {
+          const generation = loadGeneration;
           const input = await showNoteDialog(document, annotation.note ?? '', { t });
           if (input === null) {
             return;
+          }
+          if (destroyed || generation !== loadGeneration) {
+            return; // 弹层期间已切换文档/销毁：丢弃迟到保存
           }
           annotations = annotations.map((a) =>
             a.id === annotation.id ? { ...a, note: input } : a,

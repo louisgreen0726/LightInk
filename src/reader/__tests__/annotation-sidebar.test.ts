@@ -84,10 +84,17 @@ afterEach(() => {
 });
 
 describe('annotation-sidebar 重做', () => {
-  it('默认列出全部标注并显示定位信息', () => {
+  it('默认列出全部标注并显示定位信息；笔记优先显示备注', () => {
     const { sidebar } = mount();
     const items = sidebar.element.querySelectorAll('.lightink-reader-sidebar-item');
     expect(items).toHaveLength(3);
+
+    const textOf = (id: string) =>
+      sidebar.element
+        .querySelector(`[data-annotation-id="${id}"] .lightink-reader-sidebar-text`)
+        ?.textContent;
+    expect(textOf('h1')).toBe('pdf 文字'); // highlight 显示 quote
+    expect(textOf('n1')).toBe('旧备注'); // note 优先显示 note（不被 quote 遮蔽）
 
     const locations = Array.from(
       sidebar.element.querySelectorAll('.lightink-reader-sidebar-location'),
@@ -119,13 +126,18 @@ describe('annotation-sidebar 重做', () => {
     expect(sidebar.element.querySelectorAll('.lightink-reader-sidebar-item')).toHaveLength(3);
   });
 
-  it('筛选后无匹配显示空态', () => {
+  it('筛选后无匹配显示筛选空态（区别于文档空态）', () => {
     const { sidebar } = mount();
     const noteFilter = Array.from(
       sidebar.element.querySelectorAll<HTMLButtonElement>('.lightink-reader-sidebar-filter'),
     ).find((b) => b.textContent === 'annotation.kind.bookmark')!;
     noteFilter.click();
     sidebar.render([annotations[0]!]);
+    expect(
+      sidebar.element.querySelector('.lightink-reader-sidebar-empty')?.textContent,
+    ).toBe('annotation.filter.empty');
+    // 文档本身无任何标注时仍是通用空态
+    sidebar.render([]);
     expect(
       sidebar.element.querySelector('.lightink-reader-sidebar-empty')?.textContent,
     ).toBe('annotation.empty');
