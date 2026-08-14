@@ -33,6 +33,7 @@ import {
   createSelectionToolbar,
   type SelectionToolbar,
 } from './selection-toolbar.js';
+import { showNoteDialog } from './note-dialog.js';
 import type {
   ReaderInstance,
   ReaderLoadOptions,
@@ -307,39 +308,26 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         if (pending === null) {
           return;
         }
-        // 确认后清空来源选区（与旧实现 removeAllRanges 行为一致）。
-        pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
         if (action === 'removeHighlight') {
+          pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
           if (pending.existingHighlightId !== null) {
             removeAnnotationById(pending.existingHighlightId);
           }
           return;
         }
-        let note: string | undefined;
         if (action === 'note') {
-          const input =
-            typeof window !== 'undefined' && typeof window.prompt === 'function'
-              ? window.prompt(t('annotation.notePrompt'))
-              : null;
-          if (input === null) {
-            return;
-          }
-          note = input;
+          void (async () => {
+            const input = await showNoteDialog(document, '', { t });
+            if (input === null) {
+              return; // 取消：保留选区、不产生标注
+            }
+            pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
+            appendAnnotation('note', pending.locator, pending.quote, input);
+          })();
+          return;
         }
-        annotations = [
-          ...annotations,
-          {
-            id: newAnnotationId(),
-            kind: action === 'note' ? 'note' : 'highlight',
-            locator: pending.locator,
-            quote: pending.quote,
-            note,
-            createdAt: Date.now(),
-          },
-        ];
-        renderHighlights();
-        sidebar?.render(annotations);
-        void saveAnnotations();
+        pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
+        appendAnnotation('highlight', pending.locator, pending.quote, undefined);
       },
     });
     root.appendChild(selectionToolbar.element);
@@ -442,31 +430,42 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
   scrollHost.addEventListener('scroll', onFlowScroll, { passive: true });
 
-  /** 添加书签或笔记（笔记经 window.prompt 取文本）。 */
-  const addAnnotation = (kind: AnnotationKind): void => {
-    let note: string | undefined;
-    if (kind === 'note') {
-      const input =
-        typeof window !== 'undefined' && typeof window.prompt === 'function'
-          ? window.prompt(t('annotation.notePrompt'))
-          : null;
-      if (input === null) {
-        return;
-      }
-      note = input;
-    }
+  /** 追加标注并同步正文高亮/侧栏/持久化。 */
+  const appendAnnotation = (
+    kind: AnnotationKind,
+    locator: Locator,
+    quote: string | undefined,
+    note: string | undefined,
+  ): void => {
     annotations = [
       ...annotations,
       {
         id: newAnnotationId(),
         kind,
-        locator: currentPositionLocator(),
+        locator,
+        quote,
         note,
         createdAt: Date.now(),
       },
     ];
+    renderHighlights();
     sidebar?.render(annotations);
     void saveAnnotations();
+  };
+
+  /** 添加书签或笔记（笔记经多行弹层输入，取消不创建）。 */
+  const addAnnotation = (kind: AnnotationKind): void => {
+    if (kind === 'note') {
+      void (async () => {
+        const input = await showNoteDialog(document, '', { t });
+        if (input === null) {
+          return;
+        }
+        appendAnnotation('note', currentPositionLocator(), undefined, input);
+      })();
+      return;
+    }
+    appendAnnotation(kind, currentPositionLocator(), undefined, undefined);
   };
 
   function ensureSidebar(): void {
@@ -536,6 +535,19 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       },
       onRemove: (annotation) => {
         removeAnnotationById(annotation.id);
+      },
+      onEditNote: (annotation) => {
+        void (async () => {
+          const input = await showNoteDialog(document, annotation.note ?? '', { t });
+          if (input === null) {
+            return;
+          }
+          annotations = annotations.map((a) =>
+            a.id === annotation.id ? { ...a, note: input } : a,
+          );
+          sidebar?.render(annotations);
+          void saveAnnotations();
+        })();
       },
     });
     sidebar.element.setAttribute('aria-hidden', sidebarVisible ? 'false' : 'true');
