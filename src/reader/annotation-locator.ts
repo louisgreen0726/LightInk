@@ -1,4 +1,4 @@
-import type { FlowLocator, TextLocator, TextQuoteAnchor } from './annotations.js';
+import type { FlowLocator, PdfLocator, TextLocator, TextQuoteAnchor } from './annotations.js';
 
 const CONTEXT_LENGTH = 32;
 
@@ -215,4 +215,17 @@ export function flowLocatorFromRange(
     return null;
   }
   return format === 'text' ? { format, ...anchor } : { format, chapter, ...anchor };
+}
+
+/** PDF 文本层选区 → 文字级 PdfLocator（page + 可选 anchor，R5 兼容旧页码级数据）。 */
+export function pdfTextLocatorFromRange(
+  root: Node,
+  range: Range,
+  page: number,
+): PdfLocator | null {
+  const anchor = captureTextQuoteAnchor(root, range);
+  if (anchor === null) {
+    return null;
+  }
+  return { format: 'pdf', page, quote: anchor.quote, anchor };
 }

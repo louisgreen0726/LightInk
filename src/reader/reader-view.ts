@@ -25,6 +25,7 @@ import {
 import {
   flowLocatorFromRange,
   markTextRange,
+  pdfTextLocatorFromRange,
   removeTextRangeMarks,
   resolveTextQuoteRange,
 } from './annotation-locator.js';
@@ -280,11 +281,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     );
   };
 
-  /** 移除标注（侧栏/划选工具栏共用）：更新集合、清正文 mark、保存。 */
+  /** 移除标注（侧栏/划选工具栏共用）：更新集合、清正文 mark（flow 正文与 PDF 文本层）、保存。 */
   const removeAnnotationById = (id: string): void => {
     annotations = annotations.filter((a) => a.id !== id);
     for (const doc of flowDocuments()) {
       removeTextRangeMarks(doc.body, id);
+    }
+    for (const layer of pageHost.querySelectorAll('.lightink-reader-text-layer')) {
+      removeTextRangeMarks(layer, id);
     }
     sidebar?.render(annotations);
     void saveAnnotations();
@@ -308,8 +312,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         if (pending === null) {
           return;
         }
+        // 确认后清空来源选区（flow 为 iframe 选区，PDF 为主文档选区）。
+        const clearSourceSelection = (): void => {
+          if (pending.frame !== null) {
+            pending.frame.contentWindow?.getSelection()?.removeAllRanges();
+          } else {
+            window.getSelection()?.removeAllRanges();
+          }
+        };
         if (action === 'removeHighlight') {
-          pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
+          clearSourceSelection();
           if (pending.existingHighlightId !== null) {
             removeAnnotationById(pending.existingHighlightId);
           }
@@ -325,12 +337,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
             if (destroyed || generation !== loadGeneration) {
               return; // 弹层期间已切换文档/销毁：丢弃迟到保存
             }
-            pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
+            clearSourceSelection();
             appendAnnotation('note', pending.locator, pending.quote, input);
           })();
           return;
         }
-        pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
+        clearSourceSelection();
         appendAnnotation('highlight', pending.locator, pending.quote, undefined);
       },
     });
@@ -604,8 +616,127 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       .map((frame) => frame.contentDocument)
       .filter((doc): doc is Document => doc !== null && doc.body !== null);
 
-  /** 在 sandbox 正文文本节点中包裹高亮 quote。 */
+  /** PDF 文本层高亮：把含 anchor 的 pdf 标注渲染到对应页文本层（幂等，层未就绪则跳过）。 */
+  const renderPdfHighlights = (): void => {
+    for (const hl of annotations) {
+      if (hl.kind !== 'highlight') {
+        continue;
+      }
+      const locator = hl.locator;
+      if (locator.format !== 'pdf' || locator.anchor === undefined) {
+        continue;
+      }
+      if (
+        pageHost.querySelector(
+          `.lightink-reader-highlight[data-annotation-id="${cssEscape(hl.id)}"]`,
+        ) !== null
+      ) {
+        continue; // 已渲染
+      }
+      const slot = pageHost.querySelector<HTMLElement>(
+        `.lightink-reader-page-slot[data-page-index="${locator.page - 1}"]`,
+      );
+      const layer = slot?.querySelector<HTMLElement>('.lightink-reader-text-layer') ?? null;
+      if (layer === null) {
+        continue; // 该页文本层尚未懒渲染，观察器会在层出现时重试
+      }
+      const range = resolveTextQuoteRange(layer, locator.anchor);
+      if (range !== null && !range.collapsed) {
+        markTextRange(layer, range, hl.id);
+      }
+    }
+  };
+
+  /** 文本层懒出现/缩放重建后重渲染 PDF 高亮（MutationObserver 驱动）。 */
+  let textLayerObserver: MutationObserver | null = null;
+  const observeTextLayers = (host: HTMLElement): void => {
+    textLayerObserver?.disconnect();
+    textLayerObserver = null;
+    if (typeof MutationObserver === 'undefined') {
+      return;
+    }
+    textLayerObserver = new MutationObserver((records) => {
+      const layerAdded = records.some((record) =>
+        Array.from(record.addedNodes).some(
+          (node) =>
+            node.nodeType === 1 &&
+            (node as Element).classList.contains('lightink-reader-text-layer'),
+        ),
+      );
+      if (layerAdded) {
+        renderPdfHighlights();
+      }
+    });
+    textLayerObserver.observe(host, { childList: true, subtree: true });
+  };
+
+  /** PDF 文本层选区（主文档 DOM，无 iframe 偏移）：捕获文字级定位并唤起工具栏。 */
+  const onPageHostSelection = (): void => {
+    if (deps.writeAnnotations === undefined || pdfHandle === null) {
+      return;
+    }
+    const selection = typeof window !== 'undefined' ? window.getSelection() : null;
+    const text = selection?.toString().trim() ?? '';
+    if (selection === null || selection.rangeCount === 0 || text.length === 0) {
+      hideSelectionToolbar();
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const container =
+      range.commonAncestorContainer.nodeType === 1
+        ? (range.commonAncestorContainer as Element)
+        : range.commonAncestorContainer.parentElement;
+    const layer = container?.closest('.lightink-reader-text-layer') ?? null;
+    if (layer === null) {
+      return; // 非文本层选区（canvas 等）不处理
+    }
+    const slot = layer.closest<HTMLElement>('.lightink-reader-page-slot');
+    const pageIndex = Number(slot?.dataset.pageIndex ?? -1);
+    if (!(pageIndex >= 0)) {
+      return;
+    }
+    const locator = pdfTextLocatorFromRange(layer, range, pageIndex + 1);
+    if (locator === null) {
+      hideSelectionToolbar();
+      return;
+    }
+    const anchorElement =
+      selection.anchorNode === null
+        ? null
+        : selection.anchorNode.nodeType === 1
+          ? (selection.anchorNode as Element)
+          : selection.anchorNode.parentElement;
+    const existingMark = anchorElement?.closest('[data-annotation-id]') ?? null;
+    pendingSelection = {
+      locator,
+      quote: text,
+      existingHighlightId: existingMark?.getAttribute('data-annotation-id') ?? null,
+      frame: null,
+    };
+    ensureSelectionToolbar();
+    selectionToolbar?.showAt(range.getBoundingClientRect(), {
+      canRemoveHighlight: existingMark !== null,
+    });
+  };
+
+  /** 关闭可能打开中的笔记弹层（切换/销毁时经 Escape 走正规 release，恢复背景 inert）。 */
+  const closeOpenNoteDialog = (): void => {
+    if (
+      typeof document !== 'undefined' &&
+      typeof document.querySelector === 'function' &&
+      document.querySelector('.lightink-note-dialog') !== null &&
+      typeof KeyboardEvent !== 'undefined'
+    ) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    }
+  };
+
+  /** 在 sandbox 正文文本节点中包裹高亮 quote（flow/txt）；PDF 走文本层渲染。 */
   const renderHighlights = (): void => {
+    if (loadedExt === 'pdf') {
+      renderPdfHighlights();
+      return;
+    }
     if (PAGE_EXTS.has(loadedExt)) {
       return;
     }
@@ -704,6 +835,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const renderChapters = (chapters: ReaderChapter[]): void => {
     clearFlowBindings();
     pageHost.removeEventListener('scroll', onPageScroll);
+    pageHost.removeEventListener('mouseup', onPageHostSelection);
+    textLayerObserver?.disconnect();
+    textLayerObserver = null;
     const renderGeneration = flowRenderGeneration;
     scrollHost.hidden = false;
     pageHost.hidden = true;
@@ -867,9 +1001,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     pdfHandle = staged.pdf;
     cbzHandle = staged.cbz;
     pageHost.removeEventListener('scroll', onPageScroll);
+    pageHost.removeEventListener('mouseup', onPageHostSelection);
     pageHost.replaceWith(staged.host);
     pageHost = staged.host;
     pageHost.addEventListener('scroll', onPageScroll, { passive: true });
+    pageHost.addEventListener('mouseup', onPageHostSelection);
+    observeTextLayers(pageHost); // 文本层懒出现时重渲染该页高亮
     scrollHost.hidden = true;
     syncPageState();
     void previousPdf?.destroy().catch(() => undefined);
@@ -907,9 +1044,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       deps.notify?.(t('annotation.loadFailed'));
       return;
     }
-    if (!PAGE_EXTS.has(loadedExt)) {
-      renderHighlights();
-    }
+    renderHighlights(); // flow/txt 正文与 PDF 文本层（含旧 anchor 数据重渲染）
     ensureSidebar();
   };
 
@@ -989,6 +1124,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       activeLoadController?.abort();
       annotationWriteQueue.invalidate();
       hideSelectionToolbar();
+      closeOpenNoteDialog(); // 打开中的笔记弹层经 Escape 正规 release（续体守卫丢弃迟到保存）
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
@@ -1117,6 +1253,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       pendingSelection = null;
       scrollHost.removeEventListener('scroll', onFlowScroll);
       pageHost.removeEventListener('scroll', onPageScroll);
+      pageHost.removeEventListener('mouseup', onPageHostSelection);
+      textLayerObserver?.disconnect();
+      textLayerObserver = null;
+      closeOpenNoteDialog();
       setReaderPhase('destroyed', true);
       stateListeners.clear();
       root.remove();
