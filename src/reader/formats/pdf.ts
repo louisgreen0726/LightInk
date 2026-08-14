@@ -1,9 +1,11 @@
 /**
- * `pdf` — PDF 页格式渲染（ebook-reader T5）。
+ * `pdf` — PDF 页格式渲染（ebook-reader T5 + 文本层）。
  *
  * `createPdfPageController` 是纯页码/缩放状态机（next/prev/setPage/zoom），headless 可测；
  * `renderPdfInto` 懒加载 pdfjs-dist（worker 经 `?url` 独立 chunk），把当前页渲染到 canvas，
- * 返回 handle 供导航/缩放重绘。canvas 真实渲染留手工验证（无 jsdom/pdf 样本的 node 测试）。
+ * 并在其上叠加 pdfjs `TextLayer` 文本层（DOM span 承载文字选择，版式仍由 canvas 保真）。
+ * 文本层与 canvas 同生命周期：懒渲染、缩放全量重建、离屏回收；渲染失败降级纯 canvas。
+ * 返回 handle 供导航/缩放重绘。canvas/文本层真实渲染留手工验证（无 jsdom/pdf 样本的 node 测试）。
  */
 
 import { ParseError } from './types.js';
@@ -168,6 +170,8 @@ export async function renderPdfInto(
     number,
     { cancel(): void; readonly promise: Promise<unknown> }
   >();
+  /** 每页活动文本层任务（与 canvas 同生命周期，clearSlot/destroy 时 cancel）。 */
+  const textLayers = new Map<number, { cancel(): void }>();
   let observer: IntersectionObserver | null = null;
   const isAborted = (): boolean => signal?.aborted === true;
 
@@ -182,9 +186,21 @@ export async function renderPdfInto(
     renderTasks.clear();
   };
 
+  const cancelTextLayers = (): void => {
+    for (const layer of textLayers.values()) {
+      try {
+        layer.cancel();
+      } catch {
+        // A finished pdf.js TextLayer may reject a late cancellation.
+      }
+    }
+    textLayers.clear();
+  };
+
   const onAbort = (): void => {
     renderGeneration += 1;
     cancelRenderTasks();
+    cancelTextLayers();
     observer?.disconnect();
     void loadingTask.destroy();
   };
@@ -212,6 +228,63 @@ export async function renderPdfInto(
     container.appendChild(slot);
     slots.push(slot);
   }
+
+  /**
+   * 在已渲染 canvas 的 slot 上叠加 pdfjs `TextLayer`（CSS 尺寸 viewport，span 百分比
+   * 定位 + `--total-scale-factor` 约定见 reader.css）。失败/取消降级移除容器，不阻断
+   * canvas 阅读；扫描件 getTextContent 为空时容器内无 span，自然无可选文字。
+   */
+  const appendTextLayer = async (
+    index: number,
+    page: Awaited<ReturnType<typeof doc.getPage>>,
+    generation: number,
+  ): Promise<void> => {
+    const slot = slots[index];
+    if (slot === undefined || destroyed || isAborted() || generation !== renderGeneration) {
+      return;
+    }
+    if (slot.querySelector('.lightink-reader-text-layer') !== null) {
+      return; // 已存在
+    }
+    if (slot.querySelector('canvas') === null) {
+      return; // canvas 已被回收，不孤立文本层
+    }
+    const textContent = await page.getTextContent();
+    if (
+      destroyed ||
+      isAborted() ||
+      generation !== renderGeneration ||
+      slot.querySelector('canvas') === null
+    ) {
+      return;
+    }
+    const container = document.createElement('div');
+    container.className = 'lightink-reader-text-layer';
+    // pdfjs TextLayer 约定：容器按 CSS 变量计算宽高，缩放因子为 CSS 尺寸 scale（非 dpr）。
+    container.style.setProperty('--total-scale-factor', String(controller.scale));
+    container.style.setProperty('--scale-round-x', '1px');
+    container.style.setProperty('--scale-round-y', '1px');
+    slot.appendChild(container);
+    const layer = new pdfjs.TextLayer({
+      textContentSource: textContent,
+      container,
+      viewport: page.getViewport({ scale: controller.scale }),
+    });
+    textLayers.set(index, layer);
+    try {
+      await layer.render();
+    } catch (error) {
+      container.remove();
+      if (!destroyed && !isAborted() && generation === renderGeneration) {
+        // 真实失败才记录；cancel/换代引起的拒绝静默降级为纯 canvas。
+        console.warn('[lightink/reader] PDF text layer failed', error);
+      }
+    } finally {
+      if (textLayers.get(index) === layer) {
+        textLayers.delete(index);
+      }
+    }
+  };
 
   /** 渲染单页到其 slot（幂等：已有 canvas 则跳过）。 */
   const renderSlot = async (
@@ -269,6 +342,7 @@ export async function renderPdfInto(
         renderTasks.delete(index);
       }
     }
+    void appendTextLayer(index, page, generation).catch(() => undefined);
   };
 
   const queueRender = (index: number): void => {
@@ -278,9 +352,10 @@ export async function renderPdfInto(
     });
   };
 
-  /** 清掉离屏过远的 slot 画布，释放内存（再次进入视口会重渲染）。 */
+  /** 清掉离屏过远的 slot 画布与文本层，释放内存（再次进入视口会重渲染）。 */
   const clearSlot = (index: number): void => {
     renderTasks.get(index)?.cancel();
+    textLayers.get(index)?.cancel();
     slots[index]?.replaceChildren();
   };
 
@@ -379,6 +454,7 @@ export async function renderPdfInto(
       renderGeneration += 1;
       signal?.removeEventListener('abort', onAbort);
       cancelRenderTasks();
+      cancelTextLayers();
       container.removeEventListener('scroll', onScroll);
       observer?.disconnect();
       await loadingTask.destroy();
