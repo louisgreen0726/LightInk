@@ -851,7 +851,15 @@ shell = createAppShell(
     onCut: () => runClipboardCommand('cut'),
     onCopy: () => runClipboardCommand('copy'),
     onPaste: () => runClipboardCommand('paste'),
-    onFind: () => openFindPanel(),
+    onFind: () => {
+      // reader 标签活动时分流到 PDF 搜索面板（与 Ctrl+F 一致）。
+      const readerTab = activeReaderTab();
+      if (readerTab !== null) {
+        readerTab.reader.openSearch?.();
+        return;
+      }
+      openFindPanel();
+    },
     // T6/R10：全选（双模式）；含未保存新标签在内的任意活动文档均可用。
     onSelectAll: () => selectAllActive(),
     hasActiveDocument: () => activeMarkdownTab() != null,

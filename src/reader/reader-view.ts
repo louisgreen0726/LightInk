@@ -227,6 +227,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let searchPanel: SearchPanel | null = null;
   let pdfSearch: { query: string; matches: PdfSearchMatch[]; active: number } | null = null;
   let searchGeneration = 0;
+  let searchDebounce: ReturnType<typeof setTimeout> | null = null;
   const annotationWriteQueue = new AnnotationWriteQueue();
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
@@ -781,7 +782,6 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (state === null) {
       return;
     }
-    clearPdfSearchMarks();
     const layerFor = (page: number): HTMLElement | null =>
       pageHost.querySelector<HTMLElement>(
         `.lightink-reader-page-slot[data-page-index="${page - 1}"] .lightink-reader-text-layer`,
@@ -791,6 +791,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const layer = layerFor(match.page);
       if (layer === null) {
         continue; // 未懒渲染的页跳过；层出现时经 observer 重渲染
+      }
+      const key = `${match.page}:${match.start}:${match.end}`;
+      const existing = layer.querySelectorAll<HTMLElement>(
+        `[data-search-key="${cssEscape(key)}"]`,
+      );
+      if (existing.length > 0) {
+        // 幂等：已有该命中的 overlay 时只校正当前类名，不做任何重包裹——
+        // 重包裹会在被观察的文本层内制造变更，与 observer 形成自激循环。
+        const isCurrent = match === current;
+        for (const span of existing) {
+          span.classList.toggle('lightink-reader-search-mark--current', isCurrent);
+          span.classList.toggle('lightink-reader-search-mark', !isCurrent);
+        }
+        continue;
       }
       const located = offsetRangeFrom(layer, match.start, match.end);
       if (located === null) {
@@ -802,30 +816,42 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         match === current
           ? 'lightink-reader-search-mark--current'
           : 'lightink-reader-search-mark',
+        key,
       );
     }
+    // 当前命中滚入视口（页高超过视口时页级跳转不足以定位）。
+    pageHost
+      .querySelector('.lightink-reader-search-mark--current')
+      ?.scrollIntoView({ block: 'nearest' });
   };
 
-  /** 执行搜索：命中后跳到首个并渲染 overlay（迟到结果按代际丢弃）。 */
+  /** 执行搜索（去抖 200ms：快速输入时不叠加全文档扫描）：命中后跳到首个并渲染 overlay。 */
   const runPdfSearch = (query: string): void => {
     const handle = pdfHandle;
     if (handle === null) {
       return;
     }
-    const generation = ++searchGeneration;
-    void (async () => {
-      const matches = await handle.search(query);
-      if (destroyed || generation !== searchGeneration || handle !== pdfHandle) {
-        return; // 迟到结果（新查询/切换文档）丢弃
-      }
-      pdfSearch = { query, matches, active: matches.length > 0 ? 0 : -1 };
-      searchPanel?.setStatus(matches.length, pdfSearch.active);
-      if (matches.length > 0) {
-        handle.scrollToPage(matches[0]!.page);
-        syncPageState();
-      }
-      renderPdfSearchMarks();
-    })();
+    if (searchDebounce !== null) {
+      clearTimeout(searchDebounce);
+    }
+    searchDebounce = setTimeout(() => {
+      searchDebounce = null;
+      const generation = ++searchGeneration;
+      void (async () => {
+        const matches = await handle.search(query);
+        if (destroyed || generation !== searchGeneration || handle !== pdfHandle) {
+          return; // 迟到结果（新查询/切换文档）丢弃
+        }
+        clearPdfSearchMarks();
+        pdfSearch = { query, matches, active: matches.length > 0 ? 0 : -1 };
+        searchPanel?.setStatus(matches.length, pdfSearch.active);
+        if (matches.length > 0) {
+          handle.scrollToPage(matches[0]!.page);
+          syncPageState();
+        }
+        renderPdfSearchMarks();
+      })();
+    }, 200);
   };
 
   /** 跳到指定命中（环形步进在面板回调中计算）。 */
@@ -848,6 +874,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const closePdfSearch = (): void => {
     searchGeneration += 1;
+    if (searchDebounce !== null) {
+      clearTimeout(searchDebounce);
+      searchDebounce = null;
+    }
     pdfSearch = null;
     clearPdfSearchMarks();
     searchPanel?.close();
@@ -1393,6 +1423,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       selectionToolbar = null;
       pendingSelection = null;
       searchGeneration += 1;
+      if (searchDebounce !== null) {
+        clearTimeout(searchDebounce);
+        searchDebounce = null;
+      }
       pdfSearch = null;
       searchPanel?.destroy();
       searchPanel = null;

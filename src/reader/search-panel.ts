@@ -102,8 +102,12 @@ export function createSearchPanel(deps: SearchPanelDeps): SearchPanel {
   const next = makeButton('lightink-reader-search-next', 'reader.search.next', deps.onNext);
   const close = makeButton('lightink-reader-search-close', 'reader.search.close', deps.onClose);
 
-  input.addEventListener('keydown', (event) => {
+  // 键位挂面板容器：焦点落在按钮上时 Enter 走原生 click、Escape 仍可关闭。
+  root.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
+      if (event.target instanceof HTMLButtonElement) {
+        return; // 按钮原生 click 已派发对应动作
+      }
       event.preventDefault();
       if (event.shiftKey) {
         deps.onPrev();
@@ -151,11 +155,12 @@ export function createSearchPanel(deps: SearchPanelDeps): SearchPanel {
   };
 }
 
-/** 把 range 覆盖的文本片段包进带类名的 span（搜索命中 overlay，非持久标注）。 */
+/** 把 range 覆盖的文本片段包进带类名的 span（搜索命中 overlay，非持久标注）。可选 key 戳记用于幂等复检。 */
 export function wrapTextRangeWithSpan(
   root: Node,
   range: Range,
   className: string,
+  key?: string,
 ): number {
   const walkerOwner = root.nodeType === Node.DOCUMENT_NODE
     ? (root as Document)
@@ -182,6 +187,9 @@ export function wrapTextRangeWithSpan(
     }
     const span = walkerOwner.createElement('span');
     span.className = className;
+    if (key !== undefined) {
+      span.dataset.searchKey = key;
+    }
     selectedNode.replaceWith(span);
     span.appendChild(selectedNode);
   }
