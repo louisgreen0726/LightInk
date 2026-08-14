@@ -179,11 +179,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let sidebarVisible = false;
   /** 划选工具栏（R3）：划选后确认再产生标注；懒创建（标注启用时）。 */
   let selectionToolbar: SelectionToolbar | null = null;
-  /** mouseup 时捕获的待确认划选（locator + quote + 命中的已有高亮 id）。 */
+  /** mouseup 时捕获的待确认划选（locator + quote + 命中的已有高亮 id + 来源 frame）。 */
   let pendingSelection: {
     locator: Locator;
     quote: string;
     existingHighlightId: string | null;
+    frame: HTMLIFrameElement | null;
   } | null = null;
   let loadedExt = '';
   let loadGeneration = 0;
@@ -306,6 +307,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         if (pending === null) {
           return;
         }
+        // 确认后清空来源选区（与旧实现 removeAllRanges 行为一致）。
+        pending.frame?.contentWindow?.getSelection()?.removeAllRanges();
         if (action === 'removeHighlight') {
           if (pending.existingHighlightId !== null) {
             removeAnnotationById(pending.existingHighlightId);
@@ -424,8 +427,19 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     });
   };
 
-  const onFlowScroll = (): void => syncFlowState();
-  const onPageScroll = (): void => syncPageState();
+  const onFlowScroll = (): void => {
+    syncFlowState();
+    // 工具栏按视口坐标固定定位，滚动后指向失效——直接隐藏。
+    if (selectionToolbar?.isVisible() === true) {
+      hideSelectionToolbar();
+    }
+  };
+  const onPageScroll = (): void => {
+    syncPageState();
+    if (selectionToolbar?.isVisible() === true) {
+      hideSelectionToolbar();
+    }
+  };
   scrollHost.addEventListener('scroll', onFlowScroll, { passive: true });
 
   /** 添加书签或笔记（笔记经 window.prompt 取文本）。 */
@@ -627,6 +641,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       loadedExt === 'txt' ? 'text' : 'flow',
     );
     if (locator === null) {
+      hideSelectionToolbar();
       return;
     }
     // 选区锚点落在已有高亮 <mark data-annotation-id> 内时提供"取消高亮"。
@@ -642,6 +657,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       locator,
       quote: text,
       existingHighlightId: existingMark?.getAttribute('data-annotation-id') ?? null,
+      frame,
     };
     ensureSelectionToolbar();
     if (selectionToolbar === null) {
@@ -748,8 +764,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
             frame,
           );
         };
+        // 划选发生在 iframe 内，键盘焦点也在 iframe 文档——Escape 需在 frame 内转发。
+        const onKeyDown = (event: KeyboardEvent): void => {
+          if (event.key === 'Escape' && selectionToolbar?.isVisible() === true) {
+            hideSelectionToolbar();
+            event.preventDefault();
+          }
+        };
         frameDocument.addEventListener('click', onClick);
         frameDocument.addEventListener('mouseup', onMouseUp);
+        frameDocument.addEventListener('keydown', onKeyDown);
         const releaseImages = bindBlockedRemoteImages(
           frameDocument.body,
           t('reader.remoteImageLoad'),
@@ -767,6 +791,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           releaseImages();
           frameDocument.removeEventListener('click', onClick);
           frameDocument.removeEventListener('mouseup', onMouseUp);
+          frameDocument.removeEventListener('keydown', onKeyDown);
         });
       };
       frame.addEventListener('load', onLoad, { once: true });

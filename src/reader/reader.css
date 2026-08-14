@@ -107,6 +107,11 @@
   box-shadow: var(--lightink-shadow);
 }
 
+/* author 源 display 会压过 UA 级联的 [hidden]，需显式覆盖（同 theme.css 前例）。 */
+.lightink-reader-selection-toolbar[hidden] {
+  display: none;
+}
+
 .lightink-reader-selection-action {
   padding: 0.2rem 0.55rem;
   font: inherit;
