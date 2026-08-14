@@ -13,6 +13,7 @@ import {
   resolveTextQuoteRange,
 } from '../annotation-locator.js';
 import { parseAnnotations, serializeAnnotations, type Annotation } from '../annotations.js';
+import { isTextLayerMutation } from '../reader-view.js';
 
 /** 模拟 pdfjs 文本层：绝对定位 span 承载每段文字（结构同 pdfjs TextLayer 输出）。 */
 function textLayer(...texts: string[]): HTMLElement {
@@ -130,5 +131,35 @@ describe('PDF 文字级标注闭环', () => {
     expect(back.map((a) => a.id)).toEqual(['old1', 'new1']);
     expect(back[0]!.locator.format === 'pdf' && back[0]!.locator.anchor).toBeUndefined();
     expect(back[1]!.locator.format === 'pdf' && back[1]!.locator.anchor).toBeDefined();
+  });
+
+  it('文本层容器插入与层内异步 span 填充都触发重渲染判定（pdfjs 时序回归）', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const delivered: MutationRecord[] = [];
+    const observer = new MutationObserver((records) => delivered.push(...records));
+    observer.observe(host, { childList: true, subtree: true });
+    const settle = async (): Promise<readonly MutationRecord[]> => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const records = delivered.splice(0, delivered.length);
+      return records;
+    };
+
+    // 第一步：pdfjs appendTextLayer 先插入空容器（此时 span 未填充）。
+    const layer = document.createElement('div');
+    layer.className = 'lightink-reader-text-layer';
+    host.appendChild(layer);
+    expect(isTextLayerMutation(await settle())).toBe(true);
+
+    // 第二步：TextLayer.render() 微任务链异步追加 span。
+    const span = document.createElement('span');
+    span.textContent = '文字';
+    layer.appendChild(span);
+    expect(isTextLayerMutation(await settle())).toBe(true);
+
+    // 无关变更不触发。
+    host.appendChild(document.createElement('div'));
+    expect(isTextLayerMutation(await settle())).toBe(false);
+    observer.disconnect();
   });
 });

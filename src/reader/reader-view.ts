@@ -107,6 +107,26 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
 }
 
+/** 文本层相关变更：层容器插入，或层内部 childList 变更（pdfjs TextLayer.render 异步追加 span）。 */
+export function isTextLayerMutation(records: readonly MutationRecord[]): boolean {
+  return records.some((record) => {
+    for (const node of Array.from(record.addedNodes)) {
+      if (
+        node.nodeType === 1 &&
+        (node as Element).classList.contains('lightink-reader-text-layer')
+      ) {
+        return true;
+      }
+    }
+    const target = record.target;
+    return (
+      target.nodeType === 1 &&
+      typeof (target as Element).closest === 'function' &&
+      (target as Element).closest('.lightink-reader-text-layer') !== null
+    );
+  });
+}
+
 export interface ReaderViewDeps {
   /** 读取文件原始字节（生产为 invoke read_file_bytes → base64 → Uint8Array）。 */
   readBytes?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
@@ -647,7 +667,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   };
 
-  /** 文本层懒出现/缩放重建后重渲染 PDF 高亮（MutationObserver 驱动）。 */
+  /** 文本层懒出现/异步 span 填充/缩放重建后重渲染 PDF 高亮（MutationObserver 驱动）。 */
   let textLayerObserver: MutationObserver | null = null;
   const observeTextLayers = (host: HTMLElement): void => {
     textLayerObserver?.disconnect();
@@ -655,17 +675,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (typeof MutationObserver === 'undefined') {
       return;
     }
+    let renderQueued = false;
     textLayerObserver = new MutationObserver((records) => {
-      const layerAdded = records.some((record) =>
-        Array.from(record.addedNodes).some(
-          (node) =>
-            node.nodeType === 1 &&
-            (node as Element).classList.contains('lightink-reader-text-layer'),
-        ),
-      );
-      if (layerAdded) {
-        renderPdfHighlights();
+      if (!isTextLayerMutation(records) || renderQueued) {
+        return;
       }
+      // pdfjs 逐 span 追加会连发多批记录；合并到微任务末尾渲染一次（幂等防重复）。
+      renderQueued = true;
+      queueMicrotask(() => {
+        renderQueued = false;
+        renderPdfHighlights();
+      });
     });
     textLayerObserver.observe(host, { childList: true, subtree: true });
   };
