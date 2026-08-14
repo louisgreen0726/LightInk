@@ -91,6 +91,83 @@ describe('serialize/parse 往返', () => {
   });
 });
 
+describe('PdfLocator 文字级锚点（向后兼容）', () => {
+  const anchored: Annotation = {
+    id: 'ph1',
+    kind: 'highlight',
+    locator: {
+      format: 'pdf',
+      page: 3,
+      quote: '页内文字',
+      anchor: { start: 12, end: 16, quote: '页内文字', prefix: '前', suffix: '后' },
+    },
+    quote: '页内文字',
+    createdAt: 1700000000010,
+  };
+
+  it('含 anchor 的 pdf 定位器序列化/解析往返保留 anchor', () => {
+    const back = parseAnnotations(serializeAnnotations([anchored]));
+    expect(back).toEqual([anchored]);
+    expect(back[0]!.locator).toMatchObject({
+      format: 'pdf',
+      page: 3,
+      anchor: { start: 12, end: 16, quote: '页内文字', prefix: '前', suffix: '后' },
+    });
+  });
+
+  it('旧 v2 数据（pdf 定位器无 anchor）照旧解析', () => {
+    const legacy = {
+      version: 2,
+      annotations: [sample[1]], // b1: { format: 'pdf', page: 5, quote: '页脚' }
+    };
+    const back = parseAnnotations(JSON.stringify(legacy));
+    expect(back.map((a) => a.id)).toEqual(['b1']);
+    expect(back[0]!.locator).toEqual({ format: 'pdf', page: 5, quote: '页脚' });
+  });
+
+  it('结构不合规的 anchor 使该条目被过滤', () => {
+    const broken = {
+      version: 2,
+      annotations: [
+        anchored,
+        {
+          ...anchored,
+          id: 'bad-anchor',
+          locator: {
+            format: 'pdf',
+            page: 3,
+            quote: '页内文字',
+            anchor: { start: 20, end: 10 }, // end < start 且缺 quote/prefix/suffix
+          },
+        },
+      ],
+    };
+    const back = parseAnnotations(JSON.stringify(broken));
+    expect(back.map((a) => a.id)).toEqual(['ph1']);
+  });
+
+  it('v1 迁移不产生 anchor（页码级定位保持原样）', () => {
+    const back = parseAnnotations(JSON.stringify({
+      version: 1,
+      annotations: [{
+        id: 'legacy-pdf',
+        kind: 'bookmark',
+        locator: { format: 'pdf', page: 2 },
+        quote: '旧书签',
+        createdAt: 1,
+      }],
+    }));
+    expect(back).toEqual([{
+      id: 'legacy-pdf',
+      kind: 'bookmark',
+      locator: { format: 'pdf', page: 2, quote: '旧书签' },
+      quote: '旧书签',
+      note: undefined,
+      createdAt: 1,
+    }]);
+  });
+});
+
 describe('parseAnnotations 损坏/空处理', () => {
   it('空串返回空数组', () => {
     expect(parseAnnotations('')).toEqual([]);

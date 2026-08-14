@@ -23,6 +23,11 @@ export interface PdfLocator {
   format: 'pdf';
   page: number;
   quote: string;
+  /**
+   * 文字级锚点（PDF 文本层高亮用，偏移/上下文相对该页拼接文本）。
+   * 可选：历史 v2 数据与页码级书签/笔记无此字段，照旧加载。
+   */
+  anchor?: TextQuoteAnchor;
 }
 
 export interface CbzLocator {
@@ -78,7 +83,12 @@ function isLocator(value: unknown): value is Locator {
       return (
         isNonNegativeInteger(locator.page) &&
         (locator.page as number) >= 1 &&
-        typeof locator.quote === 'string'
+        typeof locator.quote === 'string' &&
+        // anchor 可选：存在时必须结构合规，缺失（历史页码级定位）照旧通过。
+        (locator.anchor === undefined ||
+          (typeof locator.anchor === 'object' &&
+            locator.anchor !== null &&
+            isTextAnchor(locator.anchor as Record<string, unknown>)))
       );
     case 'cbz':
       return isNonNegativeInteger(locator.page) && (locator.page as number) >= 1;
