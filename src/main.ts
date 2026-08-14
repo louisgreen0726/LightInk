@@ -1895,6 +1895,12 @@ document.addEventListener(
       event.key.toLowerCase() === 'f'
     ) {
       event.preventDefault();
+      // reader 标签活动时打开 PDF 内搜索面板（R2），编辑标签走原查找面板。
+      const readerTab = activeReaderTab();
+      if (readerTab !== null) {
+        readerTab.reader.openSearch?.();
+        return;
+      }
       openFindPanel();
     }
   },

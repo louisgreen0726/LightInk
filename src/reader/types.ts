@@ -63,6 +63,8 @@ export interface ReaderInstance {
   toggleSidebar(): void;
   /** 标注侧栏当前是否可见。 */
   isSidebarVisible(): boolean;
+  /** 打开 PDF 内搜索面板（非 PDF 文档空操作；旧宿主/测试 stub 可缺省）。 */
+  openSearch?(): void;
   /** 当前文档是否启用了标注（取决于 content_hash / 标注存储是否可用）。 */
   isAnnotationEnabled(): boolean;
 }

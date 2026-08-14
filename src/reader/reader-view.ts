@@ -35,6 +35,15 @@ import {
   type SelectionToolbar,
 } from './selection-toolbar.js';
 import { showNoteDialog } from './note-dialog.js';
+import {
+  createSearchPanel,
+  nextMatchIndex,
+  offsetRangeFrom,
+  unwrapSpans,
+  wrapTextRangeWithSpan,
+  type PdfSearchMatch,
+  type SearchPanel,
+} from './search-panel.js';
 import type {
   ReaderInstance,
   ReaderLoadOptions,
@@ -214,6 +223,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let destroyed = false;
   let flowRenderGeneration = 0;
   let flowContentDispose: (() => void) | null = null;
+  /** PDF 搜索面板与当前搜索状态（R2；查询/命中/活动命中索引）。 */
+  let searchPanel: SearchPanel | null = null;
+  let pdfSearch: { query: string; matches: PdfSearchMatch[]; active: number } | null = null;
+  let searchGeneration = 0;
   const annotationWriteQueue = new AnnotationWriteQueue();
   const remoteImagePolicy = deps.remoteImagePolicy ?? sessionRemoteImagePolicy;
   let releaseRemoteImages: Array<() => void> = [];
@@ -685,6 +698,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       queueMicrotask(() => {
         renderQueued = false;
         renderPdfHighlights();
+        renderPdfSearchMarks(); // 层重建后搜索命中 overlay 一并恢复
       });
     });
     textLayerObserver.observe(host, { childList: true, subtree: true });
@@ -708,7 +722,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         : range.commonAncestorContainer.parentElement;
     const layer = container?.closest('.lightink-reader-text-layer') ?? null;
     if (layer === null) {
-      return; // 非文本层选区（canvas 等）不处理
+      // 非文本层选区（canvas/跨页拖选）不处理，但清掉可能滞留的工具栏与过期选区。
+      hideSelectionToolbar();
+      return;
     }
     const slot = layer.closest<HTMLElement>('.lightink-reader-page-slot');
     const pageIndex = Number(slot?.dataset.pageIndex ?? -1);
@@ -749,6 +765,110 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     ) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     }
+  };
+
+  /** 清掉全部搜索命中 overlay（span 解包保留文本）。 */
+  const clearPdfSearchMarks = (): void => {
+    for (const layer of pageHost.querySelectorAll('.lightink-reader-text-layer')) {
+      unwrapSpans(layer, 'lightink-reader-search-mark');
+      unwrapSpans(layer, 'lightink-reader-search-mark--current');
+    }
+  };
+
+  /** 在当前已渲染文本层上叠加搜索命中 overlay（全部命中 + 当前命中双样式）。 */
+  const renderPdfSearchMarks = (): void => {
+    const state = pdfSearch;
+    if (state === null) {
+      return;
+    }
+    clearPdfSearchMarks();
+    const layerFor = (page: number): HTMLElement | null =>
+      pageHost.querySelector<HTMLElement>(
+        `.lightink-reader-page-slot[data-page-index="${page - 1}"] .lightink-reader-text-layer`,
+      );
+    const current = state.matches[state.active];
+    for (const match of state.matches) {
+      const layer = layerFor(match.page);
+      if (layer === null) {
+        continue; // 未懒渲染的页跳过；层出现时经 observer 重渲染
+      }
+      const located = offsetRangeFrom(layer, match.start, match.end);
+      if (located === null) {
+        continue;
+      }
+      wrapTextRangeWithSpan(
+        layer,
+        located,
+        match === current
+          ? 'lightink-reader-search-mark--current'
+          : 'lightink-reader-search-mark',
+      );
+    }
+  };
+
+  /** 执行搜索：命中后跳到首个并渲染 overlay（迟到结果按代际丢弃）。 */
+  const runPdfSearch = (query: string): void => {
+    const handle = pdfHandle;
+    if (handle === null) {
+      return;
+    }
+    const generation = ++searchGeneration;
+    void (async () => {
+      const matches = await handle.search(query);
+      if (destroyed || generation !== searchGeneration || handle !== pdfHandle) {
+        return; // 迟到结果（新查询/切换文档）丢弃
+      }
+      pdfSearch = { query, matches, active: matches.length > 0 ? 0 : -1 };
+      searchPanel?.setStatus(matches.length, pdfSearch.active);
+      if (matches.length > 0) {
+        handle.scrollToPage(matches[0]!.page);
+        syncPageState();
+      }
+      renderPdfSearchMarks();
+    })();
+  };
+
+  /** 跳到指定命中（环形步进在面板回调中计算）。 */
+  const jumpToPdfMatch = (target: number): void => {
+    const state = pdfSearch;
+    if (state === null || pdfHandle === null) {
+      return;
+    }
+    const index = nextMatchIndex(state.matches.length, state.active, target >= 0 ? 1 : -1);
+    if (index < 0) {
+      return;
+    }
+    state.active = index;
+    const match = state.matches[index]!;
+    pdfHandle.scrollToPage(match.page);
+    syncPageState();
+    renderPdfSearchMarks();
+    searchPanel?.setStatus(state.matches.length, index);
+  };
+
+  const closePdfSearch = (): void => {
+    searchGeneration += 1;
+    pdfSearch = null;
+    clearPdfSearchMarks();
+    searchPanel?.close();
+  };
+
+  /** 打开 PDF 搜索面板（懒创建；非 PDF 空操作）。 */
+  const openSearch = (): void => {
+    if (pdfHandle === null) {
+      return;
+    }
+    if (searchPanel === null) {
+      searchPanel = createSearchPanel({
+        t,
+        onQuery: (query) => runPdfSearch(query),
+        onNext: () => jumpToPdfMatch(1),
+        onPrev: () => jumpToPdfMatch(-1),
+        onClose: () => closePdfSearch(),
+      });
+      root.appendChild(searchPanel.element);
+    }
+    searchPanel.open();
   };
 
   /** 在 sandbox 正文文本节点中包裹高亮 quote（flow/txt）；PDF 走文本层渲染。 */
@@ -1145,6 +1265,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       annotationWriteQueue.invalidate();
       hideSelectionToolbar();
       closeOpenNoteDialog(); // 打开中的笔记弹层经 Escape 正规 release（续体守卫丢弃迟到保存）
+      closePdfSearch(); // 切换文档清掉搜索状态与命中 overlay
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
@@ -1271,6 +1392,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       selectionToolbar?.destroy();
       selectionToolbar = null;
       pendingSelection = null;
+      searchGeneration += 1;
+      pdfSearch = null;
+      searchPanel?.destroy();
+      searchPanel = null;
       scrollHost.removeEventListener('scroll', onFlowScroll);
       pageHost.removeEventListener('scroll', onPageScroll);
       pageHost.removeEventListener('mouseup', onPageHostSelection);
@@ -1292,6 +1417,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     },
     toggleSidebar: () => setSidebarVisible(!sidebarVisible),
     isSidebarVisible: () => sidebarVisible,
+    openSearch,
     isAnnotationEnabled: () => annotationsEnabled,
   };
 }

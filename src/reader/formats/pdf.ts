@@ -111,8 +111,17 @@ export interface PdfRenderHandle {
   rerender(): Promise<void>;
   /** 滚动到指定页（1-based），并同步 controller.page。供翻页/侧栏跳转。 */
   scrollToPage(page: number): void;
+  /** 全文搜索（大小写不敏感）：按页序返回命中（页码 + 该页拼接文本偏移）。 */
+  search(query: string): Promise<PdfSearchMatch[]>;
   /** 释放 pdfjs 文档资源 + 断开 observer（关闭/重开 PDF 时调用）。 */
   destroy(): Promise<void>;
+}
+
+/** PDF 搜索命中：偏移与文本层 anchor 同一坐标系（该页拼接文本）。 */
+export interface PdfSearchMatch {
+  page: number;
+  start: number;
+  end: number;
 }
 
 /** 当前设备像素比（WebView2 下读 window.devicePixelRatio）。 */
@@ -172,6 +181,8 @@ export async function renderPdfInto(
   >();
   /** 每页活动文本层任务（与 canvas 同生命周期，clearSlot/destroy 时 cancel）。 */
   const textLayers = new Map<number, { cancel(): void }>();
+  /** 每页拼接文本缓存（文本层/搜索共用同一坐标系，懒填充）。 */
+  const pageTexts: string[] = [];
   let observer: IntersectionObserver | null = null;
   const isAborted = (): boolean => signal?.aborted === true;
 
@@ -254,10 +265,15 @@ export async function renderPdfInto(
       destroyed ||
       isAborted() ||
       generation !== renderGeneration ||
-      slot.querySelector('canvas') === null
+      slot.querySelector('canvas') === null ||
+      slot.querySelector('.lightink-reader-text-layer') !== null // 并发 appendTextLayer 复检去重
     ) {
       return;
     }
+    // 页拼接文本缓存（搜索与文本层 anchor 同一坐标系）。
+    pageTexts[index] = textContent.items
+      .map((item) => ('str' in item ? item.str : ''))
+      .join('');
     const container = document.createElement('div');
     container.className = 'lightink-reader-text-layer';
     // pdfjs TextLayer 约定：容器按 CSS 变量计算宽高，缩放因子为 CSS 尺寸 scale（非 dpr）。
@@ -275,8 +291,13 @@ export async function renderPdfInto(
       await layer.render();
     } catch (error) {
       container.remove();
-      if (!destroyed && !isAborted() && generation === renderGeneration) {
-        // 真实失败才记录；cancel/换代引起的拒绝静默降级为纯 canvas。
+      if (
+        !destroyed &&
+        !isAborted() &&
+        generation === renderGeneration &&
+        (error as { name?: unknown }).name !== 'AbortException'
+      ) {
+        // 真实失败才记录；cancel/换代/离屏回收引起的 AbortException 静默降级为纯 canvas。
         console.warn('[lightink/reader] PDF text layer failed', error);
       }
     } finally {
@@ -442,10 +463,41 @@ export async function renderPdfInto(
     slots[target - 1]?.scrollIntoView({ block: 'start' });
   };
 
+  /** 懒取某页拼接文本（缓存优先；未渲染过的页经 getPage/getTextContent 补齐）。 */
+  const ensurePageText = async (index: number): Promise<string> => {
+    const cached = pageTexts[index];
+    if (cached !== undefined) {
+      return cached;
+    }
+    const page = await doc.getPage(index + 1);
+    const content = await page.getTextContent();
+    const text = content.items.map((item) => ('str' in item ? item.str : '')).join('');
+    pageTexts[index] = text;
+    return text;
+  };
+
+  const search = async (query: string): Promise<PdfSearchMatch[]> => {
+    const needle = query.trim().toLowerCase();
+    if (needle.length === 0 || destroyed || isAborted()) {
+      return [];
+    }
+    const matches: PdfSearchMatch[] = [];
+    for (let index = 0; index < total && !destroyed && !isAborted(); index += 1) {
+      const text = (await ensurePageText(index)).toLowerCase();
+      let at = text.indexOf(needle);
+      while (at >= 0) {
+        matches.push({ page: index + 1, start: at, end: at + needle.length });
+        at = text.indexOf(needle, at + needle.length);
+      }
+    }
+    return matches;
+  };
+
   return {
     controller,
     rerender,
     scrollToPage,
+    search,
     destroy: async () => {
       if (destroyed) {
         return;

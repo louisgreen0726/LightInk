@@ -69,6 +69,7 @@
   z-index: 1;
   --min-font-size: 1;
   --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
 }
 
 .lightink-reader-text-layer span,
@@ -86,12 +87,101 @@
   font-size: calc(var(--text-scale-factor) * var(--font-height));
   --scale-x: 1;
   --rotate: 0deg;
-  transform: rotate(var(--rotate)) scaleX(var(--scale-x));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+/* pdfjs 约定：页面 /Rotate 时容器带 data-main-rotation，按官方规则旋转。 */
+.lightink-reader-text-layer[data-main-rotation='90'] {
+  transform: rotate(90deg) translateY(-100%);
+}
+.lightink-reader-text-layer[data-main-rotation='180'] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+.lightink-reader-text-layer[data-main-rotation='270'] {
+  transform: rotate(270deg) translateX(-100%);
 }
 
 .lightink-reader-text-layer ::selection {
   background: var(--lightink-annotation, rgba(242, 214, 117, 0.5));
   color: transparent;
+}
+
+/* PDF 持久高亮（T5 markTextRange 于文本层内）与搜索命中 overlay（T6）。 */
+.lightink-reader-text-layer mark.lightink-reader-highlight {
+  background: var(--lightink-annotation);
+  color: transparent;
+}
+
+.lightink-reader-text-layer .lightink-reader-search-mark {
+  background: var(--lightink-selection);
+  color: transparent;
+}
+
+.lightink-reader-text-layer .lightink-reader-search-mark--current {
+  background: var(--lightink-accent);
+  color: transparent;
+  outline: 1px solid var(--lightink-fg);
+}
+
+/* PDF 搜索面板（R2）：右上角浮动，参照 find-replace 面板语言。 */
+.lightink-reader-search-panel {
+  position: absolute;
+  top: 0.5rem;
+  right: 1.5rem;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.3rem 0.4rem;
+  background: var(--lightink-bg-elevated);
+  border: 1px solid var(--lightink-border);
+  border-radius: 4px;
+  box-shadow: var(--lightink-shadow);
+}
+
+.lightink-reader-search-panel[hidden] {
+  display: none;
+}
+
+.lightink-reader-search-input {
+  width: 12rem;
+  padding: 0.15rem 0.4rem;
+  font: inherit;
+  font-size: var(--lightink-font-size-ui, 0.8rem);
+  color: var(--lightink-fg);
+  background: var(--lightink-bg);
+  border: 1px solid var(--lightink-border);
+  border-radius: 3px;
+}
+
+.lightink-reader-search-status {
+  min-width: 3.5rem;
+  font-size: var(--lightink-font-size-ui, 0.8rem);
+  color: var(--lightink-muted);
+  text-align: center;
+}
+
+.lightink-reader-search-status[data-search-empty='true'] {
+  color: var(--lightink-danger);
+}
+
+.lightink-reader-search-prev,
+.lightink-reader-search-next,
+.lightink-reader-search-close {
+  padding: 0.15rem 0.45rem;
+  font: inherit;
+  font-size: var(--lightink-font-size-ui, 0.8rem);
+  color: var(--lightink-fg);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.lightink-reader-search-prev:hover,
+.lightink-reader-search-next:hover,
+.lightink-reader-search-close:hover {
+  background: var(--lightink-accent-soft);
 }
 
 /* 划选工具栏（R3）：选区附近浮动，点击外部/Escape 消失。 */
@@ -279,7 +369,31 @@
   color: var(--lightink-fg);
   word-break: break-word;
 }
+/* 定位信息（页码/章节）与类型筛选（R4）。 */
+.lightink-reader-sidebar-location {
+  font-size: 0.75em;
+  color: var(--lightink-muted);
+}
+.lightink-reader-sidebar-filters {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+.lightink-reader-sidebar-filter {
+  cursor: pointer;
+  background: var(--lightink-bg-elevated);
+  border: 1px solid color-mix(in srgb, var(--lightink-fg) 15%, transparent);
+  border-radius: 3px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.85em;
+  color: var(--lightink-fg);
+}
+.lightink-reader-sidebar-filter--active {
+  background: var(--lightink-accent-soft);
+  border-color: var(--lightink-accent);
+}
 .lightink-reader-sidebar-jump,
+.lightink-reader-sidebar-edit,
 .lightink-reader-sidebar-remove {
   align-self: flex-start;
   cursor: pointer;
@@ -291,6 +405,7 @@
   color: var(--lightink-fg);
 }
 .lightink-reader-sidebar-jump:focus-visible,
+.lightink-reader-sidebar-edit:focus-visible,
 .lightink-reader-sidebar-remove:focus-visible {
   outline: 2px solid var(--lightink-accent);
   outline-offset: 2px;
@@ -298,6 +413,18 @@
 .lightink-reader-sidebar-empty {
   color: var(--lightink-fg);
   opacity: 0.6;
+}
+
+/* 笔记弹层输入区（R4；模态框架复用 lightink-modal-* 体系）。 */
+.lightink-note-textarea {
+  width: 100%;
+  min-height: 6rem;
+  resize: vertical;
+  font: inherit;
+  color: var(--lightink-fg);
+  background: var(--lightink-bg);
+  border: 1px solid var(--lightink-border);
+  border-radius: 3px;
 }
 
 @media (max-width: 700px) {
