@@ -101,6 +101,9 @@ export async function parseEpub(
   // dispose 兜底 revoke 全部并关闭 archive。
   const materialized = new Map<string, { url: string; refs: number }>();
   const pathByUrl = new Map<string, string>();
+  // 首个 await 前的 in-flight 占位：跨章并发 resolve 同一图片共享同一次物化，
+  // 避免双重解压、无主 blob URL 泄漏与 refs 记账错配。
+  const materializing = new Map<string, Promise<{ url: string; refs: number } | null>>();
   let archiveClosed = false;
   const dispose = (): void => {
     for (const entry of materialized.values()) {
@@ -234,7 +237,51 @@ export async function parseEpub(
     /**
      * T8 懒物化：章节帧进入视口时把占位 src（包内路径）换成 blob URL。同一图片
      * 跨章共享按引用计数持有；releaseImages 配对还原并按计数 revokeObjectURL。
+     * in-flight 去重：首个 await 前把 Promise 写入 materializing，跨章并发 resolve
+     * 共享同一物化结果，避免双重解压/blob URL 泄漏/refs 记账错配。
      */
+    const materializeOne = (
+      source: string,
+      mediaType: string,
+    ): Promise<{ url: string; refs: number } | null> => {
+      const existing = materialized.get(source);
+      if (existing !== undefined) {
+        return Promise.resolve(existing);
+      }
+      const pending = materializing.get(source);
+      if (pending !== undefined) {
+        return pending;
+      }
+      const file = archive.file(source);
+      if (file === null) {
+        return Promise.resolve(null);
+      }
+      const created = (async () => {
+        const data = await file.readBytes();
+        const imageBytes = Uint8Array.from(data);
+        const url = URL.createObjectURL(
+          new Blob([imageBytes.buffer], { type: mediaType }),
+        );
+        if (archiveClosed) {
+          // dispose 先于物化完成：立即 revoke，避免产生无记账的 blob URL。
+          URL.revokeObjectURL(url);
+          return null;
+        }
+        const entry = { url, refs: 0 };
+        materialized.set(source, entry);
+        pathByUrl.set(url, source);
+        return entry;
+      })();
+      materializing.set(source, created);
+      const settle = (): void => {
+        if (materializing.get(source) === created) {
+          materializing.delete(source);
+        }
+      };
+      void created.then(settle, settle);
+      return created;
+    };
+
     const materializeImages = async (doc: Document): Promise<void> => {
       for (const image of Array.from(doc.querySelectorAll<HTMLImageElement>('img[src]'))) {
         const source = image.getAttribute('src') ?? '';
@@ -245,20 +292,9 @@ export async function parseEpub(
         if (manifestItem === undefined) {
           continue;
         }
-        let entry = materialized.get(source);
-        if (entry === undefined) {
-          const file = archive.file(source);
-          if (file === null) {
-            continue;
-          }
-          const data = await file.readBytes();
-          const imageBytes = Uint8Array.from(data);
-          const url = URL.createObjectURL(
-            new Blob([imageBytes.buffer], { type: manifestItem.mediaType }),
-          );
-          entry = { url, refs: 0 };
-          materialized.set(source, entry);
-          pathByUrl.set(url, source);
+        const entry = await materializeOne(source, manifestItem.mediaType);
+        if (entry === null) {
+          continue;
         }
         entry.refs += 1;
         image.setAttribute('src', entry.url);

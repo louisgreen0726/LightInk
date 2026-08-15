@@ -28,13 +28,22 @@ function includesReplacement(s: string): boolean {
   return s.includes('�');
 }
 
+/**
+ * 嗅探专用解码：stream 模式（不冲刷尾部）使窗口末尾不完整的多字节序列被挂起，
+ * 不产出替换字符。否则 64 KiB 截断点落在 UTF-8 字符内部时 utf-8 分支误判失败，
+ * 而截断残留的 lead+首 continuation 恰是合法 GBK 对，label 会误判 gbk 致整书乱码。
+ */
+function decodeSniff(bytes: Uint8Array, label: string): string {
+  return new TextDecoder(label, { fatal: false }).decode(bytes, { stream: true });
+}
+
 /** 编码嗅探：UTF-8 无替换字符优先；否则 GBK 干净则 GBK；再退回 UTF-8 best effort。 */
 function detectTextLabel(sniff: Uint8Array): string {
-  if (!includesReplacement(decodeText(sniff, 'utf-8'))) {
+  if (!includesReplacement(decodeSniff(sniff, 'utf-8'))) {
     return 'utf-8';
   }
   try {
-    if (!includesReplacement(decodeText(sniff, 'gbk'))) {
+    if (!includesReplacement(decodeSniff(sniff, 'gbk'))) {
       return 'gbk';
     }
   } catch {

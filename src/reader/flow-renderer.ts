@@ -253,6 +253,9 @@ export function createFlowRenderer(
           win.chapter.releaseResources?.(doc);
         }
       })
+      // 物化/释放失败（如损坏 zip 条目）不中断该章串行队列：吞错保持后续窗口
+      // 同步可用，图片保留包内路径占位 src 呈现为破图（T8 懒物化后 parse 期不再
+      // 抛此类错误，损坏条目由 parse 期抛错变为渲染期静默破图，属既定语义）。
       .catch(() => undefined);
   };
 
