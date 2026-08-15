@@ -335,7 +335,11 @@ export interface LayoutRect {
   height: number;
 }
 
-/** Slot under the viewport center, plus the point inside that slot (0..1). */
+/**
+ * Slot under the viewport center, plus the point inside that slot. Ratios are
+ * deliberately unclamped (by design): a point outside the nearest slot keeps
+ * its extrapolated offset so restore math does not silently jump to a slot edge.
+ */
 export interface ViewportAnchor {
   index: number;
   xRatio: number;

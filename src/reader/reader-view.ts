@@ -99,7 +99,9 @@ import {
   pagedProgressRatio,
   rafFrameScheduler,
   readingNavDirection,
+  scrollToKeepViewportAnchor,
   snapPagedScroller,
+  viewportAnchor,
 } from '../ui/reading-layout.js';
 import { createFlowRenderer } from './flow-renderer.js';
 
@@ -264,6 +266,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let restoreAttempts = 0;
   let progressSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let layoutSwitching = false;
+  /**
+   * T6 缩放性能：字号档位变更 settle 后仍待补分栏的离屏章索引（翻页模式
+   * 惰性重分栏标记；null = 无待补章）。仅视口相交章在 settle 时立即重分栏，
+   * 离屏章延迟到 setActiveChapter 激活时补，避免全部章节整批重分栏。
+   */
+  let stalePaginatedChapters: Set<number> | null = null;
+  /** T6：字号缩放档位合并去抖的 settle 定时器 cancel（destroy/切换时作废）。 */
+  let cancelFontScaleRefresh: (() => void) | null = null;
 
   // T5：章节 iframe 渲染/生命周期拆入 flow-renderer；本编排壳经 hooks 回调
   // 状态机/进度/标注/搜索（hooks 在调用时求值，晚于其定义点亦可）。
@@ -310,8 +320,35 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const clearFlowBindings = (): void => {
     flowRenderer.clear();
   };
+  /** T6：视口相交的章节索引（翻页模式下即活动章；判定与 flow-renderer 同口径）。 */
+  const visibleChapterIndexes = (): Set<number> => {
+    const hostRect = scrollHost.getBoundingClientRect();
+    const visible = new Set<number>();
+    for (const chapter of scrollHost.querySelectorAll<HTMLElement>('.lightink-reader-chapter')) {
+      const rect = chapter.getBoundingClientRect();
+      if (rect.bottom > hostRect.top && rect.top < hostRect.bottom) {
+        visible.add(Number(chapter.dataset.chapterIndex));
+      }
+    }
+    return visible;
+  };
   const setActiveChapter = (index: number): void => {
     flowRenderer.setActiveChapter(index);
+    // T6：离屏章惰性分栏——缩放后仍未按新档分栏的章在激活时补一次
+    // applyPaginatedDocument（snap:false 不抢滚动位置，由调用方决定落点）。
+    if (
+      stalePaginatedChapters !== null &&
+      document.documentElement.dataset.readingLayout === 'paginated' &&
+      stalePaginatedChapters.delete(index)
+    ) {
+      const frame = scrollHost.querySelector<HTMLIFrameElement>(
+        `.lightink-reader-chapter[data-chapter-index="${index}"] .lightink-reader-chapter-frame`,
+      );
+      const frameDocument = frame?.contentDocument ?? null;
+      if (frame !== null && frame !== undefined && frameDocument !== null) {
+        applyPaginatedDocument(frame, frameDocument, { snap: false });
+      }
+    }
   };
   const visibleFlowFrame = (): HTMLIFrameElement | null => flowRenderer.visibleFrame();
   const applyPaginatedDocument = (
@@ -1620,6 +1657,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     delete pageHost.dataset.readerActive;
     // 页宿主滚动合并帧作废（T3 review 遗留：交换点与 destroy 对称 cancel）。
     pageScrollCoordinator?.cancel();
+    stalePaginatedChapters = null; // 新文档：帧 load 时各自应用分栏，无待补章
     flowRenderer.render(chapters, stylesheet);
     setActiveChapter(0);
     syncFlowState();
@@ -1659,6 +1697,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     },
   ): void => {
     clearFlowBindings();
+    stalePaginatedChapters = null; // 切到页格式：流式惰性分栏标记随流式宿主一并作废
     const previousFlowDispose = flowContentDispose;
     flowContentDispose = null;
     const previousPdf = pdfHandle;
@@ -1788,6 +1827,57 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     return false;
   };
 
+  /**
+   * T6 缩放性能：字号档位本身便宜（CSS 变量），贵在下游整章 column 重排。
+   * 连续缩放（键盘连按 / Ctrl+滚轮在 wheel 层 80ms 节流之上）在消费侧合并
+   * 去抖，收敛到 ~200ms settle 后一次性刷新（复用 createResizeSettle 模式）：
+   * - 翻页模式：仅视口相交章立即重分栏，离屏章标记惰性（激活时补分栏）；
+   * - 滚动模式：复用基座缩放锚点数学（viewportAnchor），缩放后视口锚点
+   *   内容不漂移（锚点比率按设计不钳制，见 reading-layout）。
+   * PDF 路径不动：pdf.ts 已是仅可见页栅格化 + 视口锚点的样板实现。
+   */
+  const FONT_SCALE_SETTLE_MS = 200;
+  const settleFontScaleRefresh = createResizeSettle(FONT_SCALE_SETTLE_MS);
+  const applyFontScaleRefresh = (): void => {
+    cancelFontScaleRefresh = null;
+    if (destroyed || pdfHandle !== null || cbzHandle !== null || PAGE_EXTS.has(loadedExt)) {
+      return;
+    }
+    const paginated = document.documentElement.dataset.readingLayout === 'paginated';
+    const scroller = flowScrollContainer();
+    const chapters = Array.from(
+      scrollHost.querySelectorAll<HTMLElement>('.lightink-reader-chapter'),
+    );
+    const anchor =
+      paginated || chapters.length === 0
+        ? null
+        : viewportAnchor(
+            scroller.getBoundingClientRect(),
+            chapters.map((chapter) => chapter.getBoundingClientRect()),
+            chapterFromScroll(),
+          );
+    if (paginated) {
+      const stale = new Set<number>();
+      for (const chapter of chapters) {
+        stale.add(Number(chapter.dataset.chapterIndex));
+      }
+      for (const index of visibleChapterIndexes()) {
+        stale.delete(index);
+      }
+      stalePaginatedChapters = stale;
+    } else {
+      stalePaginatedChapters = null;
+    }
+    syncVisibleFlowFrames();
+    if (anchor !== null) {
+      const slot = chapters[anchor.index]?.getBoundingClientRect();
+      if (slot !== undefined) {
+        scroller.scrollTop = scrollToKeepViewportAnchor(scroller, slot, anchor).scrollTop;
+      }
+    }
+    syncFlowState();
+    schedulePersistReadingProgress();
+  };
   const onFontScaleChange = (): void => {
     if (destroyed) {
       return;
@@ -1796,7 +1886,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       void pdfHandle.rerender();
       return;
     }
-    syncVisibleFlowFrames();
+    cancelFontScaleRefresh = settleFontScaleRefresh(applyFontScaleRefresh);
   };
   if (typeof document !== 'undefined') {
     document.addEventListener('lightink:font-scale', onFontScaleChange);
@@ -1821,6 +1911,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (destroyed || pdfHandle !== null || cbzHandle !== null || PAGE_EXTS.has(loadedExt)) {
       return;
     }
+    stalePaginatedChapters = null; // 布局切换重测/重分栏全部帧，作废缩放惰性标记
     const saved = lastFlowProgress ?? currentProgressSnapshot();
     if (saved !== null && progressId !== '') {
       saveReadingProgress(progressStorage, progressId, saved);
@@ -2176,6 +2267,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       closestPane()?.removeEventListener('scroll', schedulePageScroll);
       flowScrollCoordinator?.cancel();
       pageScrollCoordinator?.cancel();
+      cancelFontScaleRefresh?.();
+      cancelFontScaleRefresh = null;
+      stalePaginatedChapters = null;
       pageHost.removeEventListener('mouseup', onPageHostSelection);
     pageHost.removeEventListener('click', onPageHostNoteClick);
       textLayerObserver?.disconnect();

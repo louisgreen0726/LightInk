@@ -4,7 +4,7 @@
  * reader-view 骨架测试：挂载结构（滚动/页两种宿主 + 空态占位）、i18n、销毁移除 DOM。
  * 骨架用例沿用最小 fake document；划选工具栏用例（R3）用 jsdom 真实 DOM。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createReaderView } from '../reader-view.js';
 import { createFlowRenderer, flowFrameContentHeight } from '../flow-renderer.js';
@@ -327,5 +327,119 @@ describe('共享翻页布局应用器（T5：markdown 与流式同源）', () =>
     );
     expect(html.style.columnWidth).toBe(`${metrics.columnWidth}px`);
     iframe.remove();
+  });
+});
+
+describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式锚点不漂移）', () => {
+  const rect = (top: number, height: number): DOMRect =>
+    ({ top, bottom: top + height, left: 0, right: 400, width: 400, height }) as DOMRect;
+
+  const loadFlowBook = async (
+    chapterCount: number,
+  ): Promise<{
+    host: HTMLDivElement;
+    view: ReturnType<typeof createReaderView>;
+    scroll: HTMLElement;
+    chapters: HTMLElement[];
+    frames: HTMLIFrameElement[];
+  }> => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => new Uint8Array(),
+      parseContent: async () => ({
+        chapters: Array.from({ length: chapterCount }, (_, index) => ({
+          title: `Chapter ${index + 1}`,
+          html: `<p>chapter ${index + 1} body</p>`,
+        })),
+      }),
+    });
+    await view.load('book.epub');
+    const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
+    const chapters = Array.from(scroll.querySelectorAll<HTMLElement>('.lightink-reader-chapter'));
+    const frames = Array.from(
+      host.querySelectorAll<HTMLIFrameElement>('.lightink-reader-chapter-frame'),
+    );
+    for (const frame of frames) {
+      frame.dispatchEvent(new Event('load'));
+    }
+    // 冲掉帧 load 时排队的 rAF chrome 重放，避免迟到帧改写测试预设的样式。
+    await vi.advanceTimersByTimeAsync(50);
+    return { host, view, scroll, chapters, frames };
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+    document.documentElement.style.removeProperty('--lightink-font-scale');
+  });
+
+  it('滚动模式：字号缩放经 ~200ms settle 合并去抖，仅刷新可见帧并保持视口锚点', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const { view, scroll, chapters, frames } = await loadFlowBook(2);
+
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
+    vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue(rect(0, 500));
+    vi.spyOn(chapters[1]!, 'getBoundingClientRect').mockReturnValue(rect(5000, 800));
+    vi.spyOn(frames[1]!, 'getBoundingClientRect').mockReturnValue(rect(5000, 800));
+    // 缩放前章高 800、缩放后重排为 1600：锚点恢复必须把视口中心内容按比例带回。
+    // （jsdom 会把 calc(16px * 2) 归一化为 calc(32px)，故提取像素数值区分前后。）
+    const bodyFontPx = (body: HTMLElement): number =>
+      Number(body.style.fontSize.match(/(\d+(?:\.\d+)?)px/)?.[1] ?? 0);
+    const visibleBody = frames[0]!.contentDocument!.body;
+    const scaledUp = (): boolean => bodyFontPx(visibleBody) >= 32;
+    vi.spyOn(chapters[0]!, 'getBoundingClientRect').mockImplementation(() =>
+      scaledUp() ? rect(50, 1600) : rect(100, 800),
+    );
+    vi.spyOn(frames[0]!, 'getBoundingClientRect').mockReturnValue(rect(100, 800));
+    scroll.scrollTop = 100;
+
+    document.documentElement.style.setProperty('--lightink-font-scale', '2');
+    document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: 2 }));
+
+    // settle 窗口内不重排（连续缩放合并去抖，避免每档整章 column 重排）。
+    expect(scaledUp()).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(scaledUp()).toBe(true); // 可见帧已按新档刷新
+    expect(bodyFontPx(frames[1]!.contentDocument!.body)).toBeLessThan(32); // 离屏帧不动
+    // 视口锚点（章内 0.1875 处）回到中心：scrollTop 100 → 200，内容不漂移。
+    expect(scroll.scrollTop).toBe(200);
+    await view.destroy();
+  });
+
+  it('翻页模式：settle 时仅可见章立即重分栏，离屏章激活时才惰性补分栏', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.readingLayout = 'paginated';
+    const { view, scroll, chapters, frames } = await loadFlowBook(3);
+
+    vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue(rect(0, 500));
+    vi.spyOn(chapters[0]!, 'getBoundingClientRect').mockReturnValue(rect(100, 300));
+    vi.spyOn(frames[0]!, 'getBoundingClientRect').mockReturnValue(rect(100, 300));
+    for (let i = 1; i < 3; i += 1) {
+      vi.spyOn(chapters[i]!, 'getBoundingClientRect').mockReturnValue(rect(5000, 300));
+      vi.spyOn(frames[i]!, 'getBoundingClientRect').mockReturnValue(rect(5000, 300));
+    }
+    // 模拟“未按当前档分栏”的陈旧宽度：可见章 0 与离屏章 1/2 各自不同。
+    const htmls = frames.map((frame) => frame.contentDocument!.documentElement);
+    htmls[0]!.style.width = '555px';
+    htmls[1]!.style.width = '777px';
+    htmls[2]!.style.width = '888px';
+
+    document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: 2 }));
+    expect(htmls[0]!.style.width).toBe('555px'); // 未到 settle 不重分栏
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(htmls[0]!.style.width).not.toBe('555px'); // 可见章立即重分栏
+    expect(htmls[1]!.style.width).toBe('777px'); // 离屏章不参与整批重分栏
+    expect(htmls[2]!.style.width).toBe('888px');
+
+    // 激活离屏章 1：惰性补分栏；其余离屏章保持惰性。
+    view.jumpToOutlineItem({ level: 1, text: 'Chapter 2', anchor: 1, chapter: 1 });
+    expect(htmls[1]!.style.width).not.toBe('777px');
+    expect(htmls[2]!.style.width).toBe('888px');
+    await view.destroy();
   });
 });
