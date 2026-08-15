@@ -487,4 +487,27 @@ export class SourceView {
   destroy(): void {
     this.exit();
   }
+
+  /**
+   * 释放监听器与叠加 DOM，不回写编辑器——供编辑器已销毁的标签关闭清理使用
+   * （窗口 resize 监听器若残留会经闭包强引用已关闭文档的宿主/编辑器，构成泄漏）。
+   */
+  dispose(): void {
+    if (this.onWindowResize !== null) {
+      window.removeEventListener('resize', this.onWindowResize);
+      this.onWindowResize = null;
+    }
+    if (this.wrapper !== null) {
+      this.wrapper.remove();
+      this.wrapper = null;
+    }
+    this.textarea = null;
+    this.codeEl = null;
+    if (this.proseMirror !== null) {
+      this.proseMirror.style.display = this.savedPmDisplay;
+      this.proseMirror = null;
+      this.savedPmDisplay = '';
+    }
+    this.host.classList.remove('is-source-mode');
+  }
 }

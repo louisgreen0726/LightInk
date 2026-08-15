@@ -14,6 +14,8 @@ export interface WindowCloseGuardDeps {
   closeAllTabs(action: Exclude<ExitChoice, 'cancel'>): Promise<boolean>;
   flushDirtySnapshots(): void | Promise<void>;
   closeWindow(): Promise<void>;
+  /** 关闭窗口前释放 app 生命周期资源（定时器/监听器）。 */
+  shutdown?(): void;
   reportError?: (error: unknown) => void;
 }
 
@@ -71,6 +73,7 @@ export function createWindowCloseGuard(deps: WindowCloseGuardDeps): WindowCloseG
     }
 
     try {
+      deps.shutdown?.();
       await deps.closeWindow();
     } catch (error) {
       reportError(error);

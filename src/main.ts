@@ -116,13 +116,13 @@ if (app === null) {
 }
 
 // 1080p / 2K / 4K layout tier → html[data-display]; theme.css scales tokens.
-installDisplayScale(document.documentElement, window);
+const displayScale = installDisplayScale(document.documentElement, window);
 
 // Reading font zoom (body/code) over tier baselines; persists lightink.fontScale.
 const fontScale = installFontScale(document.documentElement, window.localStorage);
 
 // R5：Ctrl/Cmd + 滚轮字号缩放（与 Ctrl+=/- 同档位、同持久化）；capture 阶段拦截。
-installWheelZoom(document, fontScale);
+const wheelZoom = installWheelZoom(document, fontScale);
 
 let readingLayout = loadReadingLayout(window.localStorage);
 applyReadingLayout(document.documentElement, readingLayout);
@@ -298,6 +298,8 @@ const sourceViews = new Map<string, SourceView>();
 const markdownAnnotations = new Map<string, MarkdownAnnotationHost>();
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
+// R6：外部变更秒级轮询句柄（退出时清理）。
+let externalChangeTimer: number | null = null;
 /** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
 let lastActiveMenuKind: 'markdown' | 'reader' | null = null;
 
@@ -1197,11 +1199,12 @@ function cycleActiveTab(delta: 1 | -1): void {
   }
 }
 
-/** 清理已关闭标签的 SourceView（宿主已由 detachHost 移除；仅删 Map 项，不对已销毁编辑器写回）。 */
+/** 清理已关闭标签的 SourceView（宿主已由 detachHost 移除；dispose 释放残留监听器与 DOM）。 */
 function pruneSourceViews(): void {
   const live = new Set(manager.tabList.map((t) => t.id));
-  for (const id of [...sourceViews.keys()]) {
+  for (const [id, view] of [...sourceViews.entries()]) {
     if (!live.has(id)) {
+      view.dispose();
       sourceViews.delete(id);
     }
   }
@@ -2438,11 +2441,26 @@ function installApplicationCloseProtection(): void {
     },
     closeAllTabs: (action) => manager.closeAllTabs(action),
     flushDirtySnapshots: () => manager.flushDirtySnapshots(),
+    shutdown,
     reportError: (error) => {
       // eslint-disable-next-line no-console
       console.error('[lightink/window-close] close protection failed', error);
     },
   });
+}
+
+/** 关闭窗口前释放 app 生命周期资源（外部变更轮询、自动保存、启动监听器）。 */
+let didShutdown = false;
+function shutdown(): void {
+  if (didShutdown) return;
+  didShutdown = true;
+  if (externalChangeTimer !== null) {
+    clearInterval(externalChangeTimer);
+    externalChangeTimer = null;
+  }
+  autosave?.dispose();
+  displayScale.dispose();
+  wheelZoom.dispose();
 }
 
 installApplicationCloseProtection();
@@ -2461,7 +2479,7 @@ window.addEventListener('focus', () => {
   void pollExternalChange();
 });
 // 秒级轮询兜底（聚焦间隙的外部修改）；弹窗进行中由 TabManager 自身守卫跳过。
-window.setInterval(() => {
+externalChangeTimer = window.setInterval(() => {
   void pollExternalChange();
 }, 3000);
 // Tauri 窗口聚焦事件比 DOM focus 更可靠地覆盖「从其它应用切回」的场景。
