@@ -220,6 +220,8 @@ pub fn read_image_base64(
 // 发起 PrintToPdf 并立刻回到 run loop。
 
 /// 从 CDP `Page.printToPDF` 返回的 JSON 取出 base64 载荷。
+/// 仅 Windows 分支的 print_webview_to_pdf 使用；不加 cfg 会在其它平台变成死代码。
+#[cfg(windows)]
 fn cdp_pdf_base64(json: &str) -> Result<&str, String> {
     let key = "\"data\"";
     let start = json
@@ -404,6 +406,7 @@ mod tests {
 
     // -- base64 编码（与 asset.rs 解码测试向量互逆） --
 
+    #[cfg(windows)]
     #[test]
     fn cdp_pdf_base64_extracts_payload() {
         assert_eq!(
