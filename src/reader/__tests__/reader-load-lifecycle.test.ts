@@ -3,6 +3,43 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createReaderView } from '../reader-view.js';
+import {
+  loadReadingProgress,
+  READING_PROGRESS_KEY_PREFIX,
+  READING_PROGRESS_MAX_ENTRIES,
+  saveReadingProgress,
+  type ProgressStorage,
+  type ReadingProgress,
+} from '../reading-progress.js';
+import {
+  REMOTE_IMAGE_CONSENT_LIMIT,
+  SessionRemoteImagePolicy,
+} from '../../media/remote-image-policy.js';
+
+/** R7 同标签格式切换回归：PDF 渲染走 mock（真实栅格化留手工验证）。 */
+const pdfMock = vi.hoisted(() => ({ renderPdfInto: vi.fn() }));
+vi.mock('../formats/pdf.js', () => ({ renderPdfInto: pdfMock.renderPdfInto }));
+
+const fakePdfHandle = (page = 3, totalPages = 10) => ({
+  controller: {
+    totalPages,
+    page,
+    scale: 1,
+    canPrev: page > 1,
+    canNext: page < totalPages,
+    next: () => false,
+    prev: () => false,
+    setPage: () => true,
+    zoomIn: () => false,
+    zoomOut: () => false,
+    resetScale: () => false,
+  },
+  rerender: async () => undefined,
+  scrollToPage: () => undefined,
+  search: async () => [],
+  outline: async () => [],
+  destroy: vi.fn(async () => undefined),
+});
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -31,6 +68,7 @@ function frameSource(host: HTMLElement): string {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  pdfMock.renderPdfInto.mockReset();
   document.body.replaceChildren();
 });
 
@@ -451,5 +489,144 @@ describe('Reader load lifecycle', () => {
     view.toggleSidebar();
     root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(view.isSidebarVisible()).toBe(false);
+  });
+});
+
+describe('Reader R7 memory regressions', () => {
+  it('same-tab PDF→flow switch leaves no stale page-scroll listener zeroing reading state', async () => {
+    const pane = document.createElement('div');
+    pane.id = 'lightink-editor-area';
+    document.body.appendChild(pane);
+    const host = document.createElement('div');
+    pane.appendChild(host);
+    const handles: Array<ReturnType<typeof fakePdfHandle>> = [];
+    pdfMock.renderPdfInto.mockImplementation(async () => {
+      const handle = fakePdfHandle();
+      handles.push(handle);
+      return handle;
+    });
+    const view = createReaderView(host, {
+      readBytes: async () => bytes('unused'),
+      parseContent: async () => ({
+        chapters: [
+          { title: 'One', html: '<p>one</p>' },
+          { title: 'Two', html: '<p>two</p>' },
+        ],
+      }),
+    });
+
+    await view.load('doc.pdf');
+    expect(view.state).toMatchObject({ phase: 'ready', current: 3, total: 10, locationKind: 'page' });
+
+    await view.load('book.epub');
+    expect(view.state).toMatchObject({ phase: 'ready', total: 2, locationKind: 'chapter' });
+    expect(handles[0]!.destroy).toHaveBeenCalledTimes(1);
+
+    // 共享 pane 滚动：残留的 schedulePageScroll 会走 onPageScroll→syncPageState
+    // 发布清零快照（current:0, total:0, locationKind:null），章节/进度指示闪烁
+    // 甚至被定格（rAF 回调序不确定）。修复后订阅者不应看到任何清零快照。
+    const seen: Array<typeof view.state> = [];
+    const unsubscribe = view.subscribeState((state) => seen.push(state));
+    pane.dispatchEvent(new Event('scroll'));
+    await nextFrame();
+    unsubscribe();
+    expect(seen.length).toBeGreaterThan(0);
+    for (const state of seen) {
+      expect(state).toMatchObject({ total: 2, locationKind: 'chapter' });
+      expect(state.current).toBeGreaterThanOrEqual(1);
+    }
+    expect(view.state).toMatchObject({ current: 1, total: 2, locationKind: 'chapter' });
+    await view.destroy();
+  });
+
+  it('repeated same-tab format switches dispose prior handles and keep state consistent', async () => {
+    const pane = document.createElement('div');
+    pane.id = 'lightink-editor-area';
+    document.body.appendChild(pane);
+    const host = document.createElement('div');
+    pane.appendChild(host);
+    const handles: Array<ReturnType<typeof fakePdfHandle>> = [];
+    pdfMock.renderPdfInto.mockImplementation(async () => {
+      const handle = fakePdfHandle();
+      handles.push(handle);
+      return handle;
+    });
+    const view = createReaderView(host, {
+      readBytes: async () => bytes('unused'),
+      parseContent: async () => ({
+        chapters: [{ title: 'One', html: '<p>one</p>' }],
+      }),
+    });
+
+    // 反复 PDF→流式切换：每个被替换的 PDF 句柄都必须销毁（无累积），
+    // 且最终滚动后订阅者看不到任何清零快照（残留监听器会累积并抢发页状态）。
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      await view.load(`doc-${cycle}.pdf`);
+      await view.load(`book-${cycle}.epub`);
+    }
+    expect(handles).toHaveLength(5);
+    for (const handle of handles) {
+      expect(handle.destroy).toHaveBeenCalledTimes(1);
+    }
+    const seen: Array<typeof view.state> = [];
+    const unsubscribe = view.subscribeState((state) => seen.push(state));
+    pane.dispatchEvent(new Event('scroll'));
+    await nextFrame();
+    unsubscribe();
+    for (const state of seen) {
+      expect(state).toMatchObject({ total: 1, locationKind: 'chapter' });
+      expect(state.current).toBeGreaterThanOrEqual(1);
+    }
+    expect(view.state).toMatchObject({ current: 1, total: 1, locationKind: 'chapter' });
+    await view.destroy();
+  });
+
+  it('evicts least-recently-used reading progress beyond the entry cap', () => {
+    const map = new Map<string, string>();
+    const storage: ProgressStorage = {
+      getItem: (key) => map.get(key) ?? null,
+      setItem: (key, value) => {
+        map.set(key, value);
+      },
+      removeItem: (key) => {
+        map.delete(key);
+      },
+      key: (index) => Array.from(map.keys())[index] ?? null,
+      get length() {
+        return map.size;
+      },
+    };
+    const progress = (updatedAt: number): ReadingProgress => ({
+      version: 1,
+      kind: 'flow',
+      index: 0,
+      ratio: 0,
+      updatedAt,
+    });
+    for (let i = 0; i < READING_PROGRESS_MAX_ENTRIES + 5; i += 1) {
+      saveReadingProgress(storage, `book-${i}`, progress(i + 1));
+    }
+    const remaining = Array.from(map.keys()).filter((key) =>
+      key.startsWith(READING_PROGRESS_KEY_PREFIX),
+    );
+    expect(remaining).toHaveLength(READING_PROGRESS_MAX_ENTRIES);
+    // 最旧 5 条被淘汰，其余按最近使用保留。
+    expect(loadReadingProgress(storage, 'book-0')).toBeNull();
+    expect(loadReadingProgress(storage, 'book-4')).toBeNull();
+    expect(loadReadingProgress(storage, 'book-5')).not.toBeNull();
+    expect(loadReadingProgress(storage, `book-${READING_PROGRESS_MAX_ENTRIES + 4}`)).not.toBeNull();
+  });
+
+  it('caps session remote image consent and evicts the oldest grant', () => {
+    const policy = new SessionRemoteImagePolicy();
+    const url = (n: number): string => `https://img.example/p${n}.png`;
+    for (let n = 0; n < REMOTE_IMAGE_CONSENT_LIMIT + 10; n += 1) {
+      expect(policy.allowOnce(url(n))).not.toBeNull();
+    }
+    // 最早 10 条授权被淘汰，其余保留。
+    expect(policy.isAllowed(url(0))).toBe(false);
+    expect(policy.isAllowed(url(9))).toBe(false);
+    expect(policy.isAllowed(url(10))).toBe(true);
+    expect(policy.isAllowed(url(REMOTE_IMAGE_CONSENT_LIMIT + 9))).toBe(true);
   });
 });

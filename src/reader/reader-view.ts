@@ -1648,6 +1648,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
    */
   const renderChapters = (chapters: ReaderChapter[], stylesheet = ''): void => {
     pageHost.removeEventListener('scroll', schedulePageScroll);
+    // R7：页格式时 commitStagedPages 在共享 pane 上挂了 schedulePageScroll，
+    // 同标签 PDF→流式切换必须一并摘除——否则滚动 pane 仍触发 onPageScroll→
+    // syncPageState，把流式阅读状态（章节/进度）清零，且监听器随切换累积。
+    closestPane()?.removeEventListener('scroll', schedulePageScroll);
     pageHost.removeEventListener('mouseup', onPageHostSelection);
     pageHost.removeEventListener('click', onPageHostNoteClick);
     textLayerObserver?.disconnect();

@@ -5,6 +5,9 @@
 
 export const READING_PROGRESS_KEY_PREFIX = 'lightink.reader.progress.';
 
+/** R7：进度条数上限——超出时按最近使用（updatedAt 最旧）淘汰，防 localStorage 无限增长。 */
+export const READING_PROGRESS_MAX_ENTRIES = 50;
+
 export interface ReadingProgress {
   readonly version: 1;
   readonly kind: 'flow' | 'page';
@@ -18,6 +21,10 @@ export interface ReadingProgress {
 export interface ProgressStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  /** 以下枚举/删除能力仅淘汰需要；注入的最小存储缺省时跳过淘汰。 */
+  removeItem?(key: string): void;
+  key?(index: number): string | null;
+  readonly length?: number;
 }
 
 export function readingProgressKey(id: string): string {
@@ -72,6 +79,41 @@ export function loadReadingProgress(
   }
 }
 
+/**
+ * R7：按最近使用淘汰进度条目（updatedAt 最旧的先删，无法解析的按 0 处理
+ * 最先淘汰）。仅当存储具备枚举/删除能力（生产 localStorage）时执行。
+ */
+function evictReadingProgress(storage: ProgressStorage): void {
+  if (
+    typeof storage.removeItem !== 'function' ||
+    typeof storage.key !== 'function' ||
+    typeof storage.length !== 'number'
+  ) {
+    return;
+  }
+  try {
+    const entries: Array<{ key: string; updatedAt: number }> = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const storageKey = storage.key(index);
+      if (storageKey === null || !storageKey.startsWith(READING_PROGRESS_KEY_PREFIX)) {
+        continue;
+      }
+      const progress = parseReadingProgress(storage.getItem(storageKey));
+      entries.push({ key: storageKey, updatedAt: progress?.updatedAt ?? 0 });
+    }
+    const overflow = entries.length - READING_PROGRESS_MAX_ENTRIES;
+    if (overflow <= 0) {
+      return;
+    }
+    entries.sort((a, b) => a.updatedAt - b.updatedAt);
+    for (const entry of entries.slice(0, overflow)) {
+      storage.removeItem(entry.key);
+    }
+  } catch {
+    // 淘汰失败（隐私模式/枚举异常）不阻断阅读。
+  }
+}
+
 export function saveReadingProgress(
   storage: ProgressStorage | null | undefined,
   id: string,
@@ -85,6 +127,7 @@ export function saveReadingProgress(
   } catch {
     // Quota / privacy mode must not interrupt reading.
   }
+  evictReadingProgress(storage);
 }
 
 /** In-chapter progress 0..1 from a scroller's offset into a chapter box. */

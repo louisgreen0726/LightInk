@@ -32,6 +32,9 @@ export function isSafeInlineImageUrl(source: string): boolean {
 
 export type RemoteImageAllowedListener = (url: string) => void;
 
+/** R7：会话内远程图授权条数上限（超出淘汰最早授权）。 */
+export const REMOTE_IMAGE_CONSENT_LIMIT = 500;
+
 export interface RemoteImagePolicy {
   isAllowed(source: string): boolean;
   allowOnce(source: string): string | null;
@@ -52,6 +55,14 @@ export class SessionRemoteImagePolicy implements RemoteImagePolicy {
     const url = normalizeRemoteImageUrl(source);
     if (url === null) return null;
     if (!this.allowed.has(url)) {
+      // R7：会话内授权条数上限——超出时淘汰最早授权（Set 保持插入序），
+      // 防长会话反复授权不同图片源导致集合无限增长。
+      if (this.allowed.size >= REMOTE_IMAGE_CONSENT_LIMIT) {
+        const oldest = this.allowed.values().next();
+        if (oldest.done !== true) {
+          this.allowed.delete(oldest.value);
+        }
+      }
       this.allowed.add(url);
       for (const listener of this.listeners) listener(url);
     }
