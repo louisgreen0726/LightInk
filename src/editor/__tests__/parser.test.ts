@@ -121,6 +121,23 @@ describe('parser', () => {
     const elapsedMs = Date.now() - start;
     expect(doc.length).toBeGreaterThan(8_000);
     expect(parsed.root.children.length).toBeGreaterThan(5);
+    expect(parsed.wordCount).toBeGreaterThan(50);
     expect(elapsedMs).toBeLessThan(2000);
+  });
+
+  it('keeps heap growth bounded for repeated parses', () => {
+    const nodeProcess = (globalThis as { process?: { memoryUsage?: () => { heapUsed: number } } })
+      .process;
+    if (nodeProcess === undefined || typeof nodeProcess.memoryUsage !== 'function') {
+      return;
+    }
+    const doc = '# 万字级\n\n' + '重复负载段落，用于达到万字级文档规模。'.repeat(500);
+    const before = nodeProcess.memoryUsage().heapUsed;
+    for (let i = 0; i < 5; i++) {
+      parseDocument(doc);
+    }
+    const after = nodeProcess.memoryUsage().heapUsed;
+    const deltaMb = (after - before) / 1024 / 1024;
+    expect(deltaMb).toBeLessThan(40);
   });
 });

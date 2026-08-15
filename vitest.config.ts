@@ -6,7 +6,6 @@ export default defineConfig({
     // isolate:true 以确保 vi.mock 与 node/jsdom 混合环境的跨文件隔离。
     pool: 'threads',
     maxWorkers: 4,
-    minWorkers: 1,
     coverage: { enabled: false },
   },
 });
