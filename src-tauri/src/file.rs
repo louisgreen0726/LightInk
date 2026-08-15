@@ -151,50 +151,26 @@ pub fn stat_file(path: String) -> Result<FileStat, String> {
     stat_file_impl(Path::new(&path))
 }
 
-/// 标准 base64 编码表（与 asset.rs 自实现 decoder 的字母表一致，无新 crate）。
-const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// 编码为标准 base64（含 `+` `/` 与 `=` 填充）。供 `read_file_bytes` 把二进制电子书
-/// 字节以字符串形式经 IPC 传给前端（前端 atob 解码）。输入可以是任意字节（含中文、
-/// 二进制）；输出长度 = ceil(len/3)*4。逐 3 字节分组、u32 移位不溢出。
-pub fn encode_base64(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_ALPHABET[((n >> 18) & 0x3f) as usize] as char);
-        out.push(B64_ALPHABET[((n >> 12) & 0x3f) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            B64_ALPHABET[((n >> 6) & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            B64_ALPHABET[(n & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// 读取文件的原始字节（不做 UTF-8 解码，电子书多为二进制）。io 错误映射为可读中文信息。
 pub fn read_file_bytes_impl(path: &Path) -> Result<Vec<u8>, String> {
     read_bounded(path, reader_limit_for_path(path))
 }
 
-/// 读取文件字节并以标准 base64 返回（供前端 reader 解析二进制电子书格式）。
+/// 读取文件字节并经 tauri raw IPC 返回（`InvokeResponseBody::Raw`，前端 `invoke`
+/// 直接得到 ArrayBuffer）。不再走 base64 字符串编码与前端 atob 逐字节解码：
+/// Rust 侧峰值从 N + 4N/3 降到 N，JS 侧从 ~10N/3 降到 N。128MB/32MB 上限与
+/// 错误语义与 `read_file_bytes_impl` 完全一致。
 #[tauri::command]
-pub fn read_file_bytes(path: String) -> Result<String, String> {
+pub fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     let bytes = read_file_bytes_impl(Path::new(&path))?;
-    Ok(encode_base64(&bytes))
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Response::body 来自 IpcResponse trait（消费 self），测试断言需引入。
+    use tauri::ipc::IpcResponse;
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp dir")
@@ -286,34 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn base64_known_vectors() {
-        // RFC 4648 标准测试向量（覆盖 0/1/2/3 字节与全部填充分支）。
-        assert_eq!(encode_base64(b""), "");
-        assert_eq!(encode_base64(b"f"), "Zg==");
-        assert_eq!(encode_base64(b"fo"), "Zm8=");
-        assert_eq!(encode_base64(b"foo"), "Zm9v");
-        assert_eq!(encode_base64(b"foob"), "Zm9vYg==");
-        assert_eq!(encode_base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(encode_base64(b"foobar"), "Zm9vYmFy");
-        assert_eq!(encode_base64(b"lightink"), "bGlnaHRpbms=");
-        assert_eq!(encode_base64(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
-    }
-
-    #[test]
-    fn base64_length_and_padding_for_binary() {
-        // 非 UTF-8 二进制边界值（0x00/0xff）：长度恒为 4 的倍数，填充正确。
-        assert_eq!(encode_base64(&[0xffu8]).len(), 4); // 1 字节 → 2 填充
-        assert_eq!(encode_base64(&[0xffu8, 0x00]).len(), 4); // 2 字节 → 1 填充
-        let bin = [0x00u8, 0xff, 0x80, 0x7f, 0x01];
-        let enc = encode_base64(&bin);
-        assert_eq!(enc.len(), 8);
-        assert_eq!(enc.matches('=').count(), 1); // 5 字节 → 1 填充
-                                                 // 中文 UTF-8 字节同样满足长度约束。
-        let zh = encode_base64("轻墨 🚀".as_bytes());
-        assert_eq!(zh.len() % 4, 0);
-    }
-
-    #[test]
     fn read_file_bytes_returns_raw_bytes() {
         let dir = temp_dir();
         let path = dir.path().join("book.epub");
@@ -322,17 +270,61 @@ mod tests {
         std::fs::write(&path, raw).expect("write");
         let bytes = super::read_file_bytes_impl(&path).expect("read bytes");
         assert_eq!(bytes, raw.to_vec());
-        // base64 编码长度正确（read_file_bytes 命令的返回形态）。
-        let b64 = super::encode_base64(&bytes);
-        assert_eq!(b64.len(), raw.len().div_ceil(3) * 4);
+    }
+
+    #[test]
+    fn read_file_bytes_command_returns_raw_ipc_body() {
+        // 命令层（T7）：read_file_bytes 必须经 raw IPC 返回原始字节，不产生 base64
+        // 中间拷贝（`InvokeResponseBody::Json(String)` 视为回退到 JSON 通道）。
+        let dir = temp_dir();
+        let path = dir.path().join("book.epub");
+        let raw = [0x50u8, 0x4b, 0x03, 0x04, 0xff, 0x00, 0x80, 0x7f];
+        std::fs::write(&path, raw).expect("write");
+        let response =
+            super::read_file_bytes(path.to_string_lossy().into_owned()).expect("read bytes");
+        match response.body() {
+            Ok(tauri::ipc::InvokeResponseBody::Raw(bytes)) => assert_eq!(bytes, raw),
+            Ok(tauri::ipc::InvokeResponseBody::Json(json)) => {
+                panic!("expected raw IPC body, got json: {json}")
+            }
+            Err(e) => panic!("ipc response body error: {e}"),
+        }
+    }
+
+    #[test]
+    fn read_file_bytes_command_preserves_error_semantics() {
+        // 命令层错误语义与 impl 一致：缺失文件仍返回可读中文错误（含路径），
+        // 超限仍返回 FILE_TOO_LARGE:actual:limit。
+        let dir = temp_dir();
+        let missing = dir.path().join("nope.epub");
+        let err = match super::read_file_bytes(missing.to_string_lossy().into_owned()) {
+            Ok(_) => panic!("missing file must fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("无法读取文件"), "unexpected error: {}", err);
+
+        let oversized = dir.path().join("oversized.epub");
+        File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_READER_FILE_BYTES + 1)
+            .unwrap();
+        let err = match super::read_file_bytes(oversized.to_string_lossy().into_owned()) {
+            Ok(_) => panic!("oversized file must fail"),
+            Err(e) => e,
+        };
+        assert!(
+            err.starts_with("FILE_TOO_LARGE:"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
     fn read_file_bytes_large_file_does_not_overflow() {
-        // 大文件：base64 编码不得 panic/溢出（u32 移位安全、String 可增长）。
+        // 大文件：整文件读入不 panic/溢出，字节与长度原样返回（无中间编码拷贝）。
         let dir = temp_dir();
         let path = dir.path().join("big.bin");
-        let size = 1_000_003u64; // 非 3 的倍数，触发尾部填充分支
+        let size = 1_000_003u64;
         let mut big = Vec::with_capacity(size as usize);
         let mut x = 1u8;
         for _ in 0..size {
@@ -342,8 +334,7 @@ mod tests {
         std::fs::write(&path, &big).expect("write");
         let bytes = super::read_file_bytes_impl(&path).expect("read");
         assert_eq!(bytes.len() as u64, size);
-        let b64 = super::encode_base64(&bytes);
-        assert_eq!(b64.len(), (size as usize).div_ceil(3) * 4);
+        assert_eq!(bytes, big);
     }
 
     #[test]

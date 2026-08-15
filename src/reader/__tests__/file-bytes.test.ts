@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  decodeBase64WithLimit,
   MAX_BINARY_READER_BYTES,
   MAX_TEXT_READER_BYTES,
-  ReaderFileTooLargeError,
   readerByteLimitForPath,
+  readerBytesFromIpc,
+  ReaderFileTooLargeError,
 } from '../file-bytes.js';
 
 describe('reader file byte budgets', () => {
@@ -27,15 +27,19 @@ describe('reader file byte budgets', () => {
     expect(readerByteLimitForPath('notes.')).toBe(MAX_BINARY_READER_BYTES);
   });
 
-  it('checks exact decoded length before base64 decoding', () => {
-    const decode = (value: string): string => (value === 'YWI=' ? 'ab' : 'abc');
-    expect(decodeBase64WithLimit('YWI=', 2, decode)).toEqual(new Uint8Array([97, 98]));
-    expect(() => decodeBase64WithLimit('YWJj', 2, decode)).toThrow(ReaderFileTooLargeError);
+  it('consumes raw IPC ArrayBuffer without base64 decoding', () => {
+    // T7：read_file_bytes raw IPC 直接返回字节，无 atob/逐字节解码路径。
+    const raw = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00]);
+    expect(readerBytesFromIpc('book.epub', raw.buffer as ArrayBuffer)).toEqual(raw);
+    expect(readerBytesFromIpc('book.epub', raw)).toEqual(raw);
   });
 
-  it('rechecks decoder output at the exact encoded boundary', () => {
-    expect(() => decodeBase64WithLimit('YWI=', 2, () => 'abc')).toThrow(
+  it('enforces the per-extension byte limit on raw IPC bytes', () => {
+    const textBytes = new Uint8Array(MAX_TEXT_READER_BYTES + 1);
+    expect(() => readerBytesFromIpc('notes.txt', textBytes)).toThrow(
       ReaderFileTooLargeError,
     );
+    // 二进制格式仍走 128MB 上限。
+    expect(readerBytesFromIpc('book.pdf', new Uint8Array(1))).toHaveLength(1);
   });
 });

@@ -315,20 +315,20 @@ function throwIfReaderReadCancelled(signal?: AbortSignal): void {
   }
 }
 
-/** 读取阅读文件原始字节（read_file_bytes base64 → Uint8Array），供 reader-view.load。 */
+/** 读取阅读文件原始字节（read_file_bytes raw IPC → Uint8Array），供 reader-view.load。 */
 async function readReaderBytes(
   filePath: string,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   throwIfReaderReadCancelled(signal);
-  const { decodeReaderFileBase64, ReaderFileTooLargeError } = await import(
+  const { readerBytesFromIpc, ReaderFileTooLargeError } = await import(
     './reader/file-bytes.js'
   );
   try {
     throwIfReaderReadCancelled(signal);
-    const b64 = await invoke<string>('read_file_bytes', { path: filePath });
+    const raw = await invoke<ArrayBuffer>('read_file_bytes', { path: filePath });
     throwIfReaderReadCancelled(signal);
-    const bytes = decodeReaderFileBase64(filePath, b64);
+    const bytes = readerBytesFromIpc(filePath, raw);
     throwIfReaderReadCancelled(signal);
     return bytes;
   } catch (error) {

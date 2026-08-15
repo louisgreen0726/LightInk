@@ -26,34 +26,19 @@ export function readerByteLimitForPath(path: string): number {
   return TEXT_EXTENSIONS.has(extension) ? MAX_TEXT_READER_BYTES : MAX_BINARY_READER_BYTES;
 }
 
-function decodedBase64Length(base64: string): number {
-  if (base64.length % 4 !== 0) {
-    throw new Error('Invalid padded base64 length');
-  }
-  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
-  return (base64.length / 4) * 3 - padding;
-}
-
-export function decodeBase64WithLimit(
-  base64: string,
-  limitBytes: number,
-  decode: (value: string) => string = globalThis.atob,
+/**
+ * 校验并归一 raw IPC 字节（T7）：`read_file_bytes` 经 tauri raw IPC 返回，JS 侧
+ * 直接获得 ArrayBuffer/Uint8Array，不再有 base64 字符串与 atob 逐字节解码。
+ * 上限校验保留为前端防御（Rust 侧已在分配前拒绝超限文件），错误语义不变。
+ */
+export function readerBytesFromIpc(
+  path: string,
+  data: ArrayBuffer | Uint8Array,
 ): Uint8Array {
-  const expectedBytes = decodedBase64Length(base64);
-  if (expectedBytes > limitBytes) {
-    throw new ReaderFileTooLargeError(expectedBytes, limitBytes);
-  }
-  const binary = decode(base64);
-  if (binary.length > limitBytes) {
-    throw new ReaderFileTooLargeError(binary.length, limitBytes);
-  }
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const limitBytes = readerByteLimitForPath(path);
+  if (bytes.byteLength > limitBytes) {
+    throw new ReaderFileTooLargeError(bytes.byteLength, limitBytes);
   }
   return bytes;
-}
-
-export function decodeReaderFileBase64(path: string, base64: string): Uint8Array {
-  return decodeBase64WithLimit(base64, readerByteLimitForPath(path));
 }
