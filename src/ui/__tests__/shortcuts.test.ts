@@ -61,6 +61,7 @@ describe('默认键位映射', () => {
       'zoom-in': 'Ctrl+=',
       'zoom-out': 'Ctrl+-',
       'zoom-reset': 'Ctrl+0',
+      'toggle-reading-layout': 'Ctrl+M',
     });
   });
 });

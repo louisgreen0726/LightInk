@@ -19,7 +19,15 @@ import type { EditorView } from '@milkdown/prose/view';
 
 const PLUGIN_KEY = new PluginKey('lightink-format-toolbar');
 
-export type FormatToolId = 'bold' | 'italic' | 'strikethrough' | 'code' | 'link';
+export type FormatToolId =
+  | 'bold'
+  | 'italic'
+  | 'strikethrough'
+  | 'code'
+  | 'link'
+  | 'highlight'
+  | 'note'
+  | 'copy';
 
 export interface FormatTool {
   readonly id: FormatToolId;
@@ -37,6 +45,9 @@ export const FORMAT_TOOLS: FormatTool[] = [
   { id: 'strikethrough', label: 'S', title: 'Strikethrough', markName: 'strike_through' },
   { id: 'code', label: '</>', title: 'Inline code', markName: 'inlineCode' },
   { id: 'link', label: 'link', title: 'Link', markName: 'link' },
+  { id: 'highlight', label: '高亮', title: 'Highlight', markName: '' },
+  { id: 'note', label: '笔记', title: 'Note', markName: '' },
+  { id: 'copy', label: '复制', title: 'Copy', markName: '' },
 ];
 
 /** Update tooltip titles after language switch (mutates FORMAT_TOOLS in place). */
@@ -119,6 +130,44 @@ export type LinkEditorFn = (initial: {
 
 let linkEditor: LinkEditorFn | null = null;
 
+export type FormatToolbarAnnotationAction = (id: 'highlight' | 'note' | 'copy') => void;
+
+/**
+ * 标注动作按编辑器 scope（标注宿主元素）注册：多个 Markdown 标签各自持有宿主，
+ * 工具条点击时从触发它的 view.dom 向上解析最近的注册项，而不是被最后创建的
+ * 标签全局覆盖。
+ */
+const annotationActions = new Map<Element, FormatToolbarAnnotationAction>();
+
+export function setFormatToolbarAnnotationAction(
+  scope: Element | null,
+  handler: FormatToolbarAnnotationAction | null,
+): void {
+  if (scope === null) {
+    return;
+  }
+  if (handler === null) {
+    annotationActions.delete(scope);
+    return;
+  }
+  annotationActions.set(scope, handler);
+}
+
+/** 解析 `from` 所属编辑器的标注动作（沿祖先找最近注册的 scope）。 */
+export function resolveFormatToolbarAnnotationAction(
+  from: Element | null,
+): FormatToolbarAnnotationAction | null {
+  let el = from;
+  while (el !== null) {
+    const handler = annotationActions.get(el);
+    if (handler !== undefined) {
+      return handler;
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
 /** Inject the app-level link dialog (called once from main). */
 export function setFormatToolbarLinkEditor(editor: LinkEditorFn | null): void {
   linkEditor = editor;
@@ -134,6 +183,10 @@ export function getFormatToolbarLinkEditor(): LinkEditorFn | null {
 
 /** 应用某个格式工具到当前选区（mark 切换 / link 包裹）。 */
 function applyFormatTool(view: EditorView, id: FormatToolId): void {
+  if (id === 'highlight' || id === 'note' || id === 'copy') {
+    resolveFormatToolbarAnnotationAction(view.dom)?.(id);
+    return;
+  }
   const tool = FORMAT_TOOLS.find((t) => t.id === id);
   if (tool === undefined) return;
   const markType = view.state.schema.marks[tool.markName];

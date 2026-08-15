@@ -64,6 +64,7 @@ import {
   FOLD_PLUGIN_KEY,
   headingFoldPlugin,
 } from './plugins/heading-fold.js';
+import { markdownAnnotationPlugin } from './plugins/markdown-annotations.js';
 import type { EditorView } from '@milkdown/prose/view';
 import type { Mark } from '@milkdown/prose/model';
 import type {
@@ -216,6 +217,8 @@ export async function mountEditor(
         // T4：查找与替换（R2）WYSIWYG 侧：decoration 高亮全部/当前命中，
         // 替换经单事务（可撤销）；面板与模式分派在壳层 main.ts。
         .use(findReplacePlugin)
+        // Markdown 标注高亮（decoration，不改文档）。
+        .use(markdownAnnotationPlugin)
         // T4/R2：按标题折叠（PluginKey 态 + 区间 decoration；三角切换，大纲经
         // toggleFoldAtOrdinal/getFoldedOrdinals 双向联动；折叠态不持久化、不影响导出）。
         .use(headingFoldPlugin({ onFoldChanged: options.onFoldChanged }))

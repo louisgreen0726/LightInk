@@ -3,9 +3,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  annotationMarkFromEventTarget,
   captureTextQuoteAnchor,
   markTextRange,
   removeTextRangeMarks,
+  resolveTextQuoteOffsets,
   resolveTextQuoteRange,
 } from '../annotation-locator.js';
 
@@ -38,6 +40,10 @@ describe('annotation text quote locators', () => {
 
     removeTextRangeMarks(paragraph, 'cross-node');
     expect(paragraph.querySelectorAll('mark')).toHaveLength(0);
+    expect(resolveTextQuoteOffsets(paragraph.textContent ?? '', anchor)).toEqual({
+      start: anchor.start,
+      end: anchor.end,
+    });
     expect(paragraph.textContent).toBe('Alpha beta gamma');
   });
 
@@ -68,5 +74,18 @@ describe('annotation text quote locators', () => {
     const resolved = resolveTextQuoteRange(document.body, anchor)!;
     expect(resolved.toString()).toBe('needle');
     expect(resolved.startOffset).toBe(16);
+  });
+});
+
+describe('annotationMarkFromEventTarget', () => {
+  it('resolves a mark from both the wrapper and its text node', () => {
+    const mark = document.createElement('mark');
+    mark.dataset.annotationId = 'n1';
+    mark.dataset.annotationKind = 'note';
+    mark.textContent = '找其他游戏来玩吧。';
+    document.body.appendChild(mark);
+    expect(annotationMarkFromEventTarget(mark)?.dataset.annotationId).toBe('n1');
+    expect(annotationMarkFromEventTarget(mark.firstChild)?.dataset.annotationId).toBe('n1');
+    expect(annotationMarkFromEventTarget(document.body)).toBeNull();
   });
 });

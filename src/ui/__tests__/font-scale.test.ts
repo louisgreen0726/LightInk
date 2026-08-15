@@ -1,7 +1,7 @@
 /**
  * Font scale steps, snap, load/save, and install apply.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_FONT_SCALE,
@@ -68,6 +68,7 @@ describe('installFontScale', () => {
         store[k] = v;
       },
     };
+    vi.useFakeTimers();
     const handle = installFontScale(root, storage, 1);
     expect(props['--lightink-font-scale']).toBe('1');
     expect(handle.zoomIn()).toBe(1.125);
@@ -75,6 +76,8 @@ describe('installFontScale', () => {
     expect(handle.label).toBe('113%');
     expect(handle.zoomOut()).toBe(1);
     expect(handle.reset()).toBe(1);
+    vi.advanceTimersByTime(250);
+    expect(store['lightink.fontScale']).toBe('1');
     handle.dispose();
     expect(props['--lightink-font-scale']).toBeUndefined();
   });

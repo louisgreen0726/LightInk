@@ -251,7 +251,9 @@ describe('parseEpub', () => {
       );
       await zip.add(
         'OEBPS/styles/book.css',
-        new Uint8ArrayReader(enc('body { color: red; }')),
+        new Uint8ArrayReader(
+          enc('@import url("https://evil.example/x.css"); body { color: red; background: url(cover.png); }'),
+        ),
       );
     }
     return zip.close();
@@ -268,6 +270,84 @@ describe('parseEpub', () => {
 
   it('损坏 zip 抛 ParseError', async () => {
     await expect(parseEpub(new Uint8Array([0, 1, 2, 3]))).rejects.toBeInstanceOf(ParseError);
+  });
+
+  it('把 svg/image 包装的包内位图改写成 img，并保留已有 blob 图', async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    let created = 0;
+    const revoked: string[] = [];
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => `blob:epub-svg-${(created += 1)}`,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: (url: string) => revoked.push(url),
+    });
+    try {
+      const zip = new ZipWriter(new Uint8ArrayWriter());
+      await zip.add(
+        'META-INF/container.xml',
+        new Uint8ArrayReader(
+          enc(
+            '<?xml version="1.0"?><container><rootfiles>' +
+              '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>' +
+              '</rootfiles></container>',
+          ),
+        ),
+      );
+      await zip.add(
+        'OEBPS/content.opf',
+        new Uint8ArrayReader(
+          enc(
+            '<?xml version="1.0"?><package>' +
+              '<metadata><dc:title>插图书</dc:title></metadata>' +
+              '<manifest>' +
+              '<item id="ch1" href="Text/chapter0.xhtml" media-type="application/xhtml+xml" properties="svg"/>' +
+              '<item id="pic" href="Images/205393.jpg" media-type="image/jpeg"/>' +
+              '<item id="css" href="Styles/style.css" media-type="text/css"/>' +
+              '</manifest>' +
+              '<spine><itemref idref="ch1"/></spine>' +
+              '</package>',
+          ),
+        ),
+      );
+      await zip.add(
+        'OEBPS/Text/chapter0.xhtml',
+        new Uint8ArrayReader(
+          enc(
+            '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>插图</title></head><body>' +
+              '<figure class="illust">' +
+              '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" height="100%" viewBox="0 0 796 1200">' +
+              '<image width="796" height="1200" xlink:href="../Images/205393.jpg"/>' +
+              '</svg></figure></body></html>',
+          ),
+        ),
+      );
+      await zip.add(
+        'OEBPS/Images/205393.jpg',
+        new Uint8ArrayReader(new Uint8Array([0xff, 0xd8, 0xff, 0xdb])),
+        { level: 0 },
+      );
+      await zip.add('OEBPS/Styles/style.css', new Uint8ArrayReader(enc('body{margin:0}')));
+      const content = await parseEpub(await zip.close());
+      const body = document.createElement('div');
+      body.innerHTML = content.chapters[0]!.html;
+      expect(body.querySelector('svg')).toBeNull();
+      const image = body.querySelector('img');
+      expect(image?.getAttribute('src')).toBe('blob:epub-svg-1');
+      expect(image?.getAttribute('width')).toBe('796');
+      expect(content.warnings).toBeUndefined();
+      expect(content.stylesheet).toContain('body{margin:0}');
+      content.dispose?.();
+      expect(revoked).toEqual(['blob:epub-svg-1']);
+    } finally {
+      if (originalCreate === undefined) Reflect.deleteProperty(URL, 'createObjectURL');
+      else Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      if (originalRevoke === undefined) Reflect.deleteProperty(URL, 'revokeObjectURL');
+      else Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+    }
   });
 
   it('解析包内图片和章节链接，并在 dispose 时释放资源', async () => {
@@ -290,7 +370,9 @@ describe('parseEpub', () => {
       expect(body.querySelector('a')?.getAttribute('href')).toBe(
         '#lightink-chapter?chapter=1&target=destination',
       );
-      expect(content.warnings).toEqual(['epubStylesIgnored']);
+      expect(content.warnings).toBeUndefined();
+      expect(content.stylesheet).toContain('body { color: red; background: none; }');
+      expect(content.stylesheet).not.toMatch(/@import|url\(/i);
 
       content.dispose?.();
       content.dispose?.();

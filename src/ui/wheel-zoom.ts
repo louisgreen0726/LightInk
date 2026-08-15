@@ -32,6 +32,11 @@ export interface WheelZoomOptions {
    * 仅需要 elementFromPoint；显式传 null 可关闭锚点补偿。
    */
   anchorSource?: WheelZoomAnchorSource | null;
+  /**
+   * Minimum interval between zoom steps. Trackpads emit many wheel events per
+   * gesture; without coalescing, EPUB iframes reflow on every step.
+   */
+  minIntervalMs?: number;
 }
 
 /** 参与锚点补偿的滚动容器（编辑区 / 阅读器滚动槽）。 */
@@ -115,6 +120,8 @@ export function installWheelZoom(
       : typeof document !== 'undefined'
         ? (document as unknown as WheelZoomAnchorSource)
         : null;
+  const minIntervalMs = options.minIntervalMs ?? 80;
+  let lastStepAt = 0;
   const onWheel: WheelListener = (event) => {
     if (!isZoom(event)) return;
     if (event.deltaY === 0) return;
@@ -122,6 +129,11 @@ export function installWheelZoom(
     // 事件已在 capture 阶段完整作为缩放处理，不再传给内容层 wheel 监听
     // （如源码态 textarea 的滚动转发）。
     event.stopPropagation();
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - lastStepAt < minIntervalMs) {
+      return;
+    }
+    lastStepAt = now;
     // 缩放前捕获指针锚点；无坐标事件（headless 测试 / 合成事件）跳过补偿。
     const anchor =
       anchorSource !== null &&

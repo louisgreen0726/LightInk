@@ -8,6 +8,7 @@
  */
 
 import { sanitizeHtml } from '../sanitize.js';
+import { sanitizeReaderCss } from '../sanitize-css.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { openSafeArchive } from './safe-archive.js';
 import {
@@ -16,6 +17,7 @@ import {
   type ReaderContent,
 } from './types.js';
 import {
+  MAX_READER_CSS_BYTES,
   MAX_READER_IMAGE_BYTES,
   SAFE_READER_IMAGE_MIME_TYPES,
 } from './resource-limits.js';
@@ -180,6 +182,12 @@ export async function parseEpub(
       }
     }
 
+    const svgImageHref = (image: Element): string =>
+      image.getAttribute('href') ??
+      image.getAttribute('xlink:href') ??
+      image.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ??
+      '';
+
     const packagedImageUrl = async (path: string, mediaType: string): Promise<string | null> => {
       if (!SAFE_READER_IMAGE_MIME_TYPES.has(mediaType)) {
         return null;
@@ -221,19 +229,52 @@ export async function parseEpub(
       throwIfReaderLoadCancelled(signal);
       const document = new DOMParser().parseFromString(xhtml, 'text/html');
       const body = document.body;
-      for (const image of body.querySelectorAll<HTMLImageElement>('img[src]')) {
-        const source = image.getAttribute('src') ?? '';
+      const resolvePackagedImage = async (source: string): Promise<string | null> => {
         const imageReference = resolveArchiveReference(fullPath, source);
         const manifestItem =
           imageReference === null ? undefined : manifestByPath.get(imageReference.path);
-        const url =
-          imageReference === null || manifestItem === undefined
-            ? null
-            : await packagedImageUrl(imageReference.path, manifestItem.mediaType);
+        if (imageReference === null || manifestItem === undefined) {
+          return null;
+        }
+        return packagedImageUrl(imageReference.path, manifestItem.mediaType);
+      };
+
+      for (const image of body.querySelectorAll<HTMLImageElement>('img[src]')) {
+        const url = await resolvePackagedImage(image.getAttribute('src') ?? '');
         if (url === null) {
           image.removeAttribute('src');
         } else {
           image.src = url;
+        }
+      }
+      // 文库版 EPUB 常用 <svg><image xlink:href> 包位图；消毒会丢掉整个 svg。
+      for (const svg of [...body.querySelectorAll('svg')]) {
+        const replacements: HTMLImageElement[] = [];
+        for (const image of svg.querySelectorAll('image')) {
+          const url = await resolvePackagedImage(svgImageHref(image));
+          if (url === null) {
+            continue;
+          }
+          const img = document.createElement('img');
+          img.src = url;
+          const width = image.getAttribute('width');
+          const height = image.getAttribute('height');
+          if (width !== null && width !== '' && !width.includes('%')) {
+            img.setAttribute('width', width);
+          }
+          if (height !== null && height !== '' && !height.includes('%')) {
+            img.setAttribute('height', height);
+          }
+          const alt = image.getAttribute('alt') ?? '';
+          if (alt !== '') {
+            img.alt = alt;
+          }
+          replacements.push(img);
+        }
+        if (replacements.length === 0) {
+          svg.remove();
+        } else {
+          svg.replaceWith(...replacements);
         }
       }
       for (const link of body.querySelectorAll<HTMLAnchorElement>('a[href]')) {
@@ -265,11 +306,33 @@ export async function parseEpub(
     if (chapters.length === 0) {
       throw new ParseError('EPUB 未找到可读章节内容');
     }
-    const warnings = [...items.values()].some((item) => item.mediaType === 'text/css')
-      ? (['epubStylesIgnored'] as const)
-      : undefined;
+
+    const stylesheetParts: string[] = [];
+    let stylesheetBytes = 0;
+    for (const item of items.values()) {
+      const mediaType = item.mediaType.toLowerCase();
+      if (mediaType !== 'text/css' && !mediaType.startsWith('text/css;')) {
+        continue;
+      }
+      const reference = resolveArchiveReference(opfPath, item.href);
+      if (reference === null) {
+        continue;
+      }
+      const cssFile = archive.file(reference.path);
+      if (cssFile === null || cssFile.uncompressedSize > MAX_READER_CSS_BYTES) {
+        continue;
+      }
+      if (stylesheetBytes + cssFile.uncompressedSize > MAX_READER_CSS_BYTES) {
+        break;
+      }
+      const cssText = await cssFile.readText(signal);
+      throwIfReaderLoadCancelled(signal);
+      stylesheetBytes += cssFile.uncompressedSize;
+      stylesheetParts.push(cssText);
+    }
+    const stylesheet = sanitizeReaderCss(stylesheetParts.join('\n'));
     returnedContent = true;
-    return { chapters, warnings, dispose };
+    return stylesheet === '' ? { chapters, dispose } : { chapters, stylesheet, dispose };
   } finally {
     await archive.close().catch(() => undefined);
     if (!returnedContent) {

@@ -16,6 +16,8 @@ export interface ReaderChapter {
 /** 按阅读顺序的章节集合。 */
 export interface ReaderContent {
   chapters: ReaderChapter[];
+  /** Sanitized publisher CSS, injected into the chapter frame before reader chrome styles. */
+  stylesheet?: string;
   /** Non-fatal fidelity limitations that should be shown once after load. */
   warnings?: readonly ReaderWarningKind[];
   /** Release parser-owned blob/object URLs. Idempotent when provided. */

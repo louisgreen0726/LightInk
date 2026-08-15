@@ -8,7 +8,7 @@ import type { StorageLike } from './chrome-prefs.js';
 
 export const STATUS_BAR_VISIBLE_STORAGE_KEY = 'lightink.statusBar.visible';
 
-const DEFAULT_VISIBLE = true;
+const DEFAULT_VISIBLE = false;
 const DEFAULT_DEBOUNCE_MS = 120;
 
 export function loadStatusBarVisible(storage: StorageLike | null | undefined): boolean {
@@ -171,6 +171,7 @@ export function createStatusBar(
     }
     if (snapshot === null) {
       element.hidden = true;
+      persistence.hidden = false;
       delete element.dataset.saveStatus;
       delete element.dataset.readerPhase;
       delete element.dataset.statusKind;
@@ -183,6 +184,7 @@ export function createStatusBar(
     if (snapshot.kind === 'markdown') {
       delete element.dataset.readerPhase;
       element.dataset.saveStatus = snapshot.saveStatus;
+      persistence.hidden = false;
       persistence.textContent = labels.save[snapshot.saveStatus];
       position.hidden = false;
       position.textContent = `${labels.line} ${snapshot.cursor.line}, ${labels.column} ${snapshot.cursor.column}`;
@@ -195,8 +197,10 @@ export function createStatusBar(
 
     delete element.dataset.saveStatus;
     element.dataset.readerPhase = snapshot.state.phase;
-    persistence.textContent = labels.reader.phase[snapshot.state.phase];
-    const hasPosition = snapshot.state.phase === 'ready' && snapshot.state.total > 0;
+    const ready = snapshot.state.phase === 'ready';
+    persistence.hidden = ready;
+    persistence.textContent = ready ? '' : labels.reader.phase[snapshot.state.phase];
+    const hasPosition = ready && snapshot.state.total > 0;
     position.hidden = !hasPosition;
     encoding.hidden = !hasPosition;
     counts.hidden = !hasPosition;

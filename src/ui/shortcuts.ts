@@ -42,7 +42,8 @@ export type ShortcutAction =
   | 'prev-tab'
   | 'zoom-in'
   | 'zoom-out'
-  | 'zoom-reset';
+  | 'zoom-reset'
+  | 'toggle-reading-layout';
 
 export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   new: 'Ctrl+N',
@@ -69,6 +70,7 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ShortcutAction, string>> = {
   'zoom-in': 'Ctrl+=',
   'zoom-out': 'Ctrl+-',
   'zoom-reset': 'Ctrl+0',
+  'toggle-reading-layout': 'Ctrl+M',
 };
 
 /** 结构化键盘事件（兼容 DOM KeyboardEvent 的结构子集）。 */

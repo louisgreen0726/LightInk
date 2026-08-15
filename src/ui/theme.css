@@ -633,6 +633,78 @@ body.lightink-outline-resizing * {
   position: relative;
 }
 
+/* Markdown 翻页只作用在编辑表面；阅读器自己在 iframe 里分栏。 */
+html[data-reading-layout='paginated'] #lightink-editor-area[data-surface='markdown'] {
+  overflow-x: auto;
+  overflow-y: hidden;
+  column-width: var(--lightink-reader-column-width, 42rem);
+  column-gap: var(--lightink-reader-column-gap, 2rem);
+  column-fill: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lightink-border) transparent;
+}
+
+html[data-reading-layout='paginated'] #lightink-editor-area[data-surface='markdown'] .lightink-tab-host {
+  max-width: none;
+  height: auto;
+  min-height: 100%;
+  width: auto;
+}
+
+html[data-reading-layout='paginated'] .lightink-tab-host .ProseMirror {
+  min-height: 0;
+}
+
+html[data-reading-layout='paginated'] #lightink-editor-area[data-surface='reader'] {
+  overflow: hidden;
+  height: 100%;
+  min-height: 0;
+}
+
+.lightink-tab-host--reader {
+  max-width: none;
+  width: 100%;
+  height: auto;
+  min-height: 100%;
+  padding: 0;
+}
+
+html[data-reading-layout='paginated'] .lightink-tab-host--reader {
+  height: 100%;
+  min-height: 0;
+}
+
+#lightink-editor-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--lightink-border) transparent;
+}
+
+#lightink-editor-area::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+#lightink-editor-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#lightink-editor-area::-webkit-scrollbar-thumb {
+  background: var(--lightink-border);
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: content-box;
+}
+
+#lightink-editor-area::-webkit-scrollbar-thumb:hover {
+  background: var(--lightink-muted);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+#lightink-editor-area::-webkit-scrollbar-button {
+  display: none;
+}
+
 /*
  * Reading surface: tier-scaled measure fills the editor pane on large screens
  * (no huge empty gutters), still capped for line length on ultrawide.
@@ -643,6 +715,7 @@ body.lightink-outline-resizing * {
 }
 
 .lightink-tab-host {
+  position: relative;
   box-sizing: border-box;
   width: 100%;
   max-width: var(--lightink-measure, 48rem);
@@ -655,6 +728,25 @@ body.lightink-outline-resizing * {
   line-height: var(--lightink-line-height-body, 1.75);
   letter-spacing: 0.01em;
   color: var(--lightink-fg);
+}
+
+.lightink-tab-host .lightink-reader-highlight,
+.lightink-tab-host .ProseMirror .lightink-reader-highlight {
+  background: var(--lightink-annotation, #f2d675);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.lightink-tab-host .lightink-reader-highlight--note,
+.lightink-tab-host .ProseMirror .lightink-reader-highlight[data-annotation-kind='note'] {
+  background: color-mix(in srgb, var(--lightink-accent) 22%, var(--lightink-bg));
+  box-shadow: inset 0 -0.12em 0 var(--lightink-accent);
+}
+
+#lightink-main > .lightink-reader-sidebar {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 8;
 }
 
 .lightink-tab-host .ProseMirror {
@@ -1833,6 +1925,14 @@ body.lightink-outline-resizing * {
 
 .lightink-format-tool--link svg {
   display: block;
+}
+
+.lightink-format-tool--highlight,
+.lightink-format-tool--note,
+.lightink-format-tool--copy {
+  min-width: auto;
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 /* 斜杠命令菜单（R11）：与右键菜单/格式工具条同一浮层语言；

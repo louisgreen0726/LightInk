@@ -63,10 +63,17 @@ export interface ReaderInstance {
   addNote(): void;
   /** 切换标注侧栏显隐（默认隐藏）。 */
   toggleSidebar(): void;
+  /**
+   * 标签可见性变化（切换标签时调用）。侧栏/搜索面板 portal 到共享 chrome，
+   * 不随标签宿主隐藏；切走时必须显式隐藏，切回时按原偏好恢复。
+   */
+  setTabActive(active: boolean): void;
   /** 标注侧栏当前是否可见。 */
   isSidebarVisible(): boolean;
-  /** 打开 PDF 内搜索面板（非 PDF 文档空操作；旧宿主/测试 stub 可缺省）。 */
-  openSearch?(): void;
+  /** 打开阅读器搜索面板。传入或当前选区会预填并立即搜索，但不跳回首页。 */
+  openSearch?(query?: string): void;
+  /** 窗口拉伸结束后重算栏宽/高度并刷新可见页，避免文字糊掉。 */
+  refreshViewport?(): void;
   /** 当前文档大纲（PDF 书签 / 流式章节 / CBZ 页）；未就绪为空。 */
   getOutline(): readonly OutlineItem[];
   /** 跳转到大纲条目（PDF 按页，流式按章节）。 */

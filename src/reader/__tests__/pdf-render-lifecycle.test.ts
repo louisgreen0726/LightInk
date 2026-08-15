@@ -135,6 +135,56 @@ function mockPdf(): {
   return { tasks, destroy, getTextContent };
 }
 
+/** 多页文档 mock：numPages 可指定。 */
+function mockMultiPagePdf(numPages: number): {
+  readonly tasks: ControlledRenderTask[];
+  readonly destroy: ReturnType<typeof vi.fn>;
+} {
+  const tasks: ControlledRenderTask[] = [];
+  const page = {
+    getViewport: ({ scale }: { scale: number }) => ({
+      width: 100 * scale,
+      height: 200 * scale,
+    }),
+    getTextContent: vi.fn(async () => ({ items: [], styles: {} })),
+    render: vi.fn(() => {
+      const task = renderTask();
+      tasks.push(task);
+      return task;
+    }),
+  };
+  const destroy = vi.fn(async () => undefined);
+  pdfRuntime.getDocument.mockReturnValue({
+    promise: Promise.resolve({
+      numPages,
+      getPage: vi.fn(async () => page),
+      getOutline: vi.fn(async () => []),
+      getDestination: vi.fn(async () => null),
+      getPageIndex: vi.fn(async () => 0),
+    }),
+    destroy,
+  });
+  return { tasks, destroy };
+}
+
+/**
+ * 给 container/slot 布置几何：viewport 固定 [top, top+600]，slot i 的 top 依次
+ * 为 tops[i]。jsdom 的 getBoundingClientRect 恒为 0，必须按元素覆写才能模拟滚动布局。
+ */
+function layoutRects(
+  container: HTMLElement,
+  viewportTop: number,
+  slotTops: readonly number[],
+): void {
+  const viewport = { top: viewportTop, bottom: viewportTop + 600, left: 0, right: 800, width: 800, height: 600, x: 0, y: viewportTop, toJSON: () => ({}) };
+  container.getBoundingClientRect = () => viewport as DOMRect;
+  const slots = [...container.children] as HTMLElement[];
+  slotTops.forEach((top, i) => {
+    const rect = { top, bottom: top + 500, left: 0, right: 800, width: 800, height: 500, x: 0, y: top, toJSON: () => ({}) };
+    slots[i]!.getBoundingClientRect = () => rect as DOMRect;
+  });
+}
+
 async function waitForTask(tasks: readonly ControlledRenderTask[], count: number): Promise<void> {
   await vi.waitFor(() => expect(tasks).toHaveLength(count));
 }
@@ -171,6 +221,57 @@ describe('PDF render lifecycle', () => {
     await rerender;
     expect(runtime.tasks[0]!.cancel).toHaveBeenCalledTimes(1);
     expect(runtime.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the zoom anchor centered when the scroller sits below app chrome', async () => {
+    // 回归：锚点补偿必须用相对 scroller 的坐标。scroller 视口顶在 y=100（标签栏
+    // 偏移），slot 覆盖视口中心；等比 rerender 后 scrollTop 应保持不变——旧实现
+    // 用视口绝对坐标会把 100px chrome 偏移加进新滚动位置。
+    const runtime = mockPdf();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const handle = await renderPdfInto(new Uint8Array([1]), container);
+    layoutRects(container, 100, [200]);
+    container.scrollTop = 0;
+
+    const rerendering = handle.rerender();
+    await waitForTask(runtime.tasks, 1);
+    runtime.tasks[0]!.resolve();
+    await rerendering;
+    // jsdom clientHeight=0：newScroll = relTop(200-100) + 500*0.4 = 300。
+    // 未归一化时视口绝对坐标会再加 100px chrome 偏移（= 400）。
+    expect(container.scrollTop).toBe(300);
+    await handle.destroy();
+  });
+
+  it('re-renders pages inside the lazy-render buffer, not only the strict viewport', async () => {
+    // 回归：缩放后 rerender 清掉所有画布；IntersectionObserver 只在相交状态变化时
+    // 派发事件，仍在 ±2 屏缓冲区内的页不会收到通知。rerender 必须把这些页一并重画，
+    // 否则缩放后滚动会出现空白页（用户可见为“缺页/页间距异常大”）。
+    const runtime = mockMultiPagePdf(5);
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const handle = await renderPdfInto(new Uint8Array([1]), container);
+    // viewport [0,600]；缓冲区 = ±2 屏（±1200）。第 3 页 top=1400 严格视口外、缓冲区内；
+    // 第 4 页 top=2100 缓冲区外（滚动进入时应由 observer 懒补，rerender 不管）。
+    layoutRects(container, 0, [0, 700, 1400, 2100, 2800]);
+
+    const rerendering = handle.rerender();
+    // 严格可见的第 1 页串行先画；解开它的任务让循环继续走完缓冲区补画。
+    await waitForTask(runtime.tasks, 1);
+    runtime.tasks[0]!.resolve();
+    await vi.waitFor(() => {
+      const slots = [...container.children] as HTMLElement[];
+      expect(slots[2]!.querySelector('canvas')).not.toBeNull(); // 缓冲区内的第 3 页必须重画
+    });
+    // 只渲染视口 + 缓冲区内的 1–3 页；第 4/5 页留给 observer。
+    await vi.waitFor(() => expect(runtime.tasks).toHaveLength(3));
+    const slots = [...container.children] as HTMLElement[];
+    expect(slots[3]!.querySelector('canvas')).toBeNull();
+    expect(slots[4]!.querySelector('canvas')).toBeNull();
+    for (const task of runtime.tasks) task.resolve();
+    await rerendering;
+    await handle.destroy();
   });
 });
 

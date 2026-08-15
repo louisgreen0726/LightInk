@@ -79,7 +79,7 @@ export interface AppShellActions {
   // 插入（元素 id）
   onInsertElement(id: InsertElementId): void;
   // ---- 只读阅读标签（reader）专用：阅读态菜单据此装配「标注」菜单 ----
-  /** 活动标签类型；reader 时菜单隐藏「插入」、改挂「标注」菜单。 */
+  /** 活动标签类型；reader 时菜单隐藏「插入」；markdown/reader 都挂「标注」。 */
   activeTabKind?(): 'markdown' | 'reader' | null;
   /** reader：当前文档是否启用标注（决定书签/笔记是否可用）。 */
   isReaderAnnotationEnabled?(): boolean;
@@ -108,6 +108,9 @@ export interface AppShellActions {
   canResetCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
+  /** 切换滚动 / 翻页（Markdown / 阅读器共用）。 */
+  onToggleReadingLayout?(): void;
+  getReadingLayout?(): 'scroll' | 'paginated';
   /**
    * T5/R3：切换字数状态栏显隐。可选——测试 stub 可省略（菜单动作空操作）。
    * 实现方负责持久化偏好；关闭即不渲染状态栏。
@@ -469,7 +472,9 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       ],
     },
     // reader 标签：以「标注」菜单取代「插入」（只读，无插入元素）。
-    ...(isReader ? [annotationMenu] : [{ id: 'insert', label: () => t('menu.insert'), items: insertItems }]),
+    // markdown 标签：插入与标注并存。
+    ...(isReader ? [] : [{ id: 'insert', label: () => t('menu.insert'), items: insertItems }]),
+    annotationMenu,
     {
       id: 'view',
       label: () => t('menu.view'),
@@ -507,6 +512,17 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           actions.onToggleSourceMode,
           sc(actions, 'Ctrl+/'),
           () => true,
+        ),
+        menuItem(
+          'view-layout-toggle',
+          () => {
+            const layout = actions.getReadingLayout?.() ?? 'scroll';
+            const label =
+              layout === 'paginated' ? t('view.layout.paginated') : t('view.layout.scroll');
+            return `${label} → ${layout === 'paginated' ? t('view.layout.scroll') : t('view.layout.paginated')}`;
+          },
+          () => actions.onToggleReadingLayout?.(),
+          sc(actions, 'Ctrl+M'),
         ),
         // T5/R3：字数统计状态栏开关（勾选标记式）。i18n 目录不在本任务 scope，
         // 标签按当前 locale 内联双语（同 T4「查找…」先例）。
@@ -867,6 +883,7 @@ export function createAppShell(
         const label = document.createElement('span');
         label.className = 'lightink-tab-label';
         label.textContent = tab.dirty ? `● ${tab.title}` : tab.title;
+        btn.title = tab.title;
         btn.appendChild(label);
         btn.addEventListener('click', () => callbacks.onSwitch(tab.id));
         btn.addEventListener('keydown', (event) => {

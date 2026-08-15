@@ -27,8 +27,8 @@
 [data-theme="warm-light"] {
   color-scheme: light;
 
-  /* 阅读视图流式栏宽（可读行长，主题无关；仅在 :root 定义，各主题继承）。 */
-  --lightink-reader-content-width: 42rem;
+  /* 阅读视图流式栏宽：约 32–36 汉字行长（WCAG 1.4.8 CJK ≤40）。 */
+  --lightink-reader-content-width: 36rem;
   /* 流式正文高亮（不透明，文字在 mark 内）。PDF 文本层另用半透明叠在 canvas 上。 */
   --lightink-annotation: color-mix(in srgb, var(--lightink-accent) 35%, var(--lightink-bg-elevated));
   --lightink-annotation-wash: color-mix(in srgb, var(--lightink-accent) 32%, transparent);

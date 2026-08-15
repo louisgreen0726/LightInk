@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createReaderView } from '../reader-view.js';
+import { createReaderView, flowFrameContentHeight } from '../reader-view.js';
 import { createSelectionToolbar, toolbarPosition } from '../selection-toolbar.js';
 
 /** 最小 fake 元素：覆盖 createReaderView 用到的 DOM 表面。 */
@@ -243,5 +243,18 @@ describe('划选工具栏（selection-toolbar）', () => {
       left: 4,
       top: 264,
     });
+  });
+});
+
+describe('flowFrameContentHeight', () => {
+  it('uses body content height, not a stretched iframe viewport', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<p>chapter</p>';
+    Object.defineProperty(doc.body, 'scrollHeight', { configurable: true, value: 420 });
+    Object.defineProperty(doc.documentElement, 'scrollHeight', { configurable: true, value: 100000 });
+    expect(flowFrameContentHeight(doc)).toBe(420);
+    iframe.remove();
   });
 });

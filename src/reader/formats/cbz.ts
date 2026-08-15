@@ -203,13 +203,17 @@ export async function renderCbzInto(
       }
     };
 
+    const scroller =
+      typeof document !== 'undefined'
+        ? (document.getElementById('lightink-editor-area') ?? container)
+        : container;
+
     const syncCurrentPage = (): void => {
-      const scrollTop = container.scrollTop;
+      const top = scroller.getBoundingClientRect().top;
       let closest = 0;
       let distance = Number.POSITIVE_INFINITY;
       for (let index = 0; index < slots.length; index += 1) {
-        const slot = slots[index]!;
-        const nextDistance = Math.abs(slot.offsetTop - scrollTop);
+        const nextDistance = Math.abs(slots[index]!.getBoundingClientRect().top - top);
         if (nextDistance < distance) {
           closest = index;
           distance = nextDistance;
@@ -220,7 +224,7 @@ export async function renderCbzInto(
         loadWindow(closest);
       }
     };
-    container.addEventListener('scroll', syncCurrentPage, { passive: true });
+    scroller.addEventListener('scroll', syncCurrentPage, { passive: true });
 
     if (typeof IntersectionObserver !== 'undefined') {
       observer = new IntersectionObserver(
@@ -236,7 +240,7 @@ export async function renderCbzInto(
           }
           loadWindow(currentPage - 1);
         },
-        { root: container, rootMargin: '200% 0px 200% 0px' },
+        { root: scroller, rootMargin: '200% 0px 200% 0px' },
       );
       slots.forEach((slot) => observer?.observe(slot));
     }
@@ -251,7 +255,7 @@ export async function renderCbzInto(
       }
       destroyed = true;
       observer?.disconnect();
-      container.removeEventListener('scroll', syncCurrentPage);
+      scroller.removeEventListener('scroll', syncCurrentPage);
       for (const index of [...materialized.keys()]) {
         releasePage(index);
       }

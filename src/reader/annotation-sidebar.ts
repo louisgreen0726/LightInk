@@ -191,6 +191,9 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
         return;
       }
       deps.onJump(annotation);
+      if (annotation.kind === 'note') {
+        deps.onEditNote?.(annotation);
+      }
     });
     return li;
   };

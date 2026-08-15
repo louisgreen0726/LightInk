@@ -52,6 +52,8 @@ const en = {
   'view.fullscreen': 'Full Screen',
   'view.outline': 'Outline (Expand / Rail / Hide)',
   'view.sourceMode': 'Source Mode',
+  'view.layout.scroll': 'Scroll layout',
+  'view.layout.paginated': 'Paginated layout',
   'view.zoomIn': 'Zoom In',
   'view.zoomOut': 'Zoom Out',
   'view.zoomReset': 'Reset Font Size',
@@ -103,6 +105,9 @@ const en = {
   'format.strikethrough': 'Strikethrough',
   'format.code': 'Inline code',
   'format.link': 'Link',
+  'format.highlight': 'Highlight',
+  'format.note': 'Note',
+  'format.copy': 'Copy',
 
   'code.plain': 'Plain text',
   'code.mermaid': 'Flowchart',
@@ -260,6 +265,7 @@ const en = {
   'shortcut.zoom-in': 'Zoom In',
   'shortcut.zoom-out': 'Zoom Out',
   'shortcut.zoom-reset': 'Reset Font Size',
+  'shortcut.toggle-reading-layout': 'Toggle Scroll/Paginated',
 
   // Dialogs / misc
   'dialog.closeTab.title': 'Close Tab',
@@ -353,6 +359,8 @@ const zhCN = {
   'view.fullscreen': '全屏',
   'view.outline': '大纲切换（展开/窄条/隐藏）',
   'view.sourceMode': '源码模式',
+  'view.layout.scroll': '滚动模式',
+  'view.layout.paginated': '翻页模式',
   'view.zoomIn': '放大字体',
   'view.zoomOut': '缩小字体',
   'view.zoomReset': '重置字体大小',
@@ -404,6 +412,9 @@ const zhCN = {
   'format.strikethrough': '删除线',
   'format.code': '行内代码',
   'format.link': '链接',
+  'format.highlight': '高亮',
+  'format.note': '笔记',
+  'format.copy': '复制',
 
   'code.plain': '纯文本',
   'code.mermaid': '流程图',
@@ -554,6 +565,7 @@ const zhCN = {
   'shortcut.zoom-in': '放大字体',
   'shortcut.zoom-out': '缩小字体',
   'shortcut.zoom-reset': '重置字体大小',
+  'shortcut.toggle-reading-layout': '切换滚动/翻页',
 
   'dialog.closeTab.title': '关闭标签',
   'dialog.closeTab.message': '「{title}」有未保存的更改。\n保存后再关闭？',

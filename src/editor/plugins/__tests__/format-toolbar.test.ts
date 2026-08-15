@@ -16,6 +16,9 @@ describe('FORMAT_TOOLS catalog (R7)', () => {
       'strikethrough',
       'code',
       'link',
+      'highlight',
+      'note',
+      'copy',
     ]);
   });
 

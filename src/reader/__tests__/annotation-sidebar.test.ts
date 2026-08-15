@@ -166,6 +166,10 @@ describe('annotation-sidebar 重做', () => {
 
     (byId('b1').querySelector('.lightink-reader-sidebar-text') as HTMLElement).click();
     expect(jumps).toEqual(['h1', 'b1']);
+
+    (byId('n1').querySelector('.lightink-reader-sidebar-text') as HTMLElement).click();
+    expect(jumps).toEqual(['h1', 'b1', 'n1']);
+    expect(edits).toEqual(['n1', 'n1']);
   });
 });
 

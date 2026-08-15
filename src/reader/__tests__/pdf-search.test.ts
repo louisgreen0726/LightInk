@@ -10,7 +10,10 @@ import {
   canWrapSearchMark,
   createSearchPanel,
   findPdfMatches,
+  nearestMatchIndex,
   nextMatchIndex,
+  preserveMatchIndex,
+  sanitizeSearchQuery,
   offsetRangeFrom,
   textLengthOf,
   unwrapSpans,
@@ -40,6 +43,31 @@ describe('findPdfMatches', () => {
 
   it('无命中返回空数组', () => {
     expect(findPdfMatches(pages, '不存在')).toEqual([]);
+  });
+});
+
+describe('sanitizeSearchQuery', () => {
+  it('takes the first trimmed line and caps long selections', () => {
+    expect(sanitizeSearchQuery('  汉字选区\n第二行  ')).toBe('汉字选区');
+    expect(sanitizeSearchQuery('   ')).toBe('');
+    expect(sanitizeSearchQuery('x'.repeat(240))).toHaveLength(200);
+  });
+});
+
+describe('nearestMatchIndex', () => {
+  it('keeps the first match at or after the current place', () => {
+    expect(nearestMatchIndex(4, 2)).toBe(2);
+    expect(nearestMatchIndex(4, 0)).toBe(0);
+    expect(nearestMatchIndex(4, 4)).toBe(0);
+    expect(nearestMatchIndex(0, 0)).toBe(-1);
+  });
+});
+
+describe('preserveMatchIndex', () => {
+  it('keeps the previous hit after a layout rebuild', () => {
+    expect(preserveMatchIndex(4, 2, 0)).toBe(2);
+    expect(preserveMatchIndex(4, 8, 1)).toBe(1);
+    expect(preserveMatchIndex(0, 2, 0)).toBe(-1);
   });
 });
 
@@ -173,10 +201,12 @@ describe('搜索面板键位（容器级）', () => {
 
   it('无命中 setStatus 显示空态并带 data 属性', () => {
     const { panel } = mount();
+    panel.setQuery('missing');
     panel.setStatus(0, -1);
     const status = panel.element.querySelector<HTMLElement>('.lightink-reader-search-status')!;
     expect(status.textContent).toBe('reader.search.empty');
     expect(status.dataset.searchEmpty).toBe('true');
+    expect(panel.element.classList.contains('is-empty')).toBe(true);
     panel.setStatus(3, 1);
     expect(status.textContent).toBe('2/3');
     expect(status.dataset.searchEmpty).toBe('false');

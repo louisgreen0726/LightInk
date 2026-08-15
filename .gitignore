@@ -10,3 +10,4 @@ src-tauri/gen
 
 # Python cache (scripts/ perf tooling)
 __pycache__/
+docs/

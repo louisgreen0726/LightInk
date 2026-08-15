@@ -115,8 +115,14 @@ export function installFontScale(
   let scale = snapFontScale(initial ?? loadFontScale(storage));
 
   const apply = (next: FontScaleStep): number => {
+    const changed = next !== scale;
     scale = next;
     root.style.setProperty('--lightink-font-scale', String(next));
+    if (!changed) {
+      return next;
+    }
+    // 同步持久化：localStorage 写入极小；防抖会让“改完 250ms 内关窗”丢最后一步，
+    // 进程退出时 dispose 也无法可靠 flush。
     saveFontScale(storage, next);
     // PDF 页宿主不走 CSS zoom，需按新字号重栅格化（reader-view 监听此事件）。
     if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {

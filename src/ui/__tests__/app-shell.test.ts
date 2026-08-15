@@ -49,6 +49,8 @@ function stubActions(currentThemeId = 'warm-light'): AppShellActions {
     canResetCustomTheme: () => false,
     onToggleOutline: noop,
     onToggleSourceMode: noop,
+    getReadingLayout: () => 'scroll' as const,
+    onToggleReadingLayout: noop,
     onToggleFullscreen: noop,
     isChromePinned: () => false,
     onToggleChromePinned: noop,
@@ -351,6 +353,7 @@ describe('createAppShell immersive chrome', () => {
     const activeButton = tabBar?.children[1]?.children[0];
     expect(activeButton?.getAttribute('role')).toBe('tab');
     expect(activeButton?.getAttribute('aria-selected')).toBe('true');
+    expect((activeButton as { title?: string } | undefined)?.title).toBe('b.md');
     expect(tabBar?.children[1]?.children[1]?.tagName).toBe('button');
   });
 
@@ -374,7 +377,14 @@ describe('buildMenus 生产结构', () => {
   const edit = menus.find((m) => m.id === 'edit');
 
   it('五个顶级菜单齐全', () => {
-    expect(menus.map((m) => m.id)).toEqual(['file', 'edit', 'insert', 'view', 'help']);
+    expect(menus.map((m) => m.id)).toEqual(['file', 'edit', 'insert', 'annotation', 'view', 'help']);
+    expect(buildMenus({ ...stubActions(), activeTabKind: () => 'reader' }).map((m) => m.id)).toEqual([
+      'file',
+      'edit',
+      'annotation',
+      'view',
+      'help',
+    ]);
   });
 
   it('文件/编辑菜单的分隔项带 separator:true（P2[blocking] 回归）', () => {

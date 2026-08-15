@@ -60,6 +60,10 @@ import type {
 } from './export/export-service.js';
 import { readFile, writeFile } from './file/file-service.js';
 import { createOutlineView, type OutlineView } from './outline/outline-view.js';
+import {
+  createMarkdownAnnotationHost,
+  type MarkdownAnnotationHost,
+} from './reader/markdown-annotations.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
@@ -78,6 +82,18 @@ import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
 import { installFontScale } from './ui/font-scale.js';
 import { installWheelZoom } from './ui/wheel-zoom.js';
+import {
+  advancePagedScroller,
+  advanceScrolledScroller,
+  applyReadingLayout,
+  createPagedWheelGate,
+  isReadingNavKey,
+  loadReadingLayout,
+  readingColumnLayout,
+  readingNavDirection,
+  saveReadingLayout,
+  type ReadingLayout,
+} from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
@@ -104,6 +120,50 @@ const fontScale = installFontScale(document.documentElement, window.localStorage
 
 // R5：Ctrl/Cmd + 滚轮字号缩放（与 Ctrl+=/- 同档位、同持久化）；capture 阶段拦截。
 installWheelZoom(document, fontScale);
+
+let readingLayout = loadReadingLayout(window.localStorage);
+applyReadingLayout(document.documentElement, readingLayout);
+
+function readingSurfaceWidth(): number {
+  const scroller = document.getElementById('lightink-editor-area');
+  if (scroller === null) {
+    return 0;
+  }
+  const sidebar = scroller.querySelector<HTMLElement>('.lightink-reader-sidebar');
+  const sidebarWidth =
+    sidebar !== null && !sidebar.hidden && getComputedStyle(sidebar).display !== 'none'
+      ? sidebar.getBoundingClientRect().width
+      : 0;
+  return Math.max(1, scroller.clientWidth - sidebarWidth);
+}
+
+function syncReadingColumns(): void {
+  const scroller = document.getElementById('lightink-editor-area');
+  if (scroller === null) {
+    return;
+  }
+  if (readingLayout !== 'paginated') {
+    scroller.style.removeProperty('--lightink-reader-column-width');
+    scroller.style.removeProperty('--lightink-reader-column-gap');
+    return;
+  }
+  const fontSize = parseFloat(getComputedStyle(scroller).fontSize);
+  const layout = readingColumnLayout(readingSurfaceWidth(), fontSize);
+  scroller.style.setProperty('--lightink-reader-column-width', `${layout.columnWidth}px`);
+  scroller.style.setProperty('--lightink-reader-column-gap', `${layout.gap}px`);
+}
+
+function setReadingLayout(next: ReadingLayout): void {
+  readingLayout = next;
+  saveReadingLayout(window.localStorage, next);
+  applyReadingLayout(document.documentElement, next);
+  syncReadingColumns();
+}
+
+function toggleReadingLayoutMode(): void {
+  setReadingLayout(readingLayout === 'paginated' ? 'scroll' : 'paginated');
+  shell?.rebuildMenus();
+}
 
 // UI language (en / zh-CN) + macOS shortcut labels.
 const i18n = createI18n(window.localStorage);
@@ -153,6 +213,9 @@ function applyLocaleChrome(): void {
     strikethrough: i18n.t('format.strikethrough'),
     code: i18n.t('format.code'),
     link: i18n.t('format.link'),
+    highlight: i18n.t('format.highlight'),
+    note: i18n.t('format.note'),
+    copy: i18n.t('format.copy'),
   });
   setCodeChromeLabels({
     copy: i18n.t('code.copy'),
@@ -215,6 +278,7 @@ let outline: OutlineView;
 let statusBar: StatusBar;
 // Per-tab source surfaces must be available to status callbacks during manager startup.
 const sourceViews = new Map<string, SourceView>();
+const markdownAnnotations = new Map<string, MarkdownAnnotationHost>();
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
 /** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
@@ -867,10 +931,10 @@ shell = createAppShell(
     onCopy: () => runClipboardCommand('copy'),
     onPaste: () => runClipboardCommand('paste'),
     onFind: () => {
-      // reader 标签活动时分流到 PDF 搜索面板（与 Ctrl+F 一致）。
+      // reader 标签活动时分流到阅读器搜索面板（与 Ctrl+F 一致）。
       const readerTab = activeReaderTab();
       if (readerTab !== null) {
-        readerTab.reader.openSearch?.();
+        readerTab.reader.openSearch?.(window.getSelection()?.toString());
         return;
       }
       openFindPanel();
@@ -897,6 +961,8 @@ shell = createAppShell(
     onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),
+    getReadingLayout: () => readingLayout,
+    onToggleReadingLayout: () => toggleReadingLayoutMode(),
     // T5/R3：字数状态栏开关（视图菜单勾选项；statusBar 在 TabManager 后创建，
     // 菜单动作经 ?. 短路，菜单打开时 isStatusBarVisible 重算勾选态）。
     isStatusBarVisible: () => statusBar?.isVisible() === true,
@@ -921,19 +987,18 @@ shell = createAppShell(
       changeReadingScale('reset');
     },
     getFontScaleLabel: () => fontScale.label,
-    // ---- reader 标签专用：阅读态菜单「标注」 ----
+    // ---- 标注：阅读器与 Markdown 共用菜单 ----
     activeTabKind: () => manager?.activeTab?.kind ?? null,
-    isReaderAnnotationEnabled: () => activeReaderTab()?.reader.isAnnotationEnabled() ?? false,
-    isReaderSidebarVisible: () => activeReaderTab()?.reader.isSidebarVisible() ?? false,
+    isReaderAnnotationEnabled: () => activeAnnotationController()?.isAnnotationEnabled() ?? false,
+    isReaderSidebarVisible: () => activeAnnotationController()?.isSidebarVisible() ?? false,
     onReaderAddBookmark: () => {
-      activeReaderTab()?.reader.addBookmark();
+      activeAnnotationController()?.addBookmark();
     },
     onReaderAddNote: () => {
-      activeReaderTab()?.reader.addNote();
+      activeAnnotationController()?.addNote();
     },
     onReaderToggleSidebar: () => {
-      activeReaderTab()?.reader.toggleSidebar();
-      // 刷新菜单勾选标记。
+      activeAnnotationController()?.toggleSidebar();
       shell?.rebuildMenus();
     },
     t: (key, vars) => i18n.t(key, vars),
@@ -1029,6 +1094,12 @@ async function confirmClose(tab: { title: string }): Promise<CloseChoice> {
 
 function renderTabBar(): void {
   pruneSourceViews();
+  pruneMarkdownAnnotations();
+  for (const tab of manager.tabList) {
+    if (tab.kind === 'markdown') {
+      annotationHostFor(tab);
+    }
+  }
   shell.renderTabBar(manager.tabList, manager.activeTabId, {
     onSwitch: (id) => manager.switchTab(id),
     onClose: (id) => {
@@ -1078,9 +1149,53 @@ function pruneSourceViews(): void {
   }
 }
 
+function annotationHostFor(tab: MarkdownTabState): MarkdownAnnotationHost {
+  let host = markdownAnnotations.get(tab.id);
+  if (host === undefined) {
+    host = createMarkdownAnnotationHost(tab.hostElement, {
+      t: (key, vars) => i18n.t(key, vars),
+      getContentHash: (path) => invoke<string>('content_hash', { path }),
+      readAnnotations: (contentHash) => invoke<string>('read_annotations', { contentHash }),
+      writeAnnotations: (contentHash, json) => invoke('write_annotations', { contentHash, json }),
+      notify: (message) => {
+        void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
+      },
+    });
+    markdownAnnotations.set(tab.id, host);
+  }
+  host.syncIdentity(tab.filePath, tab.syntheticId);
+  return host;
+}
+
+function pruneMarkdownAnnotations(): void {
+  const live = new Set(manager.tabList.map((tab) => tab.id));
+  for (const [id, host] of markdownAnnotations) {
+    if (!live.has(id)) {
+      host.destroy();
+      markdownAnnotations.delete(id);
+    }
+  }
+}
+
+function activeAnnotationController(): {
+  addBookmark(): void;
+  addNote(): void;
+  toggleSidebar(): void;
+  isSidebarVisible(): boolean;
+  isAnnotationEnabled(): boolean;
+} | null {
+  const reader = activeReaderTab();
+  if (reader !== null) {
+    return reader.reader;
+  }
+  const markdown = activeMarkdownTab();
+  return markdown === null ? null : annotationHostFor(markdown);
+}
+
 // T3/R3：共享滚动容器 #lightink-editor-area——markdown 正文/源码的唯一样式滚动
 // 元素（reader 视图 absolute inset:0 填充本槽位，自有分页，不滚动此容器）。
 const editorScroller = shell.editorArea;
+editorScroller.dataset.surface = 'markdown';
 
 manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
@@ -1088,6 +1203,8 @@ manager = new TabManager({
   remoteImageLoadLabel: i18n.t('reader.remoteImageLoad'),
   mountEditor,
   mountReader: async (host) => {
+    host.classList.add('lightink-tab-host--reader');
+    editorScroller.dataset.surface = 'reader';
     const { createReaderView } = await import('./reader/reader-view.js');
     const reader = createReaderView(host, {
       readBytes: readReaderBytes,
@@ -1168,6 +1285,14 @@ manager = new TabManager({
   // T3/R3：切换完成后恢复目标 markdown 标签的滚动位置（reader 自有分页跳过）。
   onTabSwitched: () => {
     const tab = manager?.activeTab ?? null;
+    editorScroller.dataset.surface = tab?.kind === 'reader' ? 'reader' : 'markdown';
+    // reader 覆盖层（侧栏/搜索面板）portal 到共享 chrome，不随标签宿主隐藏——
+    // 逐个 reader 标签同步可见性，防止残留在别的标签上。
+    for (const item of manager.tabList) {
+      if (item.kind === 'reader') {
+        item.reader.setTabActive(item === tab);
+      }
+    }
     if (tab === null || tab.kind !== 'markdown') {
       return;
     }
@@ -1196,6 +1321,10 @@ manager = new TabManager({
   onFileSaved: (filePath, content) => {
     // R13：每次成功保存自动生成一份版本快照。
     void invoke('create_version', { filePath, content }).catch(() => undefined);
+    const tab = manager.tabList.find((item) => item.kind === 'markdown' && item.filePath === filePath);
+    if (tab !== undefined && tab.kind === 'markdown') {
+      markdownAnnotations.get(tab.id)?.syncIdentity(tab.filePath, tab.syntheticId);
+    }
   },
   onLinkNavigate: (href) => handleLinkNavigation(href),
   // R13：轮询发现活动文件被删/不可读时的一次性可见提示（TabManager 按不可读期去重）。
@@ -1286,11 +1415,12 @@ outline = createOutlineView({
 });
 shell.outlineSidebar.appendChild(outline.root);
 
-// Document status bar: visible by default, with a persisted user override. Content and
-// cursor updates are debounced; save/conflict transitions refresh immediately.
+// Document status bar: hidden by default. Content and cursor updates are
+// debounced; save/conflict transitions refresh immediately.
 // 标签闭包现读 locale，语言切换后下次刷新即用新文案。
 statusBar = createStatusBar(document, shell.statusBarHost, {
   storage: window.localStorage,
+  initiallyVisible: false,
   labels: () => ({
     words: i18n.t('status.words'),
     characters: i18n.t('status.characters'),
@@ -1362,11 +1492,15 @@ function changeReadingScale(action: 'in' | 'out' | 'reset'): void {
   } else {
     fontScale.reset();
   }
+  syncReadingColumns();
   statusBar?.refresh(getActiveStatusSnapshot);
 }
 
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
 statusBar.refresh(getActiveStatusSnapshot);
+syncReadingColumns();
+window.addEventListener('resize', syncReadingColumns);
+document.addEventListener('lightink:font-scale', syncReadingColumns);
 document.addEventListener('selectionchange', () => {
   statusBar.scheduleUpdate(getActiveStatusSnapshot);
 });
@@ -1926,10 +2060,10 @@ document.addEventListener(
       event.key.toLowerCase() === 'f'
     ) {
       event.preventDefault();
-      // reader 标签活动时打开 PDF 内搜索面板（R2），编辑标签走原查找面板。
+      // reader 标签活动时打开阅读器搜索面板，编辑标签走原查找面板。
       const readerTab = activeReaderTab();
       if (readerTab !== null) {
-        readerTab.reader.openSearch?.();
+        readerTab.reader.openSearch?.(window.getSelection()?.toString());
         return;
       }
       openFindPanel();
@@ -1989,8 +2123,71 @@ const shortcuts = new ShortcutRegistry({
   'zoom-reset': () => {
     changeReadingScale('reset');
   },
+  'toggle-reading-layout': () => toggleReadingLayoutMode(),
 });
 shortcuts.attach(document);
+
+const gateMarkdownPagedWheel = createPagedWheelGate();
+
+function advanceMarkdownReading(direction: 1 | -1): boolean {
+  return readingLayout === 'paginated'
+    ? advancePagedScroller(editorScroller, direction)
+    : advanceScrolledScroller(editorScroller, direction);
+}
+
+document.addEventListener(
+  'keydown',
+  (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || !isReadingNavKey(event.key)) {
+      return;
+    }
+    if (activeReaderTab() !== null) {
+      return;
+    }
+    const tab = activeMarkdownTab();
+    if (tab === null) {
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      // contenteditable 一律排除：isReadingNavKey 含 Space 与方向键，放进翻页链会
+      // 让分页 Markdown 里的正文输入/光标移动被劫持成翻页。
+      return;
+    }
+    const direction = readingNavDirection(event.key, event.shiftKey);
+    if (direction === null) {
+      return;
+    }
+    if (advanceMarkdownReading(direction)) {
+      event.preventDefault();
+    }
+  },
+  true,
+);
+
+editorScroller.addEventListener(
+  'wheel',
+  (event) => {
+    if (event.ctrlKey || event.metaKey || readingLayout !== 'paginated') {
+      return;
+    }
+    if (activeReaderTab() !== null || activeMarkdownTab() === null) {
+      return;
+    }
+    const delta =
+      Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (delta === 0) {
+      return;
+    }
+    event.preventDefault();
+    gateMarkdownPagedWheel(delta > 0 ? 1 : -1, advanceMarkdownReading);
+  },
+  { passive: false },
+);
 
 // T8/R3：右键上下文菜单（编辑区 + 标签页）。
 function showEditorContextMenu(x: number, y: number): void {

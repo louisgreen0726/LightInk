@@ -124,12 +124,12 @@ describe('installWheelZoom (R5/T2)', () => {
     expect(handle.scale).toBe(1);
   });
 
-  it('clamps at the max step (no overflow past 1.5)', () => {
-    const handle = installFontScale(fakeRoot(), null, 1.5);
+  it('clamps at the max step', () => {
+    const handle = installFontScale(fakeRoot(), null, 5);
     const target = makeTarget();
     installWheelZoom(target, handle);
     target.dispatch({ ctrlKey: true, deltaY: -100 });
-    expect(handle.scale).toBe(1.5);
+    expect(handle.scale).toBe(5);
   });
 
   it('clamps at the min step (no underflow below 0.85)', () => {
@@ -147,6 +147,16 @@ describe('installWheelZoom (R5/T2)', () => {
     zoom.dispose();
     target.dispatch({ ctrlKey: true, deltaY: -100 });
     expect(handle.scale).toBe(1);
+  });
+
+  it('coalesces a burst of trackpad events into one step', () => {
+    const handle = installFontScale(fakeRoot(), null, 1);
+    const target = makeTarget();
+    installWheelZoom(target, handle, { minIntervalMs: 80 });
+    target.dispatch({ ctrlKey: true, deltaY: -20 });
+    target.dispatch({ ctrlKey: true, deltaY: -20 });
+    target.dispatch({ ctrlKey: true, deltaY: -20 });
+    expect(handle.scale).toBe(1.125);
   });
 
   it('stops propagation so content-level wheel listeners never see the zoom event', () => {

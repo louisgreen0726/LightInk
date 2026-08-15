@@ -152,11 +152,11 @@ afterEach(() => {
 });
 
 describe('显隐偏好（localStorage，chrome-prefs 模式）', () => {
-  it('无存储 / 缺键 / 损坏值均回落默认（开启）', () => {
-    expect(loadStatusBarVisible(null)).toBe(true);
-    expect(loadStatusBarVisible(memoryStorage())).toBe(true);
+  it('无存储 / 缺键 / 损坏值均回落默认（关闭）', () => {
+    expect(loadStatusBarVisible(null)).toBe(false);
+    expect(loadStatusBarVisible(memoryStorage())).toBe(false);
     expect(loadStatusBarVisible(memoryStorage({ [STATUS_BAR_VISIBLE_STORAGE_KEY]: 'oops' }))).toBe(
-      true,
+      false,
     );
   });
 
@@ -173,16 +173,16 @@ describe('显隐偏好（localStorage，chrome-prefs 模式）', () => {
     const storage = memoryStorage();
     const host = new FakeEl('div');
     const bar = makeBar(host, { storage });
-    expect(bar.isVisible()).toBe(true);
+    expect(bar.isVisible()).toBe(false);
 
     bar.toggle();
-    expect(storage.store[STATUS_BAR_VISIBLE_STORAGE_KEY]).toBe('false');
+    expect(storage.store[STATUS_BAR_VISIBLE_STORAGE_KEY]).toBe('true');
 
-    // 模拟重启：同一 storage 新建实例恢复关闭。
+    // 模拟重启：同一 storage 新建实例恢复开启。
     const host2 = new FakeEl('div');
     const bar2 = makeBar(host2, { storage });
-    expect(bar2.isVisible()).toBe(false);
-    expect(host2.children).toHaveLength(0);
+    expect(bar2.isVisible()).toBe(true);
+    expect(host2.children).toHaveLength(1);
   });
 });
 
@@ -241,7 +241,8 @@ describe('渲染与显隐', () => {
     expect(root.dataset.statusKind).toBe('reader');
     expect(root.dataset.readerPhase).toBe('ready');
     expect(root.dataset.saveStatus).toBeUndefined();
-    expect(childByClass(root, 'lightink-status-save').textContent).toBe('阅读中');
+    expect(childByClass(root, 'lightink-status-save').hidden).toBe(true);
+    expect(childByClass(root, 'lightink-status-save').textContent).toBe('');
     expect(childByClass(root, 'lightink-status-position').textContent).toBe('章 2/4');
     expect(childByClass(root, 'lightink-status-encoding').textContent).toBe('进度 50%');
     expect(childByClass(root, 'lightink-status-counts').textContent).toBe('缩放 150%');

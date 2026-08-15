@@ -1,10 +1,9 @@
 /**
- * `search-panel` — PDF 内搜索面板（R2）。
+ * `search-panel` — 阅读器搜索面板（PDF / 流式共用）。
  *
  * 参照编辑器 find-replace 的分层模式：`findPdfMatches`/`nextMatchIndex` 为纯函数
- * （node 可测），面板为纯 DOM 装配 + handlers 回调（Enter 下一处 / Shift+Enter
- * 上一处 / Escape 关闭，aria-live 状态 + 无结果空态）。命中数据源与跳转由
- * reader-view 经 pdf handle 提供；命中高亮 overlay 由 reader-view 渲染。
+ * （node 可测），面板外观对齐 Markdown 查找浮层，但不提供替换。Enter 下一处 /
+ * Shift+Enter 上一处 / Escape 关闭。命中高亮 overlay 由 reader-view 渲染。
  */
 
 import type { MessageKey } from '../i18n/messages.js';
@@ -54,6 +53,28 @@ export function findPdfMatches(
   return matches;
 }
 
+/** First match at or after the current reading position; empty set returns -1. */
+export function nearestMatchIndex(total: number, firstAtOrAfter: number): number {
+  if (total <= 0) {
+    return -1;
+  }
+  if (firstAtOrAfter < 0) {
+    return 0;
+  }
+  return firstAtOrAfter < total ? firstAtOrAfter : 0;
+}
+
+/** Keep the current hit across a layout rebuild when that index is still valid. */
+export function preserveMatchIndex(total: number, previous: number, fallback: number): number {
+  if (total <= 0) {
+    return -1;
+  }
+  if (previous >= 0 && previous < total) {
+    return previous;
+  }
+  return nearestMatchIndex(total, fallback);
+}
+
 /** 环形步进命中索引（direction 1 下一个 / -1 上一个）；空集返回 -1。 */
 export function nextMatchIndex(total: number, active: number, direction: 1 | -1): number {
   if (total <= 0) {
@@ -81,48 +102,108 @@ export interface SearchPanel {
   isOpen(): boolean;
   focus(): void;
   getQuery(): string;
+  setQuery(query: string): void;
   destroy(): void;
   /** 更新命中计数（aria-live）；无结果显示空态文案。 */
   setStatus(total: number, active: number): void;
 }
 
+/** First line, trimmed, capped — same seed rules as Markdown Ctrl+F. */
+export function sanitizeSearchQuery(raw: string | null | undefined): string {
+  const firstLine = (raw ?? '').split(/\r?\n/, 1)[0] ?? '';
+  const trimmed = firstLine.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  return trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed;
+}
+
+const FIND_ICON_SEARCH =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>' +
+  '<path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
+  '</svg>';
+const FIND_ICON_PREV =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+const FIND_ICON_NEXT =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+const FIND_ICON_CLOSE =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+  '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
+  '</svg>';
+
+function iconButton(className: string, svg: string, label: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `lightink-find-icon-btn ${className}`;
+  button.innerHTML = svg;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  return button;
+}
+
 /** 创建搜索面板。element 挂到 reader 视图；open/close 控制显隐。 */
 export function createSearchPanel(deps: SearchPanelDeps): SearchPanel {
   const root = document.createElement('div');
-  root.className = 'lightink-reader-search-panel';
+  root.className = 'lightink-find-panel lightink-reader-search-panel';
   root.setAttribute('role', 'search');
-  root.hidden = true;
+  root.setAttribute('aria-label', deps.t('reader.search.title'));
 
   const input = document.createElement('input');
-  input.type = 'search';
-  input.className = 'lightink-reader-search-input';
+  input.type = 'text';
+  input.className = 'lightink-find-input';
   input.setAttribute('aria-label', deps.t('reader.search.title'));
   input.placeholder = deps.t('reader.search.placeholder');
+  input.autocomplete = 'off';
+  input.spellcheck = false;
   input.addEventListener('input', () => deps.onQuery(input.value));
 
   const status = document.createElement('span');
-  status.className = 'lightink-reader-search-status';
+  status.className = 'lightink-find-status lightink-reader-search-status';
   status.setAttribute('aria-live', 'polite');
-  status.textContent = '';
 
-  const makeButton = (className: string, labelKey: MessageKey, onClick: () => void): HTMLButtonElement => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = className;
-    button.textContent = deps.t(labelKey);
-    button.setAttribute('aria-label', deps.t(labelKey));
-    button.addEventListener('click', onClick);
-    return button;
-  };
-  const prev = makeButton('lightink-reader-search-prev', 'reader.search.prev', deps.onPrev);
-  const next = makeButton('lightink-reader-search-next', 'reader.search.next', deps.onNext);
-  const close = makeButton('lightink-reader-search-close', 'reader.search.close', deps.onClose);
+  const glyph = document.createElement('span');
+  glyph.className = 'lightink-find-panel__glyph lightink-find-panel__glyph--search';
+  glyph.innerHTML = FIND_ICON_SEARCH;
+  glyph.setAttribute('aria-hidden', 'true');
+
+  const field = document.createElement('div');
+  field.className = 'lightink-find-panel__field';
+  field.append(glyph, input, status);
+
+  const prev = iconButton(
+    'lightink-reader-search-prev lightink-find-prev',
+    FIND_ICON_PREV,
+    deps.t('reader.search.prev'),
+  );
+  const next = iconButton(
+    'lightink-reader-search-next lightink-find-next',
+    FIND_ICON_NEXT,
+    deps.t('reader.search.next'),
+  );
+  const close = iconButton(
+    'lightink-reader-search-close lightink-find-close',
+    FIND_ICON_CLOSE,
+    deps.t('reader.search.close'),
+  );
+  prev.addEventListener('click', () => deps.onPrev());
+  next.addEventListener('click', () => deps.onNext());
+  close.addEventListener('click', () => deps.onClose());
+
+  const row = document.createElement('div');
+  row.className = 'lightink-find-panel__row lightink-find-panel__row--find';
+  row.append(field, prev, next, close);
+  root.append(row);
 
   // 键位挂面板容器：焦点落在按钮上时 Enter 走原生 click、Escape 仍可关闭。
   root.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       if (event.target instanceof HTMLButtonElement) {
-        return; // 按钮原生 click 已派发对应动作
+        return;
       }
       event.preventDefault();
       if (event.shiftKey) {
@@ -132,43 +213,49 @@ export function createSearchPanel(deps: SearchPanelDeps): SearchPanel {
       }
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      // 不冒泡：避免一次 Escape 同时关闭搜索面板与其外层（如标注侧栏）。
       event.stopPropagation();
       deps.onClose();
     }
   });
 
-  root.append(input, status, prev, next, close);
-
   return {
     element: root,
     open() {
-      root.hidden = false;
-      input.focus();
+      root.classList.add('is-open');
+      input.focus({ preventScroll: true });
       input.select();
     },
     close() {
-      root.hidden = true;
+      root.classList.remove('is-open');
     },
     isOpen() {
-      return !root.hidden;
+      return root.classList.contains('is-open');
     },
     focus() {
-      input.focus();
+      input.focus({ preventScroll: true });
     },
     getQuery() {
       return input.value;
+    },
+    setQuery(query) {
+      input.value = query;
     },
     destroy() {
       root.remove();
     },
     setStatus(total, active) {
+      const hasQuery = input.value !== '';
+      const empty = hasQuery && total === 0;
       status.dataset.searchTotal = String(total);
-      status.dataset.searchEmpty = total === 0 ? 'true' : 'false';
-      status.textContent =
-        total === 0
-          ? deps.t('reader.search.empty')
-          : `${active + 1}/${total}`;
+      status.dataset.searchEmpty = empty ? 'true' : 'false';
+      root.classList.toggle('is-empty', empty);
+      status.textContent = empty
+        ? deps.t('reader.search.empty')
+        : total > 0
+          ? `${active + 1}/${total}`
+          : '';
+      prev.disabled = total === 0;
+      next.disabled = total === 0;
     },
   };
 }

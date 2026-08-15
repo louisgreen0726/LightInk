@@ -139,8 +139,10 @@ function candidateOffsets(text: string, anchor: TextQuoteAnchor): number[] {
   );
 }
 
-export function resolveTextQuoteRange(root: Node, anchor: TextQuoteAnchor): Range | null {
-  const { text } = textSpans(root);
+export function resolveTextQuoteOffsets(
+  text: string,
+  anchor: TextQuoteAnchor,
+): { start: number; end: number } | null {
   let start = anchor.start;
   const storedOffsetsMatch =
     start >= 0 &&
@@ -162,7 +164,13 @@ export function resolveTextQuoteRange(root: Node, anchor: TextQuoteAnchor): Rang
       );
     }
   }
-  return rangeFromOffsets(root, start, start + anchor.quote.length);
+  return { start, end: start + anchor.quote.length };
+}
+
+export function resolveTextQuoteRange(root: Node, anchor: TextQuoteAnchor): Range | null {
+  const { text } = textSpans(root);
+  const offsets = resolveTextQuoteOffsets(text, anchor);
+  return offsets === null ? null : rangeFromOffsets(root, offsets.start, offsets.end);
 }
 
 /** Wrap each selected text fragment independently so highlighting preserves element structure. */
@@ -199,6 +207,19 @@ export function markTextRange(
     mark.appendChild(selectedNode);
   }
   return selected.length;
+}
+
+/** Walk from a click target (element or text node) to its annotation mark. */
+export function annotationMarkFromEventTarget(target: EventTarget | null): HTMLElement | null {
+  if (target === null || typeof (target as Node).nodeType !== 'number') {
+    return null;
+  }
+  const node = target as Node;
+  const element = node.nodeType === 1 ? (node as Element) : node.parentElement;
+  if (element === null || typeof element.closest !== 'function') {
+    return null;
+  }
+  return element.closest('[data-annotation-id]');
 }
 
 export function removeTextRangeMarks(root: ParentNode, annotationId: string): void {
