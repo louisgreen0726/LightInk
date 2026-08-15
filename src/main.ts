@@ -249,7 +249,7 @@ const themeService = new ThemeService({
   readFile,
   syncNativeTheme: (dark) => void setNativeTheme(dark),
   onThemeChange: () => {
-    document.documentElement.dispatchEvent(new CustomEvent('lightink:theme-change'));
+    document.dispatchEvent(new CustomEvent('lightink:theme-change'));
   },
 });
 
