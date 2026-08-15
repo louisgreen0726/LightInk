@@ -6,6 +6,7 @@
 export interface AppWindowLike {
   isFullscreen(): Promise<boolean>;
   setFullscreen(fullscreen: boolean): Promise<void>;
+  setDecorations?(decorations: boolean): Promise<void>;
 }
 
 /** Resolve the current Tauri webview/window, or null outside Tauri. */
@@ -48,5 +49,22 @@ export async function toggleFullscreen(
     // eslint-disable-next-line no-console
     console.error('[lightink] setFullscreen failed', error);
     return false;
+  }
+}
+
+/** Show/hide the native title bar (window decorations); no-op outside Tauri. */
+export async function setNativeTitleBar(
+  visible: boolean,
+  getWindow: () => Promise<AppWindowLike | null> = getAppWindow,
+): Promise<void> {
+  const win = await getWindow();
+  if (win === null || typeof win.setDecorations !== 'function') {
+    return;
+  }
+  try {
+    await win.setDecorations(visible);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('[lightink] setDecorations failed', error);
   }
 }

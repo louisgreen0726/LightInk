@@ -98,7 +98,7 @@ import {
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry, pagingShouldIgnoreTarget, wheelPagingShouldIgnoreTarget } from './ui/shortcuts.js';
-import { toggleFullscreen } from './ui/window-chrome.js';
+import { setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
 import {
@@ -1100,6 +1100,8 @@ function toggleChromePinnedWithOutline(): void {
 /** Fullscreen also forces unpinned chrome + fully hidden outline for a clean canvas. */
 async function enterOrExitFullscreen(): Promise<void> {
   const next = await toggleFullscreen();
+  // R2：全屏隐藏原生标题栏，退出恢复（no-op 于非 Tauri / 无权限环境）。
+  await setNativeTitleBar(!next);
   if (next) {
     if (shell !== undefined && shell.isChromePinned()) {
       shell.setChromePinned(false);
