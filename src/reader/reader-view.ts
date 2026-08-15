@@ -12,7 +12,7 @@
 import './reader.css';
 import type { MessageKey } from '../i18n/messages.js';
 import { parseReaderContent } from './formats/index.js';
-import type { ReaderChapter, ReaderContent } from './formats/types.js';
+import type { ReaderByteSource, ReaderChapter, ReaderContent } from './formats/types.js';
 import { ParseError } from './formats/types.js';
 import { sanitizeReaderCss } from './sanitize-css.js';
 import { renderCbzInto, type CbzRenderHandle } from './formats/cbz.js';
@@ -151,8 +151,18 @@ export function isTextLayerMutation(records: readonly MutationRecord[]): boolean
 }
 
 export interface ReaderViewDeps {
-  /** 读取文件原始字节（生产为 invoke read_file_bytes → base64 → Uint8Array）。 */
+  /** 读取文件原始字节（生产为 invoke read_file_bytes raw IPC → Uint8Array）。 */
   readBytes?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
+  /**
+   * 分块读取文件字节（T8 txt 分块解析；生产为 invoke read_file_bytes 带
+   * offset/length，raw IPC 返回窗口字节，EOF 处返回短块）。缺省时 txt 回退整读。
+   */
+  readChunk?: (
+    filePath: string,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ) => Promise<Uint8Array>;
   /** 翻译 i18n key（生产为 i18n.t）。 */
   t?: (key: MessageKey, vars?: Readonly<Record<string, string>>) => string;
   /** 文件内容哈希（Rust content_hash）；缺省则不启用标注。 */
@@ -168,7 +178,7 @@ export interface ReaderViewDeps {
   /** Injectable flow parser for lifecycle tests. */
   parseContent?: (
     filePath: string,
-    bytes: Uint8Array,
+    bytes: Uint8Array | ReaderByteSource,
     signal?: AbortSignal,
   ) => Promise<ReaderContent>;
   /** Injectable progress storage; production uses localStorage. */
@@ -2165,13 +2175,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
       setReaderPhase('loading', true);
       try {
-        const bytes = await readBytes(filePath, controller.signal);
-        throwIfReaderLoadCancelled(controller.signal);
-        if (!isCurrent()) {
-          return;
-        }
-
         if (PAGE_EXTS.has(nextExt)) {
+          const bytes = await readBytes(filePath, controller.signal);
+          throwIfReaderLoadCancelled(controller.signal);
+          if (!isCurrent()) {
+            return;
+          }
           const staged = await stagePages(filePath, bytes, controller.signal);
           if (controller.signal.aborted) {
             await staged.pdf?.destroy().catch(() => undefined);
@@ -2201,9 +2210,22 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
             return;
           }
         } else {
+          // T8：txt 经分块字节源懒读（不整文件驻留）；无 readChunk 依赖时回退整读。
+          const readChunk = nextExt === 'txt' ? deps.readChunk : undefined;
+          const source: Uint8Array | ReaderByteSource =
+            readChunk === undefined
+              ? await readBytes(filePath, controller.signal)
+              : {
+                  read: (offset, length, readSignal) =>
+                    readChunk(filePath, offset, length, readSignal ?? controller.signal),
+                };
+          throwIfReaderLoadCancelled(controller.signal);
+          if (!isCurrent()) {
+            return;
+          }
           const content = await (deps.parseContent ?? parseReaderContent)(
             filePath,
-            bytes,
+            source,
             controller.signal,
           );
           if (controller.signal.aborted) {

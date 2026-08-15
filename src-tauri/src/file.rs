@@ -5,7 +5,7 @@
 //! 策略：失败时清理临时文件并返回错误，目标路径上永远不会留下半截文件。
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -156,13 +156,51 @@ pub fn read_file_bytes_impl(path: &Path) -> Result<Vec<u8>, String> {
     read_bounded(path, reader_limit_for_path(path))
 }
 
+/// 分块读取文件字节（T8 txt 分块解析）：返回 [offset, offset+length) 窗口，EOF
+/// 处返回短块、offset 越界返回空。整文件大小上限与整读一致（stat 时强制执行，
+/// 超限仍 FILE_TOO_LARGE），分配按实际窗口大小有界（length 经 size-offset 收敛，
+/// 调用方无法借超大 length 触发超额分配）。
+pub fn read_file_chunk_impl(path: &Path, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+    let mut file =
+        File::open(path).map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    let size = file
+        .metadata()
+        .map_err(|e| format!("无法读取文件信息 {}: {}", path.display(), e))?
+        .len();
+    ensure_file_size(size, reader_limit_for_path(path))?;
+    if offset >= size {
+        return Ok(Vec::new());
+    }
+    let window = length.min(size - offset);
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    let mut bytes = Vec::with_capacity(window as usize);
+    file.take(window)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("无法读取文件 {}: {}", path.display(), e))?;
+    Ok(bytes)
+}
+
 /// 读取文件字节并经 tauri raw IPC 返回（`InvokeResponseBody::Raw`，前端 `invoke`
 /// 直接得到 ArrayBuffer）。不再走 base64 字符串编码与前端 atob 逐字节解码：
 /// Rust 侧峰值从 N + 4N/3 降到 N，JS 侧从 ~10N/3 降到 N。128MB/32MB 上限与
 /// 错误语义与 `read_file_bytes_impl` 完全一致。
+///
+/// T8：附带 offset+length（必须成对）时走分块读取，只读
+/// [offset, offset+length) 窗口并经 raw IPC 返回，供 txt 分块解析不整文件驻留。
 #[tauri::command]
-pub fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
-    let bytes = read_file_bytes_impl(Path::new(&path))?;
+pub fn read_file_bytes(
+    path: String,
+    offset: Option<u64>,
+    length: Option<u64>,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = match (offset, length) {
+        (None, None) => read_file_bytes_impl(Path::new(&path))?,
+        (Some(offset), Some(length)) => read_file_chunk_impl(Path::new(&path), offset, length)?,
+        _ => {
+            return Err("read_file_bytes 分块读取需要同时提供 offset 与 length".to_string());
+        }
+    };
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -280,8 +318,8 @@ mod tests {
         let path = dir.path().join("book.epub");
         let raw = [0x50u8, 0x4b, 0x03, 0x04, 0xff, 0x00, 0x80, 0x7f];
         std::fs::write(&path, raw).expect("write");
-        let response =
-            super::read_file_bytes(path.to_string_lossy().into_owned()).expect("read bytes");
+        let response = super::read_file_bytes(path.to_string_lossy().into_owned(), None, None)
+            .expect("read bytes");
         match response.body() {
             Ok(tauri::ipc::InvokeResponseBody::Raw(bytes)) => assert_eq!(bytes, raw),
             Ok(tauri::ipc::InvokeResponseBody::Json(json)) => {
@@ -297,7 +335,7 @@ mod tests {
         // 超限仍返回 FILE_TOO_LARGE:actual:limit。
         let dir = temp_dir();
         let missing = dir.path().join("nope.epub");
-        let err = match super::read_file_bytes(missing.to_string_lossy().into_owned()) {
+        let err = match super::read_file_bytes(missing.to_string_lossy().into_owned(), None, None) {
             Ok(_) => panic!("missing file must fail"),
             Err(e) => e,
         };
@@ -308,7 +346,8 @@ mod tests {
             .unwrap()
             .set_len(MAX_READER_FILE_BYTES + 1)
             .unwrap();
-        let err = match super::read_file_bytes(oversized.to_string_lossy().into_owned()) {
+        let err = match super::read_file_bytes(oversized.to_string_lossy().into_owned(), None, None)
+        {
             Ok(_) => panic!("oversized file must fail"),
             Err(e) => e,
         };
@@ -343,6 +382,74 @@ mod tests {
         let missing = dir.path().join("nope.epub");
         let err = super::read_file_bytes_impl(&missing).expect_err("must fail");
         assert!(err.contains("无法读取文件"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn read_file_bytes_chunk_reads_requested_window() {
+        let dir = temp_dir();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"0123456789abcdef").expect("write");
+        let chunk = super::read_file_chunk_impl(&path, 4, 6).expect("chunk");
+        assert_eq!(chunk, b"456789".to_vec());
+        // 命令层（T8）：offset/length 成对提供时走分块，窗口字节经 raw IPC 返回。
+        let response =
+            super::read_file_bytes(path.to_string_lossy().into_owned(), Some(4), Some(6))
+                .expect("chunk command");
+        match response.body() {
+            Ok(tauri::ipc::InvokeResponseBody::Raw(bytes)) => assert_eq!(bytes, b"456789"),
+            Ok(tauri::ipc::InvokeResponseBody::Json(json)) => {
+                panic!("expected raw IPC body, got json: {json}")
+            }
+            Err(e) => panic!("ipc response body error: {e}"),
+        }
+    }
+
+    #[test]
+    fn read_file_bytes_chunk_returns_short_tail_and_empty_past_eof() {
+        let dir = temp_dir();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"0123456789").expect("write");
+        assert_eq!(
+            super::read_file_chunk_impl(&path, 8, 16).expect("tail"),
+            b"89".to_vec()
+        );
+        assert!(super::read_file_chunk_impl(&path, 10, 16)
+            .expect("eof")
+            .is_empty());
+        assert!(super::read_file_chunk_impl(&path, 100, 16)
+            .expect("past eof")
+            .is_empty());
+    }
+
+    #[test]
+    fn read_file_bytes_chunk_enforces_text_size_limit() {
+        // 分块读取与整读同上限：超限 txt 即使只请求首块也拒绝（错误语义不回退）。
+        let dir = temp_dir();
+        let path = dir.path().join("oversized.txt");
+        File::create(&path)
+            .unwrap()
+            .set_len(MAX_TEXT_FILE_BYTES + 1)
+            .unwrap();
+        let err = super::read_file_chunk_impl(&path, 0, 1024).expect_err("must fail");
+        assert!(err.starts_with("FILE_TOO_LARGE:"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn read_file_bytes_chunk_missing_file_reports_error() {
+        let dir = temp_dir();
+        let missing = dir.path().join("nope.txt");
+        let err = super::read_file_chunk_impl(&missing, 0, 1024).expect_err("must fail");
+        assert!(err.contains("无法读取文件"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn read_file_bytes_chunk_requires_offset_and_length_together() {
+        let dir = temp_dir();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"data").expect("write");
+        let path_string = path.to_string_lossy().into_owned();
+        assert!(super::read_file_bytes(path_string.clone(), Some(0), None).is_err());
+        assert!(super::read_file_bytes(path_string, None, Some(4)).is_err());
     }
 
     #[test]

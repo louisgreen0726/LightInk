@@ -5,6 +5,10 @@
  * 得到按顺序的 XHTML 章节文件，抽取各 <body> 内容并消毒为章节化 HTML。
  * ZIP central-directory metadata is checked before decompression. Pure string parsing keeps
  * OPF/XHTML handling testable in Node.
+ *
+ * T8：包内图片不再 parse 期物化——章节 HTML 中的 img 保留包内规范路径作占位
+ * src，由章节 resolveResources/releaseResources 钩子按渲染窗口懒解压并配对
+ * revokeObjectURL；archive 随 ReaderContent.dispose 关闭。
  */
 
 import { sanitizeHtml } from '../sanitize.js';
@@ -92,14 +96,24 @@ export async function parseEpub(
   signal?: AbortSignal,
 ): Promise<ReaderContent> {
   const archive = await openSafeArchive(bytes, 'EPUB', signal);
-  const resourceUrls = new Map<string, string>();
-  let returnedContent = false;
+  // T8：包内图片不再 parse 期物化。materialized/pathByUrl 记录按章节窗口懒物化
+  // 的 blob URL（path → { url, refs } 引用计数）；archive 存活至内容 dispose，
+  // dispose 兜底 revoke 全部并关闭 archive。
+  const materialized = new Map<string, { url: string; refs: number }>();
+  const pathByUrl = new Map<string, string>();
+  let archiveClosed = false;
   const dispose = (): void => {
-    for (const url of resourceUrls.values()) {
-      URL.revokeObjectURL(url);
+    for (const entry of materialized.values()) {
+      URL.revokeObjectURL(entry.url);
     }
-    resourceUrls.clear();
+    materialized.clear();
+    pathByUrl.clear();
+    if (!archiveClosed) {
+      archiveClosed = true;
+      void archive.close().catch(() => undefined);
+    }
   };
+  let returnedContent = false;
   try {
     // 1. container.xml → OPF 路径。
     let opfPath: string | null = null;
@@ -188,15 +202,22 @@ export async function parseEpub(
       image.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ??
       '';
 
-    const packagedImageUrl = async (path: string, mediaType: string): Promise<string | null> => {
-      if (!SAFE_READER_IMAGE_MIME_TYPES.has(mediaType)) {
+    /**
+     * Parse 期引用解析与预算校验（T8）：返回包内规范路径作为占位 src，不解压、
+     * 不建 object URL。超限检查用 central-directory 元数据，抛错时机/语义与
+     * 原 parse 期物化一致；清单外/不安全 MIME/缺失条目返回 null（调用方去 src）。
+     */
+    const packagedImagePath = (basePath: string, source: string): string | null => {
+      const imageReference = resolveArchiveReference(basePath, source);
+      const manifestItem =
+        imageReference === null ? undefined : manifestByPath.get(imageReference.path);
+      if (imageReference === null || manifestItem === undefined) {
         return null;
       }
-      const existing = resourceUrls.get(path);
-      if (existing !== undefined) {
-        return existing;
+      if (!SAFE_READER_IMAGE_MIME_TYPES.has(manifestItem.mediaType)) {
+        return null;
       }
-      const file = archive.file(path);
+      const file = archive.file(imageReference.path);
       if (file === null) {
         return null;
       }
@@ -207,12 +228,65 @@ export async function parseEpub(
           MAX_READER_IMAGE_BYTES,
         );
       }
-      const data = await file.readBytes(signal);
-      throwIfReaderLoadCancelled(signal);
-      const imageBytes = Uint8Array.from(data);
-      const url = URL.createObjectURL(new Blob([imageBytes.buffer], { type: mediaType }));
-      resourceUrls.set(path, url);
-      return url;
+      return imageReference.path;
+    };
+
+    /**
+     * T8 懒物化：章节帧进入视口时把占位 src（包内路径）换成 blob URL。同一图片
+     * 跨章共享按引用计数持有；releaseImages 配对还原并按计数 revokeObjectURL。
+     */
+    const materializeImages = async (doc: Document): Promise<void> => {
+      for (const image of Array.from(doc.querySelectorAll<HTMLImageElement>('img[src]'))) {
+        const source = image.getAttribute('src') ?? '';
+        if (source === '' || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(source)) {
+          continue; // 已物化（blob:）、内联（data:）或远程图均不归本钩子处理
+        }
+        const manifestItem = manifestByPath.get(source);
+        if (manifestItem === undefined) {
+          continue;
+        }
+        let entry = materialized.get(source);
+        if (entry === undefined) {
+          const file = archive.file(source);
+          if (file === null) {
+            continue;
+          }
+          const data = await file.readBytes();
+          const imageBytes = Uint8Array.from(data);
+          const url = URL.createObjectURL(
+            new Blob([imageBytes.buffer], { type: manifestItem.mediaType }),
+          );
+          entry = { url, refs: 0 };
+          materialized.set(source, entry);
+          pathByUrl.set(url, source);
+        }
+        entry.refs += 1;
+        image.setAttribute('src', entry.url);
+      }
+    };
+
+    /** 与 materializeImages 配对：src 还原为包内路径，引用计数归零即 revoke。幂等。 */
+    const releaseImages = (doc: Document): void => {
+      for (const image of Array.from(
+        doc.querySelectorAll<HTMLImageElement>('img[src^="blob:"]'),
+      )) {
+        const url = image.getAttribute('src') ?? '';
+        const path = pathByUrl.get(url);
+        if (path === undefined) {
+          continue;
+        }
+        image.setAttribute('src', path);
+        const entry = materialized.get(path);
+        if (entry === undefined) {
+          continue;
+        }
+        entry.refs -= 1;
+        if (entry.refs <= 0) {
+          URL.revokeObjectURL(url);
+          materialized.delete(path);
+          pathByUrl.delete(url);
+        }
+      }
     };
 
     // 4. Read spine XHTML, resolve packaged images, and rewrite chapter links.
@@ -229,34 +303,29 @@ export async function parseEpub(
       throwIfReaderLoadCancelled(signal);
       const document = new DOMParser().parseFromString(xhtml, 'text/html');
       const body = document.body;
-      const resolvePackagedImage = async (source: string): Promise<string | null> => {
-        const imageReference = resolveArchiveReference(fullPath, source);
-        const manifestItem =
-          imageReference === null ? undefined : manifestByPath.get(imageReference.path);
-        if (imageReference === null || manifestItem === undefined) {
-          return null;
-        }
-        return packagedImageUrl(imageReference.path, manifestItem.mediaType);
-      };
+      let hasPackagedImages = false;
 
       for (const image of body.querySelectorAll<HTMLImageElement>('img[src]')) {
-        const url = await resolvePackagedImage(image.getAttribute('src') ?? '');
-        if (url === null) {
+        const path = packagedImagePath(fullPath, image.getAttribute('src') ?? '');
+        if (path === null) {
           image.removeAttribute('src');
         } else {
-          image.src = url;
+          // 占位 src = 包内规范路径：帧进入视口时由 resolveResources 物化为 blob URL。
+          image.setAttribute('src', path);
+          hasPackagedImages = true;
         }
       }
       // 文库版 EPUB 常用 <svg><image xlink:href> 包位图；消毒会丢掉整个 svg。
       for (const svg of [...body.querySelectorAll('svg')]) {
         const replacements: HTMLImageElement[] = [];
         for (const image of svg.querySelectorAll('image')) {
-          const url = await resolvePackagedImage(svgImageHref(image));
-          if (url === null) {
+          const path = packagedImagePath(fullPath, svgImageHref(image));
+          if (path === null) {
             continue;
           }
           const img = document.createElement('img');
-          img.src = url;
+          img.setAttribute('src', path);
+          hasPackagedImages = true;
           const width = image.getAttribute('width');
           const height = image.getAttribute('height');
           if (width !== null && width !== '' && !width.includes('%')) {
@@ -300,7 +369,15 @@ export async function parseEpub(
       const sectionTitle = document.title.trim();
       const title =
         sectionTitle || (idx === 0 && bookTitle ? bookTitle : `Chapter ${idx + 1}`);
-      chapters.push({ title, html: sanitizeHtml(body.innerHTML) });
+      const chapter: ReaderContent['chapters'][number] = {
+        title,
+        html: sanitizeHtml(body.innerHTML),
+      };
+      if (hasPackagedImages) {
+        chapter.resolveResources = materializeImages;
+        chapter.releaseResources = releaseImages;
+      }
+      chapters.push(chapter);
     }
 
     if (chapters.length === 0) {
@@ -334,7 +411,6 @@ export async function parseEpub(
     returnedContent = true;
     return stylesheet === '' ? { chapters, dispose } : { chapters, stylesheet, dispose };
   } finally {
-    await archive.close().catch(() => undefined);
     if (!returnedContent) {
       dispose();
     }

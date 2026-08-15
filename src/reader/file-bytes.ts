@@ -42,3 +42,21 @@ export function readerBytesFromIpc(
   }
   return bytes;
 }
+
+/**
+ * 校验并归一分块读取响应（T8 txt 分块解析）：`read_file_bytes` 带 offset/length
+ * 经 raw IPC 返回窗口字节，响应不得超过请求长度（Rust 侧已按 seek+take 保证，
+ * 此为前端防御）；整文件大小上限由 Rust 侧在 stat 时强制执行，错误语义不变。
+ */
+export function readerChunkFromIpc(
+  data: ArrayBuffer | Uint8Array,
+  requestedBytes: number,
+): Uint8Array {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  if (bytes.byteLength > requestedBytes) {
+    throw new Error(
+      `Reader chunk is too large (${bytes.byteLength} bytes; requested ${requestedBytes} bytes)`,
+    );
+  }
+  return bytes;
+}

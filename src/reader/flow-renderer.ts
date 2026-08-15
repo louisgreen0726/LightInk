@@ -7,6 +7,8 @@
  * click/mouseup/keydown/wheel 接线与释放、远程图授权配对释放。
  * 编排壳（reader-view）保留生命周期/状态机/进度/接线，经 hooks 回调。
  * 可观察行为（sandbox、CSS 内联顺序、进度语义）与拆出前一致。
+ * T8：章节资源钩子（EPUB 懒物化图片）按 IntersectionObserver 视口窗口
+ * resolve/release；无 IO 环境退化为帧加载即物化。
  */
 
 import type { MessageKey } from '../i18n/messages.js';
@@ -217,9 +219,57 @@ export function createFlowRenderer(
   let flowRenderGeneration = 0;
   let releaseRemoteImages: Array<() => void> = [];
 
+  /** T8：章节资源物化窗口（EPUB 图片按视口可见性 resolve/release，配对 revoke）。 */
+  interface ChapterResourceWindow {
+    chapter: ReaderChapter;
+    frame: HTMLIFrameElement;
+    generation: number;
+    visible: boolean;
+    ready: boolean;
+    queue: Promise<void>;
+    afterResolve: (() => void) | null;
+  }
+  let resourceWindows: ChapterResourceWindow[] = [];
+  let resourceObserver: IntersectionObserver | null = null;
+
+  /** 按窗口状态串行执行 resolve/release（每章一个 promise 链，避免快进快出竞态）。 */
+  const syncChapterResources = (win: ChapterResourceWindow): void => {
+    if (win.chapter.resolveResources === undefined && win.chapter.releaseResources === undefined) {
+      return;
+    }
+    win.queue = win.queue
+      .then(async () => {
+        if (win.generation !== flowRenderGeneration) {
+          return;
+        }
+        const doc = win.frame.contentDocument;
+        if (doc === null) {
+          return;
+        }
+        if (win.visible && win.ready) {
+          await win.chapter.resolveResources?.(doc);
+          win.afterResolve?.();
+        } else if (!win.visible) {
+          win.chapter.releaseResources?.(doc);
+        }
+      })
+      .catch(() => undefined);
+  };
+
   const clear = (): void => {
     flowRenderGeneration += 1;
+    resourceObserver?.disconnect();
+    resourceObserver = null;
+    const windows = resourceWindows;
+    resourceWindows = [];
     releaseRemoteImages.splice(0).forEach((release) => release());
+    // 卸载帧配对释放已物化资源（内容级 dispose 由编排壳兜底 revoke）。
+    for (const win of windows) {
+      const doc = win.frame.contentDocument;
+      if (doc !== null) {
+        win.chapter.releaseResources?.(doc);
+      }
+    }
   };
 
   const setActiveChapter = (index: number): void => {
@@ -316,6 +366,25 @@ export function createFlowRenderer(
     clear();
     const renderGeneration = flowRenderGeneration;
     scrollHost.replaceChildren();
+    // T8：视口窗口驱动物化/释放；rootMargin 预取一屏邻章。无 IO 环境（jsdom）
+    // 时 visible 常 true，退化为帧加载即物化（与原 parse 期物化效果等价）。
+    resourceObserver =
+      typeof IntersectionObserver === 'undefined'
+        ? null
+        : new IntersectionObserver(
+            (entries) => {
+              for (const entry of entries) {
+                const index = Number((entry.target as HTMLElement).dataset.chapterIndex);
+                const win = resourceWindows[index];
+                if (win === undefined || win.generation !== renderGeneration) {
+                  continue;
+                }
+                win.visible = entry.isIntersecting;
+                syncChapterResources(win);
+              }
+            },
+            { root: scrollHost, rootMargin: '100% 0px' },
+          );
     let chapterIndex = 0;
     for (const chapter of chapters) {
       const article = document.createElement('article');
@@ -333,6 +402,18 @@ export function createFlowRenderer(
       frame.setAttribute('sandbox', 'allow-same-origin');
       frame.setAttribute('scrolling', 'no');
       frame.referrerPolicy = 'no-referrer';
+
+      const win: ChapterResourceWindow = {
+        chapter,
+        frame,
+        generation: renderGeneration,
+        visible: resourceObserver === null,
+        ready: false,
+        queue: Promise.resolve(),
+        afterResolve: null,
+      };
+      resourceWindows.push(win);
+      resourceObserver?.observe(article);
 
       const frameChapter = chapterIndex;
       const onLoad = (): void => {
@@ -553,15 +634,28 @@ export function createFlowRenderer(
             syncHeight();
           }
         };
-        for (const image of Array.from(frameDocument.images)) {
-          if (!image.complete) {
-            image.addEventListener('load', onImageLoad);
-            image.addEventListener('error', onImageLoad);
+        const watchFrameImages = (): void => {
+          for (const image of Array.from(frameDocument.images)) {
+            if (!image.complete) {
+              image.addEventListener('load', onImageLoad);
+              image.addEventListener('error', onImageLoad);
+            }
           }
-        }
+        };
+        watchFrameImages();
         syncHeight();
         requestAnimationFrame(syncHeight);
         hooks.renderHighlights();
+        // T8：帧就绪——章节引用资源（EPUB 图片）按窗口可见性物化；物化完成后
+        // 重新挂图片 load 监听并同步帧高（懒物化的图片此时才开始加载）。
+        win.ready = true;
+        win.afterResolve = () => {
+          if (win.generation === flowRenderGeneration) {
+            watchFrameImages();
+            syncHeight();
+          }
+        };
+        syncChapterResources(win);
         releaseRemoteImages.push(() => {
           resizeObserver?.disconnect();
           releaseImages();

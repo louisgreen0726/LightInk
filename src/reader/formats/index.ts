@@ -8,19 +8,33 @@
 import { parseEpub } from './epub.js';
 import { parseFb2 } from './fb2.js';
 import { parseMobi } from './mobi.js';
-import { parseTxt } from './txt.js';
-import { ParseError, type ReaderContent } from './types.js';
+import { parseTxt, parseTxtFromSource } from './txt.js';
+import { ParseError, type ReaderByteSource, type ReaderContent } from './types.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { extOfPath } from '../../file/path-ext.js';
 
+/** epub/mobi/fb2 保持整读；只有 txt 走分块字节源（T8）。 */
+function isReaderByteSource(source: Uint8Array | ReaderByteSource): source is ReaderByteSource {
+  // 结构化判定：跨 realm（jsdom/node）Uint8Array instanceof 不可靠。
+  return typeof (source as ReaderByteSource).read === 'function';
+}
+
+function requireBytes(source: Uint8Array | ReaderByteSource, ext: string): Uint8Array {
+  if (!isReaderByteSource(source)) {
+    return source;
+  }
+  throw new ParseError(`内部错误：.${ext} 解析需要整读字节`);
+}
+
 /**
  * 按文件扩展名解析字节为章节化阅读内容。
- * epub/txt/fb2 同步或异步解析；MOBI 仅支持明确检测过的 PalmDOC/MOBI6 子集。
+ * txt 传入 ReaderByteSource 时按块读取解析（不整文件驻留）；epub/mobi/fb2
+ * 维持整读；MOBI 仅支持明确检测过的 PalmDOC/MOBI6 子集。
  * 不支持的扩展名抛 ParseError。
  */
 export async function parseReaderContent(
   path: string,
-  bytes: Uint8Array,
+  source: Uint8Array | ReaderByteSource,
   signal?: AbortSignal,
 ): Promise<ReaderContent> {
   throwIfReaderLoadCancelled(signal);
@@ -28,16 +42,18 @@ export async function parseReaderContent(
   let content: ReaderContent;
   switch (ext) {
     case 'txt':
-      content = parseTxt(bytes);
+      content = isReaderByteSource(source)
+        ? await parseTxtFromSource(source, signal)
+        : parseTxt(source);
       break;
     case 'fb2':
-      content = parseFb2(bytes);
+      content = parseFb2(requireBytes(source, ext));
       break;
     case 'epub':
-      content = await parseEpub(bytes, signal);
+      content = await parseEpub(requireBytes(source, ext), signal);
       break;
     case 'mobi':
-      content = parseMobi(bytes);
+      content = parseMobi(requireBytes(source, ext));
       break;
     default:
       throw new ParseError(`暂不支持的阅读格式：.${ext || '?'}`);

@@ -315,6 +315,29 @@ function throwIfReaderReadCancelled(signal?: AbortSignal): void {
   }
 }
 
+/** read_file_bytes 错误映射：原生/前端超限统一本地化为 reader.fileTooLarge。 */
+function throwReaderReadError(
+  error: unknown,
+  tooLargeError: typeof import('./reader/file-bytes.js').ReaderFileTooLargeError,
+): never {
+  const detail = String(error);
+  const nativeLimit = detail.match(/FILE_TOO_LARGE:(\d+):(\d+)/);
+  if (nativeLimit !== null) {
+    throw new Error(
+      i18n.t('reader.fileTooLarge', { actual: nativeLimit[1]!, limit: nativeLimit[2]! }),
+    );
+  }
+  if (error instanceof tooLargeError) {
+    throw new Error(
+      i18n.t('reader.fileTooLarge', {
+        actual: String(error.actualBytes),
+        limit: String(error.limitBytes),
+      }),
+    );
+  }
+  throw error;
+}
+
 /** 读取阅读文件原始字节（read_file_bytes raw IPC → Uint8Array），供 reader-view.load。 */
 async function readReaderBytes(
   filePath: string,
@@ -332,22 +355,36 @@ async function readReaderBytes(
     throwIfReaderReadCancelled(signal);
     return bytes;
   } catch (error) {
-    const detail = String(error);
-    const nativeLimit = detail.match(/FILE_TOO_LARGE:(\d+):(\d+)/);
-    if (nativeLimit !== null) {
-      throw new Error(
-        i18n.t('reader.fileTooLarge', { actual: nativeLimit[1]!, limit: nativeLimit[2]! }),
-      );
-    }
-    if (error instanceof ReaderFileTooLargeError) {
-      throw new Error(
-        i18n.t('reader.fileTooLarge', {
-          actual: String(error.actualBytes),
-          limit: String(error.limitBytes),
-        }),
-      );
-    }
-    throw error;
+    throwReaderReadError(error, ReaderFileTooLargeError);
+  }
+}
+
+/**
+ * 分块读取阅读文件字节（T8 txt 分块解析）：read_file_bytes 带 offset/length，
+ * raw IPC 返回 [offset, offset+length) 窗口字节，EOF 处返回短块；上限与错误
+ * 语义与整读一致。
+ */
+async function readReaderChunk(
+  filePath: string,
+  offset: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  throwIfReaderReadCancelled(signal);
+  const { readerChunkFromIpc, ReaderFileTooLargeError } = await import(
+    './reader/file-bytes.js'
+  );
+  try {
+    throwIfReaderReadCancelled(signal);
+    const raw = await invoke<ArrayBuffer>('read_file_bytes', {
+      path: filePath,
+      offset,
+      length,
+    });
+    throwIfReaderReadCancelled(signal);
+    return readerChunkFromIpc(raw, length);
+  } catch (error) {
+    throwReaderReadError(error, ReaderFileTooLargeError);
   }
 }
 
@@ -1212,6 +1249,7 @@ manager = new TabManager({
     const { createReaderView } = await import('./reader/reader-view.js');
     const reader = createReaderView(host, {
       readBytes: readReaderBytes,
+      readChunk: readReaderChunk,
       t: (key, vars) => i18n.t(key, vars),
       getContentHash: (path) => invoke<string>('content_hash', { path }),
       readAnnotations: (contentHash) => invoke<string>('read_annotations', { contentHash }),

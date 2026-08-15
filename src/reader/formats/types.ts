@@ -11,6 +11,24 @@ export interface ReaderChapter {
   title: string;
   /** 已消毒的章节正文 HTML。 */
   html: string;
+  /**
+   * 懒物化章节引用的打包资源（T8，如 EPUB 包内图片）：渲染方在章节帧进入
+   * 视口/就绪时调用，把占位 src（包内路径）换成物化的 blob URL。幂等。
+   */
+  resolveResources?: (doc: Document) => Promise<void>;
+  /**
+   * 与 resolveResources 配对：渲染方在章节离屏/卸载时调用，src 还原为包内
+   * 路径并按引用计数 revokeObjectURL。幂等。
+   */
+  releaseResources?: (doc: Document) => void;
+}
+
+/**
+ * 分块字节源（T8 txt 分块解析）：读取 [offset, offset+length) 窗口；读取方
+ * 必须尽量填满 length，短块（含空块）表示 EOF。整文件不驻留内存。
+ */
+export interface ReaderByteSource {
+  read(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 /** 按阅读顺序的章节集合。 */

@@ -13,7 +13,8 @@ import { sanitizeHtml } from '../sanitize.js';
 import { parseEpub } from '../formats/epub.js';
 import { parseFb2 } from '../formats/fb2.js';
 import { parseMobi } from '../formats/mobi.js';
-import { parseTxt } from '../formats/txt.js';
+import { parseTxt, parseTxtFromSource } from '../formats/txt.js';
+import type { ReaderByteSource } from '../formats/types.js';
 import { ParseError, ReaderCapabilityError } from '../formats/types.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -116,6 +117,78 @@ describe('parseTxt', () => {
     }
     const content = parseTxt(gbkBuf);
     expect(content.chapters[0]!.html).toContain('中文');
+  });
+});
+
+describe('parseTxtFromSource（T8 分块解析）', () => {
+  /** 把整读字节包装成 ReaderByteSource（短块 = EOF，模拟生产 read_file_bytes 分块）。 */
+  const sourceFromBytes = (bytes: Uint8Array): ReaderByteSource => ({
+    read: async (offset, length) =>
+      bytes.subarray(offset, Math.min(offset + length, bytes.length)),
+  });
+
+  it('空文件产出空单章', async () => {
+    const content = await parseTxtFromSource(sourceFromBytes(new Uint8Array()));
+    expect(content.chapters).toHaveLength(1);
+    expect(content.chapters[0]!.html).toBe('');
+  });
+
+  it('跨块分段与整读结果一致（多种块大小）', async () => {
+    const text = '第一段 中文\n第二行\r\n\r\nsecond para\n\n\nthird 段末';
+    const expected = parseTxt(enc(text)).chapters[0]!.html;
+    // 块大小 1..7 覆盖多字节字符/段落边界/\r\n 的各种跨块切法。
+    for (let chunkBytes = 1; chunkBytes <= 7; chunkBytes += 1) {
+      const content = await parseTxtFromSource(sourceFromBytes(enc(text)), undefined, {
+        chunkBytes,
+      });
+      expect(content.chapters).toHaveLength(1);
+      expect(content.chapters[0]!.html).toBe(expected);
+    }
+  });
+
+  it('跨块 \\r\\n 不裂成空行', async () => {
+    // "a\r" | "\nb"：\r\n 跨块仍是一次换行，不产生段落边界。
+    const bytes = enc('a\r\nb');
+    const content = await parseTxtFromSource(sourceFromBytes(bytes), undefined, {
+      chunkBytes: 2,
+    });
+    expect(content.chapters[0]!.html).toBe('<p>a<br>b</p>');
+  });
+
+  it('GBK 字节经首块嗅探后流式解码（运行时支持 GBK 时）', async () => {
+    let gbkDecoded = false;
+    try {
+      new TextDecoder('gbk');
+      gbkDecoded = true;
+    } catch {
+      gbkDecoded = false;
+    }
+    if (!gbkDecoded) {
+      return;
+    }
+    // “中文中文” GBK：首块 4 字节（完整两字）用于嗅探，后续跨块续解码。
+    const gbkBuf = new Uint8Array([0xd6, 0xd0, 0xce, 0xc4, 0xd6, 0xd0, 0xce, 0xc4]);
+    const content = await parseTxtFromSource(sourceFromBytes(gbkBuf), undefined, {
+      chunkBytes: 4,
+    });
+    expect(content.chapters[0]!.html).toContain('中文中文');
+  });
+
+  it('读取间响应取消信号', async () => {
+    const controller = new AbortController();
+    let reads = 0;
+    const source: ReaderByteSource = {
+      read: async (_offset, length) => {
+        reads += 1;
+        if (reads > 1) {
+          controller.abort();
+        }
+        return enc('x'.repeat(Math.min(length, 4)));
+      },
+    };
+    await expect(
+      parseTxtFromSource(source, controller.signal, { chunkBytes: 4 }),
+    ).rejects.toThrow();
   });
 });
 
@@ -336,10 +409,18 @@ describe('parseEpub', () => {
       body.innerHTML = content.chapters[0]!.html;
       expect(body.querySelector('svg')).toBeNull();
       const image = body.querySelector('img');
-      expect(image?.getAttribute('src')).toBe('blob:epub-svg-1');
+      // T8：parse 期不物化——占位 src 为包内规范路径，零 object URL。
+      expect(created).toBe(0);
+      expect(image?.getAttribute('src')).toBe('OEBPS/Images/205393.jpg');
       expect(image?.getAttribute('width')).toBe('796');
       expect(content.warnings).toBeUndefined();
       expect(content.stylesheet).toContain('body{margin:0}');
+      // 懒物化：resolveResources 解压并换 blob URL；dispose 兜底 revoke。
+      const frameDoc = document.implementation.createHTMLDocument('');
+      frameDoc.body.innerHTML = content.chapters[0]!.html;
+      await content.chapters[0]!.resolveResources?.(frameDoc);
+      expect(frameDoc.querySelector('img')?.getAttribute('src')).toBe('blob:epub-svg-1');
+      expect(created).toBe(1);
       content.dispose?.();
       expect(revoked).toEqual(['blob:epub-svg-1']);
     } finally {
@@ -350,7 +431,7 @@ describe('parseEpub', () => {
     }
   });
 
-  it('解析包内图片和章节链接，并在 dispose 时释放资源', async () => {
+  it('解析包内图片占位与章节链接；懒物化与释放配对 revoke', async () => {
     const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
     const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
     const revoked: string[] = [];
@@ -366,7 +447,8 @@ describe('parseEpub', () => {
       const content = await parseEpub(await buildEpub(true));
       const body = document.createElement('div');
       body.innerHTML = content.chapters[0]!.html;
-      expect(body.querySelector('img')?.getAttribute('src')).toBe('blob:epub-cover');
+      // T8：parse 期不物化——img 保留包内规范路径占位，章节链接改写不变。
+      expect(body.querySelector('img')?.getAttribute('src')).toBe('OEBPS/images/pic.png');
       expect(body.querySelector('a')?.getAttribute('href')).toBe(
         '#lightink-chapter?chapter=1&target=destination',
       );
@@ -374,9 +456,108 @@ describe('parseEpub', () => {
       expect(content.stylesheet).toContain('body { color: red; background: none; }');
       expect(content.stylesheet).not.toMatch(/@import|url\(/i);
 
-      content.dispose?.();
-      content.dispose?.();
+      const frameDoc = document.implementation.createHTMLDocument('');
+      frameDoc.body.innerHTML = content.chapters[0]!.html;
+      await content.chapters[0]!.resolveResources?.(frameDoc);
+      expect(frameDoc.querySelector('img')?.getAttribute('src')).toBe('blob:epub-cover');
+      // 离屏释放：src 还原占位路径并配对 revoke；幂等。
+      content.chapters[0]!.releaseResources?.(frameDoc);
+      expect(frameDoc.querySelector('img')?.getAttribute('src')).toBe('OEBPS/images/pic.png');
       expect(revoked).toEqual(['blob:epub-cover']);
+      content.chapters[0]!.releaseResources?.(frameDoc);
+      expect(revoked).toEqual(['blob:epub-cover']);
+      // 再次进入视口可重新物化；dispose 兜底 revoke。
+      await content.chapters[0]!.resolveResources?.(frameDoc);
+      expect(frameDoc.querySelector('img')?.getAttribute('src')).toBe('blob:epub-cover');
+      content.dispose?.();
+      content.dispose?.();
+      expect(revoked).toEqual(['blob:epub-cover', 'blob:epub-cover']);
+    } finally {
+      if (originalCreate === undefined) Reflect.deleteProperty(URL, 'createObjectURL');
+      else Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      if (originalRevoke === undefined) Reflect.deleteProperty(URL, 'revokeObjectURL');
+      else Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+    }
+  });
+
+  it('跨章共享图片按引用计数持有，全部释放后才 revoke', async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    let created = 0;
+    const revoked: string[] = [];
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => `blob:epub-shared-${(created += 1)}`,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: (url: string) => revoked.push(url),
+    });
+    try {
+      const zip = new ZipWriter(new Uint8ArrayWriter());
+      await zip.add(
+        'META-INF/container.xml',
+        new Uint8ArrayReader(
+          enc(
+            '<?xml version="1.0"?><container><rootfiles>' +
+              '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>' +
+              '</rootfiles></container>',
+          ),
+        ),
+      );
+      await zip.add(
+        'OEBPS/content.opf',
+        new Uint8ArrayReader(
+          enc(
+            '<?xml version="1.0"?><package>' +
+              '<manifest>' +
+              '<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>' +
+              '<item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>' +
+              '<item id="pic" href="images/pic.png" media-type="image/png"/>' +
+              '</manifest>' +
+              '<spine><itemref idref="ch1"/><itemref idref="ch2"/></spine>' +
+              '</package>',
+          ),
+        ),
+      );
+      await zip.add(
+        'OEBPS/ch1.xhtml',
+        new Uint8ArrayReader(
+          enc('<html><body><p>一</p><img src="images/pic.png"></body></html>'),
+        ),
+      );
+      await zip.add(
+        'OEBPS/ch2.xhtml',
+        new Uint8ArrayReader(
+          enc('<html><body><p>二</p><img src="images/pic.png"></body></html>'),
+        ),
+      );
+      await zip.add(
+        'OEBPS/images/pic.png',
+        new Uint8ArrayReader(new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+        { level: 0 },
+      );
+      const content = await parseEpub(await zip.close());
+      expect(created).toBe(0); // parse 期不物化
+      const doc1 = document.implementation.createHTMLDocument('');
+      doc1.body.innerHTML = content.chapters[0]!.html;
+      const doc2 = document.implementation.createHTMLDocument('');
+      doc2.body.innerHTML = content.chapters[1]!.html;
+      await content.chapters[0]!.resolveResources?.(doc1);
+      await content.chapters[1]!.resolveResources?.(doc2);
+      // 同一图片两章共享：只解压/物化一次。
+      expect(created).toBe(1);
+      expect(doc1.querySelector('img')?.getAttribute('src')).toBe('blob:epub-shared-1');
+      expect(doc2.querySelector('img')?.getAttribute('src')).toBe('blob:epub-shared-1');
+      // 释放第一章：仍有第二章引用，不 revoke。
+      content.chapters[0]!.releaseResources?.(doc1);
+      expect(revoked).toEqual([]);
+      expect(doc2.querySelector('img')?.getAttribute('src')).toBe('blob:epub-shared-1');
+      // 两章都释放后引用计数归零才 revoke。
+      content.chapters[1]!.releaseResources?.(doc2);
+      expect(revoked).toEqual(['blob:epub-shared-1']);
+      content.dispose?.();
+      expect(revoked).toEqual(['blob:epub-shared-1']);
     } finally {
       if (originalCreate === undefined) Reflect.deleteProperty(URL, 'createObjectURL');
       else Object.defineProperty(URL, 'createObjectURL', originalCreate);
