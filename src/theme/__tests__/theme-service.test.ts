@@ -27,6 +27,7 @@ interface Harness {
   store: Map<string, string>;
   files: Map<string, string>;
   syncCalls: boolean[];
+  themeChanges: { count: number };
 }
 
 function makeHarness(options: { savedTheme?: string; savedCustomPath?: string } = {}): Harness {
@@ -41,6 +42,7 @@ function makeHarness(options: { savedTheme?: string; savedCustomPath?: string } 
   }
   const files = new Map<string, string>();
   const syncCalls: boolean[] = [];
+  const themeChanges = { count: 0 };
   const storage: StorageLike = {
     getItem: (key) => store.get(key) ?? null,
     setItem: (key, value) => {
@@ -75,8 +77,11 @@ function makeHarness(options: { savedTheme?: string; savedCustomPath?: string } 
     syncNativeTheme: (dark) => {
       syncCalls.push(dark);
     },
+    onThemeChange: () => {
+      themeChanges.count += 1;
+    },
   };
-  return { service: new ThemeService(deps), attrs, slot, store, files, syncCalls };
+  return { service: new ThemeService(deps), attrs, slot, store, files, syncCalls, themeChanges };
 }
 
 describe('ThemeService 内置主题', () => {
@@ -254,5 +259,14 @@ describe('ThemeService 明暗判定与原生同步', () => {
     h.syncCalls.length = 0;
     h.service.toggle();
     expect(h.syncCalls).toEqual([true]);
+  });
+
+  it('apply/loadCustomTheme 派发主题变更通知（onThemeChange）', () => {
+    const h = makeHarness();
+    h.themeChanges.count = 0;
+    h.service.apply('dark');
+    expect(h.themeChanges.count).toBe(1);
+    h.service.loadCustomTheme(':root { color-scheme: dark; }');
+    expect(h.themeChanges.count).toBe(2);
   });
 });

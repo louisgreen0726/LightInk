@@ -1962,6 +1962,18 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     document.addEventListener('lightink:font-scale', onFontScaleChange);
   }
 
+  // R4：主题切换（浅↔深）时重应用 flow 帧文字色，消除深底深字/浅底浅字不可读。
+  // PDF/CBZ 为栅格/位图，宿主背景走 CSS 变量随主题更新，无需重渲染。
+  const onThemeChange = (): void => {
+    if (destroyed) {
+      return;
+    }
+    flowRenderer.syncTheme();
+  };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('lightink:theme-change', onThemeChange);
+  }
+
   const refreshOpenSearch = (): void => {
     if (searchPanel?.isOpen() !== true) {
       return;
@@ -2360,6 +2372,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       cancelViewportRefresh();
       if (typeof document !== 'undefined') {
         document.removeEventListener('lightink:font-scale', onFontScaleChange);
+        document.removeEventListener('lightink:theme-change', onThemeChange);
       }
       closeOpenNoteDialog();
       setReaderPhase('destroyed', true);

@@ -205,6 +205,8 @@ export interface FlowRenderer {
   remasureScrollFrames(): void;
   /** 字号变更后重应用可见帧 chrome（含翻页分栏）。 */
   syncVisibleFrames(): void;
+  /** 主题切换后重应用全部就绪帧的文字色（R4）。 */
+  syncTheme(): void;
 }
 
 /**
@@ -741,6 +743,19 @@ export function createFlowRenderer(
     }
   };
 
+  const syncTheme = (): void => {
+    const computed = getComputedStyle(root);
+    for (const frame of scrollHost.querySelectorAll<HTMLIFrameElement>(
+      '.lightink-reader-chapter-frame[data-frame-ready="true"]',
+    )) {
+      const frameDocument = frame.contentDocument;
+      if (frameDocument === null) {
+        continue;
+      }
+      frameDocument.body.style.color = computed.color;
+    }
+  };
+
   return {
     render,
     clear,
@@ -749,5 +764,6 @@ export function createFlowRenderer(
     applyPaginatedDocument,
     remasureScrollFrames,
     syncVisibleFrames,
+    syncTheme,
   };
 }

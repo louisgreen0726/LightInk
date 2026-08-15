@@ -73,6 +73,8 @@ export interface ThemeServiceDeps {
   readFile?: (path: string) => Promise<string>;
   /** 主题切换后同步原生窗口明暗（生产为 Tauri setTheme）。 */
   syncNativeTheme?: (dark: boolean) => void;
+  /** 主题切换后广播通知（生产派发 lightink:theme-change，供 reader 等订阅）。 */
+  onThemeChange?: () => void;
 }
 
 /** 生产实现：在 document.head 创建专用 <style> 并返回其注入槽。 */
@@ -242,5 +244,6 @@ export class ThemeService {
 
   private notifyNativeTheme(): void {
     this.deps.syncNativeTheme?.(this.isDark());
+    this.deps.onThemeChange?.();
   }
 }

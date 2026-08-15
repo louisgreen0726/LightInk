@@ -248,6 +248,9 @@ const themeService = new ThemeService({
   storage: window.localStorage,
   readFile,
   syncNativeTheme: (dark) => void setNativeTheme(dark),
+  onThemeChange: () => {
+    document.documentElement.dispatchEvent(new CustomEvent('lightink:theme-change'));
+  },
 });
 
 function reportCustomThemeError(error: unknown): void {

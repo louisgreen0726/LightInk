@@ -514,3 +514,55 @@ describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式�
     await view.destroy();
   });
 });
+
+describe('主题切换刷新（R4）', () => {
+  const loadFlowBook = async (): Promise<{
+    view: ReturnType<typeof createReaderView>;
+    frames: HTMLIFrameElement[];
+  }> => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => new Uint8Array(),
+      parseContent: async () => ({
+        chapters: [{ title: 'Chapter 1', html: '<p>chapter 1 body</p>' }],
+      }),
+    });
+    await view.load('book.epub');
+    const frames = Array.from(
+      host.querySelectorAll<HTMLIFrameElement>('.lightink-reader-chapter-frame'),
+    );
+    for (const frame of frames) {
+      frame.dispatchEvent(new Event('load'));
+    }
+    await vi.advanceTimersByTimeAsync(50);
+    return { view, frames };
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+  });
+
+  it('lightink:theme-change 重应用 flow 帧文字色', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const { view, frames } = await loadFlowBook();
+    const frameBody = frames[0]!.contentDocument!.body;
+    const original = frameBody.style.color;
+
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      color: 'rgb(1, 2, 3)',
+      fontFamily: 'serif',
+      fontSize: '16px',
+      getPropertyValue: () => '',
+    } as unknown as CSSStyleDeclaration);
+
+    document.dispatchEvent(new CustomEvent('lightink:theme-change'));
+    expect(frameBody.style.color).toBe('rgb(1, 2, 3)');
+    expect(frameBody.style.color).not.toBe(original);
+    await view.destroy();
+  });
+});
