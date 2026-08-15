@@ -10,6 +10,7 @@ import {
   canWrapSearchMark,
   createSearchPanel,
   findPdfMatches,
+  findTextHits,
   nearestMatchIndex,
   nextMatchIndex,
   preserveMatchIndex,
@@ -19,6 +20,12 @@ import {
   unwrapSpans,
   wrapTextRangeWithSpan,
 } from '../search-panel.js';
+import {
+  clearSearchMarks,
+  renderSearchMarks,
+  SEARCH_MARK_CLASS,
+  SEARCH_MARK_CURRENT_CLASS,
+} from '../search-overlay.js';
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -145,6 +152,89 @@ describe('搜索命中 overlay', () => {
     const range = offsetRangeFrom(root, 4, 8)!;
     wrapTextRangeWithSpan(root, range, 'lightink-reader-search-mark', '1:4:8');
     expect(canWrapSearchMark(root, '1:4:8', 8)).toBe(false);
+  });
+});
+
+describe('findTextHits', () => {
+  it('单段文本内大小写不敏感多命中，返回拼接文本偏移', () => {
+    expect(findTextHits('正文包含 Keyword 一处', 'keyword')).toEqual([
+      { start: 5, end: 12 },
+    ]);
+    expect(findTextHits('keyword 又一处 keyword', 'Keyword')).toEqual([
+      { start: 0, end: 7 },
+      { start: 12, end: 19 },
+    ]);
+    expect(findTextHits('任意文本', '  ')).toEqual([]);
+  });
+
+  it('小写化改变 UTF-16 长度时退化大小写敏感，偏移保持与 DOM 文本对齐', () => {
+    expect(findTextHits('İabc', 'İ')).toEqual([{ start: 0, end: 1 }]);
+  });
+});
+
+describe('搜索 overlay 共享幂等引擎（PDF 文本层 / 流式正文同引擎）', () => {
+  function layer(...texts: string[]): HTMLElement {
+    const root = document.createElement('div');
+    root.className = 'lightink-reader-text-layer';
+    for (const text of texts) {
+      const span = document.createElement('span');
+      span.textContent = text;
+      root.appendChild(span);
+    }
+    document.body.appendChild(root);
+    return root;
+  }
+
+  it('幂等渲染：已有 key 只校正当前类名不重包裹，切换当前命中不增删 overlay', () => {
+    const root = layer('前缀文字命中目标后缀');
+    const specs = [
+      { key: 'a', start: 0, end: 4 },
+      { key: 'b', start: 4, end: 8 },
+    ];
+    renderSearchMarks(root, specs, 'a');
+    expect(root.querySelector('[data-search-key="a"]')!.className).toBe(
+      SEARCH_MARK_CURRENT_CLASS,
+    );
+    expect(root.querySelector('[data-search-key="b"]')!.className).toBe(
+      SEARCH_MARK_CLASS,
+    );
+
+    // 切换当前命中：只改类名，绝不重包裹（防 observer 自激循环）。
+    renderSearchMarks(root, specs, 'b');
+    const keyed = root.querySelectorAll('[data-search-key]');
+    expect(keyed.length).toBe(2);
+    expect(root.querySelector('[data-search-key="a"]')!.className).toBe(SEARCH_MARK_CLASS);
+    expect(root.querySelector('[data-search-key="b"]')!.className).toBe(
+      SEARCH_MARK_CURRENT_CLASS,
+    );
+    expect(root.textContent).toBe('前缀文字命中目标后缀');
+    expect(root.querySelector('[data-search-key] span')).toBeNull();
+  });
+
+  it('陈旧 key 就地解包移除（查询变化），部分填充层跳过等待重试', () => {
+    const root = layer('前缀文字', '命中'); // 层当前只有 6 字，命中 [4,8) 未就绪
+    renderSearchMarks(root, [{ key: 'a', start: 4, end: 8 }], null);
+    expect(root.querySelector('[data-search-key]')).toBeNull();
+
+    const span = document.createElement('span');
+    span.textContent = '目标';
+    root.appendChild(span);
+    renderSearchMarks(root, [{ key: 'a', start: 4, end: 8 }], 'a');
+    // [4,8) 跨两个 span：引擎为每个文本片段独立包裹，共享同一 key 戳记。
+    const wrapped = root.querySelectorAll<HTMLElement>('[data-search-key="a"]');
+    expect(wrapped.length).toBe(2);
+    expect(wrapped[0]!.textContent).toBe('命中');
+    expect(wrapped[1]!.textContent).toBe('目标');
+    expect(wrapped[0]!.className).toBe(SEARCH_MARK_CURRENT_CLASS);
+
+    // 新查询：旧 key 陈旧即解包，无需整层清空重建。
+    renderSearchMarks(root, [{ key: 'b', start: 0, end: 4 }], null);
+    expect(root.querySelector('[data-search-key="a"]')).toBeNull();
+    expect(root.querySelector('[data-search-key="b"]')?.textContent).toBe('前缀文字');
+
+    clearSearchMarks(root);
+    expect(root.querySelector('[data-search-key]')).toBeNull();
+    expect(root.textContent).toBe('前缀文字命中目标');
   });
 });
 

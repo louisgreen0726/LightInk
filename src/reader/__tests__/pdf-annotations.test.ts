@@ -12,6 +12,11 @@ import {
   removeTextRangeMarks,
   resolveTextQuoteRange,
 } from '../annotation-locator.js';
+import {
+  renderAnnotationMarks,
+  removeAnnotationMarks,
+  type AnnotationMarkSpec,
+} from '../annotation-render.js';
 import { parseAnnotations, serializeAnnotations, type Annotation } from '../annotations.js';
 import { isTextLayerMutation } from '../reader-view.js';
 
@@ -103,6 +108,39 @@ describe('PDF 文字级标注闭环', () => {
       rebuilt.querySelector('mark.lightink-reader-highlight[data-annotation-id="p1"]'),
     ).toBeNull();
     expect(rebuilt.textContent).toBe('第一章 开端 正文内容甲正文内容乙');
+  });
+
+  it('共享幂等引擎：重放不重复嵌套包裹，移除后文本还原（PDF 层 / 流式正文同引擎）', () => {
+    const layer = textLayer('第一章 开端', '正文内容甲', '正文内容乙');
+    const spec: AnnotationMarkSpec = {
+      id: 'p1',
+      kind: 'highlight',
+      anchor: {
+        start: 6,
+        end: 11,
+        quote: '正文内容甲',
+        prefix: '第一章 开端',
+        suffix: '正文内容乙',
+      },
+    };
+    renderAnnotationMarks(layer, [spec]);
+    const count = layer.querySelectorAll('mark[data-annotation-id="p1"]').length;
+    expect(count).toBeGreaterThan(0);
+
+    // 幂等重放：已存在的 mark 跳过，不嵌套、不重复。
+    renderAnnotationMarks(layer, [spec]);
+    expect(layer.querySelectorAll('mark[data-annotation-id="p1"]').length).toBe(count);
+    expect(layer.querySelector('mark mark')).toBeNull();
+
+    // anchor 无法定位（文本已变）时跳过，不产生 collapsed mark。
+    renderAnnotationMarks(layer, [
+      { id: 'p2', kind: 'note', anchor: { start: 0, end: 4, quote: '不存在', prefix: '', suffix: '' } },
+    ]);
+    expect(layer.querySelector('mark[data-annotation-id="p2"]')).toBeNull();
+
+    removeAnnotationMarks(layer, 'p1');
+    expect(layer.querySelector('mark[data-annotation-id="p1"]')).toBeNull();
+    expect(layer.textContent).toBe('第一章 开端正文内容甲正文内容乙');
   });
 
   it('旧页码级 PdfLocator（无 anchor）与文字级数据可共存解析', () => {

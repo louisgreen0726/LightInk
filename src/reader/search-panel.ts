@@ -1,9 +1,10 @@
 /**
  * `search-panel` — 阅读器搜索面板（PDF / 流式共用）。
  *
- * 参照编辑器 find-replace 的分层模式：`findPdfMatches`/`nextMatchIndex` 为纯函数
- * （node 可测），面板外观对齐 Markdown 查找浮层，但不提供替换。Enter 下一处 /
- * Shift+Enter 上一处 / Escape 关闭。命中高亮 overlay 由 reader-view 渲染。
+ * 参照编辑器 find-replace 的分层模式：`findTextHits`/`findPdfMatches`/`nextMatchIndex`
+ * 为纯函数（node 可测），面板外观对齐 Markdown 查找浮层，但不提供替换。Enter 下一处 /
+ * Shift+Enter 上一处 / Escape 关闭。命中高亮 overlay 的幂等渲染由 search-overlay
+ * 共享引擎完成（PDF 文本层 / 流式正文同引擎）。
  */
 
 import type { MessageKey } from '../i18n/messages.js';
@@ -16,10 +17,44 @@ export interface PdfSearchMatch {
   end: number;
 }
 
+export interface TextSearchHit {
+  start: number;
+  end: number;
+}
+
+/**
+ * 单段拼接文本内的大小写不敏感命中（PDF 页文本 / 流式章节正文共用）。
+ * 大小写变形长度保护：小写化改变 UTF-16 长度的文本/查询（如 İ）会使偏移与 DOM 文本
+ * 坐标系错位，此时退化为大小写敏感匹配，保持坐标系一致。空查询返回空。
+ */
+export function findTextHits(text: string, query: string): TextSearchHit[] {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
+    return [];
+  }
+  const loweredText = text.toLowerCase();
+  const loweredNeedle = trimmed.toLowerCase();
+  let hay: string;
+  let needle: string;
+  if (loweredText.length === text.length && loweredNeedle.length === trimmed.length) {
+    hay = loweredText;
+    needle = loweredNeedle;
+  } else {
+    // 小写化改变 UTF-16 长度（如 İ）：退化大小写敏感，偏移保持与 DOM 文本对齐。
+    hay = text;
+    needle = trimmed;
+  }
+  const hits: TextSearchHit[] = [];
+  let at = hay.indexOf(needle);
+  while (at >= 0) {
+    hits.push({ start: at, end: at + needle.length });
+    at = hay.indexOf(needle, at + needle.length);
+  }
+  return hits;
+}
+
 /**
  * 在页文本数组（1:1 对应页码）中查找全部命中（大小写不敏感），按页序返回。空查询返回空。
- * 大小写变形长度保护：小写化改变 UTF-16 长度的文本/查询（如 İ）会使偏移与 DOM 文本
- * 坐标系错位，此时该页退化为大小写敏感匹配，保持坐标系一致。
  */
 export function findPdfMatches(
   pageTexts: readonly string[],
@@ -29,25 +64,10 @@ export function findPdfMatches(
   if (trimmed.length === 0) {
     return [];
   }
-  const loweredNeedle = trimmed.toLowerCase();
   const matches: PdfSearchMatch[] = [];
   for (let index = 0; index < pageTexts.length; index += 1) {
-    const text = pageTexts[index]!;
-    const loweredText = text.toLowerCase();
-    let hay: string;
-    let needle: string;
-    if (loweredText.length === text.length && loweredNeedle.length === trimmed.length) {
-      hay = loweredText;
-      needle = loweredNeedle;
-    } else {
-      // 小写化改变 UTF-16 长度（如 İ）：退化大小写敏感，偏移保持与 DOM 文本对齐。
-      hay = text;
-      needle = trimmed;
-    }
-    let at = hay.indexOf(needle);
-    while (at >= 0) {
-      matches.push({ page: index + 1, start: at, end: at + needle.length });
-      at = hay.indexOf(needle, at + needle.length);
+    for (const hit of findTextHits(pageTexts[index]!, trimmed)) {
+      matches.push({ page: index + 1, ...hit });
     }
   }
   return matches;

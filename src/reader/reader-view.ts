@@ -26,11 +26,14 @@ import {
 import {
   annotationMarkFromEventTarget,
   flowLocatorFromRange,
-  markTextRange,
   pdfTextLocatorFromRange,
-  removeTextRangeMarks,
   resolveTextQuoteRange,
 } from './annotation-locator.js';
+import {
+  renderAnnotationMarks,
+  removeAnnotationMarks,
+  type AnnotationMarkSpec,
+} from './annotation-render.js';
 import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
 import {
   createSelectionToolbar,
@@ -40,18 +43,21 @@ import { showNoteDialog } from './note-dialog.js';
 import { outlineFromEntries } from './outline.js';
 import type { OutlineItem } from '../outline/outline-model.js';
 import {
-  canWrapSearchMark,
   createSearchPanel,
+  findTextHits,
   nearestMatchIndex,
   nextMatchIndex,
-  offsetRangeFrom,
   preserveMatchIndex,
   sanitizeSearchQuery,
-  unwrapSpans,
-  wrapTextRangeWithSpan,
   type PdfSearchMatch,
   type SearchPanel,
 } from './search-panel.js';
+import {
+  clearSearchMarks,
+  renderSearchMarks,
+  SEARCH_MARK_CURRENT_CLASS,
+  type SearchMarkSpec,
+} from './search-overlay.js';
 import type {
   ReaderInstance,
   ReaderLoadOptions,
@@ -359,7 +365,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   /** PDF 搜索面板与当前搜索状态（R2；查询/命中/活动命中索引）。 */
   let searchPanel: SearchPanel | null = null;
   let pdfSearch: { query: string; matches: PdfSearchMatch[]; active: number } | null = null;
-  let flowSearch: { query: string; marks: HTMLElement[]; active: number } | null = null;
+  let flowSearch: {
+    query: string;
+    /** 章索引 → 该章命中 spec（共享幂等引擎按 host 渲染与类名校正）。 */
+    byChapter: Map<number, SearchMarkSpec[]>;
+    marks: HTMLElement[];
+    active: number;
+  } | null = null;
   let searchGeneration = 0;
   let searchDebounce: ReturnType<typeof setTimeout> | null = null;
   /** 激活跳转待滚动的命中 key（页:起:止）：命中首次就绪时滚动一次后清除。 */
@@ -605,14 +617,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     );
   };
 
-  /** 移除标注（侧栏/划选工具栏共用）：更新集合、清正文 mark（flow 正文与 PDF 文本层）、保存。 */
+  /** 移除标注（侧栏/划选工具栏共用）：更新集合、经共享引擎清正文 mark（flow 正文与 PDF 文本层）、保存。 */
   const removeAnnotationById = (id: string): void => {
     annotations = annotations.filter((a) => a.id !== id);
     for (const doc of flowDocuments()) {
-      removeTextRangeMarks(doc.body, id);
+      removeAnnotationMarks(doc.body, id);
     }
     for (const layer of pageHost.querySelectorAll('.lightink-reader-text-layer')) {
-      removeTextRangeMarks(layer, id);
+      removeAnnotationMarks(layer, id);
     }
     sidebar?.render(annotations);
     void saveAnnotations();
@@ -1100,8 +1112,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       .map((frame) => frame.contentDocument)
       .filter((doc): doc is Document => doc !== null && doc.body !== null);
 
-  /** PDF 文本层标注：把含 anchor 的高亮/笔记渲染到对应页文本层（幂等，层未就绪则跳过）。 */
+  /** PDF 文本层标注：按页分组后经共享幂等引擎渲染（层未就绪则该页跳过，观察器重试）。 */
   const renderPdfHighlights = (): void => {
+    const byPage = new Map<number, AnnotationMarkSpec[]>();
     for (const hl of annotations) {
       if (hl.kind !== 'highlight' && hl.kind !== 'note') {
         continue;
@@ -1110,24 +1123,23 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       if (locator.format !== 'pdf' || locator.anchor === undefined) {
         continue;
       }
-      if (
-        pageHost.querySelector(
-          `.lightink-reader-highlight[data-annotation-id="${cssEscape(hl.id)}"]`,
-        ) !== null
-      ) {
-        continue; // 已渲染
+      const spec: AnnotationMarkSpec = { id: hl.id, kind: hl.kind, anchor: locator.anchor };
+      const list = byPage.get(locator.page);
+      if (list === undefined) {
+        byPage.set(locator.page, [spec]);
+      } else {
+        list.push(spec);
       }
+    }
+    for (const [page, specs] of byPage) {
       const slot = pageHost.querySelector<HTMLElement>(
-        `.lightink-reader-page-slot[data-page-index="${locator.page - 1}"]`,
+        `.lightink-reader-page-slot[data-page-index="${page - 1}"]`,
       );
       const layer = slot?.querySelector<HTMLElement>('.lightink-reader-text-layer') ?? null;
       if (layer === null) {
         continue; // 该页文本层尚未懒渲染，观察器会在层出现时重试
       }
-      const range = resolveTextQuoteRange(layer, locator.anchor);
-      if (range !== null && !range.collapsed) {
-        markTextRange(layer, range, hl.id, hl.kind);
-      }
+      renderAnnotationMarks(layer, specs);
     }
   };
 
@@ -1227,18 +1239,20 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   };
 
-  /** 清掉全部搜索命中 overlay（span 解包保留文本）。 */
-  const clearPdfSearchMarks = (): void => {
+  /** 清掉全部搜索命中 overlay（PDF 文本层与流式正文，span 解包保留文本）。 */
+  const clearReaderSearchMarks = (): void => {
     for (const layer of pageHost.querySelectorAll('.lightink-reader-text-layer')) {
-      unwrapSpans(layer, 'lightink-reader-search-mark');
-      unwrapSpans(layer, 'lightink-reader-search-mark--current');
+      clearSearchMarks(layer);
+    }
+    for (const doc of flowDocuments()) {
+      clearSearchMarks(doc.body);
     }
   };
 
   /**
-   * 在当前已渲染文本层上叠加搜索命中 overlay（全部命中 + 当前命中双样式）。
-   * 幂等：已有 key 戳记的 overlay 只校正类名不重包裹（防 observer 自激循环）；
-   * 层文本未填充到命中末尾时跳过（防部分包裹定格，等后续批次重试）。
+   * 在当前已渲染文本层上叠加搜索命中 overlay：按页分组交给共享幂等引擎
+   * （已有 key 戳记只校正类名不重包裹，防 observer 自激循环；层文本未填充到
+   * 命中末尾时跳过，等后续批次重试）。
    * 激活滚动经 pendingScrollKey：命中首次就绪（含远页文本层异步出现）时滚动一次，
    * observer 驱动的重渲染不回吸视口。
    */
@@ -1252,45 +1266,37 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         `.lightink-reader-page-slot[data-page-index="${page - 1}"] .lightink-reader-text-layer`,
       );
     const current = state.matches[state.active];
+    const currentKey =
+      current === undefined ? null : `${current.page}:${current.start}:${current.end}`;
+    const byPage = new Map<number, SearchMarkSpec[]>();
     for (const match of state.matches) {
-      const layer = layerFor(match.page);
+      const spec: SearchMarkSpec = {
+        key: `${match.page}:${match.start}:${match.end}`,
+        start: match.start,
+        end: match.end,
+      };
+      const list = byPage.get(match.page);
+      if (list === undefined) {
+        byPage.set(match.page, [spec]);
+      } else {
+        list.push(spec);
+      }
+    }
+    for (const [page, specs] of byPage) {
+      const layer = layerFor(page);
       if (layer === null) {
         continue; // 未懒渲染的页跳过；层出现时经 observer 重渲染
       }
-      const key = `${match.page}:${match.start}:${match.end}`;
-      const existing = layer.querySelectorAll<HTMLElement>(
-        `[data-search-key="${cssEscape(key)}"]`,
-      );
-      if (existing.length > 0) {
-        // 幂等：已有该命中的 overlay 时只校正当前类名，不做任何重包裹——
-        // 重包裹会在被观察的文本层内制造变更，与 observer 形成自激循环。
-        const isCurrent = match === current;
-        for (const span of existing) {
-          span.classList.toggle('lightink-reader-search-mark--current', isCurrent);
-          span.classList.toggle('lightink-reader-search-mark', !isCurrent);
-        }
-      } else if (canWrapSearchMark(layer, key, match.end)) {
-        const located = offsetRangeFrom(layer, match.start, match.end);
-        if (located !== null) {
-          wrapTextRangeWithSpan(
-            layer,
-            located,
-            match === current
-              ? 'lightink-reader-search-mark--current'
-              : 'lightink-reader-search-mark',
-            key,
-          );
-        }
-      } else {
-        // 层文本尚未填充到命中末尾：等 observer 后续批次重试。
-        continue;
-      }
-      // 激活滚动：该命中即 pending 目标且为当前命中时，滚动一次即清除。
-      if (match === current && pendingSearchScrollKey === key) {
+      renderSearchMarks(layer, specs, currentKey);
+    }
+    // 激活滚动：该命中即 pending 目标且当前命中 overlay 已就绪时，滚动一次即清除。
+    if (current !== undefined && pendingSearchScrollKey === currentKey) {
+      const activeMark =
+        layerFor(current.page)?.querySelector<HTMLElement>(`.${SEARCH_MARK_CURRENT_CLASS}`) ??
+        null;
+      if (activeMark !== null) {
         pendingSearchScrollKey = null;
-        layer
-          .querySelector('.lightink-reader-search-mark--current')
-          ?.scrollIntoView({ block: 'nearest' });
+        activeMark.scrollIntoView({ block: 'nearest' });
       }
     }
   };
@@ -1313,7 +1319,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         if (destroyed || generation !== searchGeneration || handle !== pdfHandle) {
           return; // 迟到结果（新查询/切换文档）丢弃
         }
-        clearPdfSearchMarks();
+        clearReaderSearchMarks();
         const currentPage = handle.controller.page;
         const firstAtOrAfter = matches.findIndex((match) => match.page >= currentPage);
         const active = nearestMatchIndex(matches.length, firstAtOrAfter);
@@ -1352,51 +1358,59 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     pendingSearchScrollKey = null;
     pdfSearch = null;
-    clearPdfSearchMarks();
-    clearFlowSearchMarks();
+    clearReaderSearchMarks();
     flowSearch = null;
     searchPanel?.close();
   };
 
-  const clearFlowSearchMarks = (): void => {
-    for (const doc of flowDocuments()) {
-      unwrapSpans(doc.body, 'lightink-reader-search-mark');
-      unwrapSpans(doc.body, 'lightink-reader-search-mark--current');
-    }
+  /**
+   * 流式命中 overlay 渲染：各章 body 交给共享幂等引擎（含无命中章的陈旧 key
+   * 清理），currentKey 决定当前命中类名（幂等重放只校正类名，不重包裹）。
+   */
+  const renderFlowSearchMarks = (
+    byChapter: ReadonlyMap<number, SearchMarkSpec[]>,
+    currentKey: string | null,
+  ): void => {
+    flowDocuments().forEach((doc, chapter) => {
+      renderSearchMarks(doc.body, byChapter.get(chapter) ?? [], currentKey);
+    });
   };
 
   const runFlowSearch = (query: string, options?: { preserveActive?: number }): void => {
-    clearFlowSearchMarks();
     const trimmed = query.trim();
     if (trimmed === '' || PAGE_EXTS.has(loadedExt)) {
       flowSearch = null;
+      for (const doc of flowDocuments()) {
+        clearSearchMarks(doc.body);
+      }
       searchPanel?.setStatus(0, -1);
       return;
     }
-    const needle = trimmed.toLowerCase();
+    const byChapter = new Map<number, SearchMarkSpec[]>();
+    flowDocuments().forEach((doc, chapter) => {
+      const hits = findTextHits(doc.body.textContent ?? '', trimmed);
+      if (hits.length === 0) {
+        return;
+      }
+      byChapter.set(
+        chapter,
+        hits.map((hit, ordinal) => ({
+          key: `${chapter}:${ordinal}:${hit.start}`,
+          start: hit.start,
+          end: hit.end,
+        })),
+      );
+    });
+    renderFlowSearchMarks(byChapter, null);
     const marks: HTMLElement[] = [];
     flowDocuments().forEach((doc, chapter) => {
-      const text = doc.body.textContent ?? '';
-      const hay =
-        text.toLowerCase().length === text.length ? text.toLowerCase() : text;
-      const matchNeedle =
-        text.toLowerCase().length === text.length ? needle : trimmed;
-      let at = hay.indexOf(matchNeedle);
-      let ordinal = 0;
-      while (at >= 0) {
-        const range = offsetRangeFrom(doc.body, at, at + matchNeedle.length);
-        if (range !== null) {
-          const key = `${chapter}:${ordinal}:${at}`;
-          wrapTextRangeWithSpan(doc.body, range, 'lightink-reader-search-mark', key);
-          const mark = doc.body.querySelector<HTMLElement>(
-            `[data-search-key="${cssEscape(key)}"]`,
-          );
-          if (mark !== null) {
-            marks.push(mark);
-          }
+      for (const spec of byChapter.get(chapter) ?? []) {
+        const mark = doc.body.querySelector<HTMLElement>(
+          `[data-search-key="${cssEscape(spec.key)}"]`,
+        );
+        if (mark !== null) {
+          marks.push(mark);
         }
-        at = hay.indexOf(matchNeedle, at + matchNeedle.length);
-        ordinal += 1;
       }
     });
     const scroller = flowScrollContainer();
@@ -1404,10 +1418,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     const firstAtOrAfter = marks.findIndex((mark) => mark.getBoundingClientRect().top >= scrollerTop - 8);
     const fallback = nearestMatchIndex(marks.length, firstAtOrAfter);
     const active = preserveMatchIndex(marks.length, options?.preserveActive ?? -1, fallback);
-    flowSearch = { query: trimmed, marks, active };
-    if (active >= 0) {
-      marks[active]?.classList.add('lightink-reader-search-mark--current');
+    const currentKey = active >= 0 ? marks[active]?.dataset.searchKey ?? null : null;
+    if (currentKey !== null) {
+      renderFlowSearchMarks(byChapter, currentKey); // 幂等：仅校正当前类名
     }
+    flowSearch = { query: trimmed, byChapter, marks, active };
     searchPanel?.setStatus(marks.length, active);
   };
 
@@ -1445,13 +1460,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (state === null || state.marks.length === 0) {
       return;
     }
-    state.marks[state.active]?.classList.remove('lightink-reader-search-mark--current');
     const index = nextMatchIndex(state.marks.length, state.active, direction);
     if (index < 0) {
       return;
     }
     state.active = index;
-    state.marks[index]?.classList.add('lightink-reader-search-mark--current');
+    const currentKey = state.marks[index]?.dataset.searchKey ?? null;
+    if (currentKey !== null) {
+      // 共享引擎幂等重放：仅校正当前命中类名，不重包裹。
+      renderFlowSearchMarks(state.byChapter, currentKey);
+    }
     revealFlowMark(state.marks[index]);
     searchPanel?.setStatus(state.marks.length, index);
   };
@@ -1522,7 +1540,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
   };
 
-  /** 在 sandbox 正文文本节点中包裹高亮 quote（flow/txt）；PDF 走文本层渲染。 */
+  /** 在 sandbox 正文文本节点中包裹高亮 quote（flow/txt，共享幂等引擎）；PDF 走文本层渲染。 */
   const renderHighlights = (): void => {
     if (loadedExt === 'pdf') {
       renderPdfHighlights();
@@ -1531,18 +1549,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (PAGE_EXTS.has(loadedExt)) {
       return;
     }
-    const highlights = annotations.filter(
-      (a) => (a.kind === 'highlight' || a.kind === 'note') && a.quote !== undefined,
-    );
-    for (const hl of highlights) {
-      // 幂等：该标注的 <mark> 已存在则跳过，避免重复嵌套包裹。
-      const documents = flowDocuments();
-      if (
-        documents.some(
-          (doc) =>
-            doc.querySelector(`[data-annotation-id="${cssEscape(hl.id)}"]`) !== null,
-        )
-      ) {
+    const byChapter = new Map<number, AnnotationMarkSpec[]>();
+    for (const hl of annotations) {
+      if ((hl.kind !== 'highlight' && hl.kind !== 'note') || hl.quote === undefined) {
         continue;
       }
       const locator = hl.locator;
@@ -1550,6 +1559,15 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         continue;
       }
       const chapter = locator.format === 'flow' ? locator.chapter : 0;
+      const spec: AnnotationMarkSpec = { id: hl.id, kind: hl.kind, anchor: locator };
+      const list = byChapter.get(chapter);
+      if (list === undefined) {
+        byChapter.set(chapter, [spec]);
+      } else {
+        list.push(spec);
+      }
+    }
+    for (const [chapter, specs] of byChapter) {
       const frame = scrollHost.querySelector<HTMLIFrameElement>(
         `.lightink-reader-chapter-frame[data-chapter-index="${chapter}"]`,
       );
@@ -1557,10 +1575,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       if (doc === null || doc === undefined) {
         continue;
       }
-      const range = resolveTextQuoteRange(doc.body, locator);
-      if (range !== null && !range.collapsed) {
-        markTextRange(doc.body, range, hl.id, hl.kind);
-      }
+      renderAnnotationMarks(doc.body, specs);
     }
   };
 
