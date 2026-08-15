@@ -11,16 +11,7 @@ import { parseMobi } from './mobi.js';
 import { parseTxt } from './txt.js';
 import { ParseError, type ReaderContent } from './types.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
-
-/** 取路径的小写扩展名（无扩展名/末尾点为 ''）。 */
-function extOfPath(path: string): string {
-  const base = path.split(/[\\/]/).pop() ?? path;
-  const dot = base.lastIndexOf('.');
-  if (dot <= 0 || dot === base.length - 1) {
-    return '';
-  }
-  return base.slice(dot + 1).toLowerCase();
-}
+import { extOfPath } from '../../file/path-ext.js';
 
 /**
  * 按文件扩展名解析字节为章节化阅读内容。

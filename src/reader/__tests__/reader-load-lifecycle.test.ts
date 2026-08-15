@@ -19,6 +19,11 @@ function deferred<T>(): Deferred<T> {
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
+/** 等待一个 rAF 帧：scroll 事件经共享 rAF 合并处理器后在帧回调里同步状态。 */
+const nextFrame = async (): Promise<void> => {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+};
+
 function frameSource(host: HTMLElement): string {
   return host.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')?.srcdoc ?? '';
 }
@@ -69,6 +74,7 @@ describe('Reader load lifecycle', () => {
     Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 250 });
     scroll.scrollTop = 375;
     scroll.dispatchEvent(new Event('scroll'));
+    await nextFrame();
 
     expect(view.state).toMatchObject({ current: 2, total: 2, progress: 0.5 });
     expect(states.some((state) => state.phase === 'loading')).toBe(true);
@@ -76,6 +82,44 @@ describe('Reader load lifecycle', () => {
     const countBeforeDestroy = states.length;
     await view.destroy();
     expect(states).toHaveLength(countBeforeDestroy);
+  });
+
+  it('coalesces same-frame scroll bursts into a single chapter/progress update', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => bytes('unused'),
+      parseContent: async () => ({
+        chapters: [
+          { title: 'One', html: '<p>one</p>' },
+          { title: 'Two', html: '<p>two</p>' },
+        ],
+      }),
+    });
+    await view.load('book.epub');
+
+    const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
+    const chapters = scroll.querySelectorAll<HTMLElement>('.lightink-reader-chapter');
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 250 });
+    vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue({ top: 0 } as DOMRect);
+    vi.spyOn(chapters[0]!, 'getBoundingClientRect').mockReturnValue({ top: -400 } as DOMRect);
+    vi.spyOn(chapters[1]!, 'getBoundingClientRect').mockReturnValue({ top: 10 } as DOMRect);
+
+    const states: Array<typeof view.state> = [];
+    const unsubscribe = view.subscribeState((state) => states.push(state));
+    expect(states).toHaveLength(1);
+    scroll.scrollTop = 375;
+    scroll.dispatchEvent(new Event('scroll'));
+    scroll.dispatchEvent(new Event('scroll'));
+    scroll.dispatchEvent(new Event('scroll'));
+    await nextFrame();
+
+    // 帧内连发 3 次滚动事件只在帧回调里同步一次：章节指示与进度单次单调更新。
+    expect(states).toHaveLength(2);
+    expect(states[1]).toMatchObject({ current: 2, total: 2, progress: 0.5 });
+    unsubscribe();
+    await view.destroy();
   });
 
   it('lets the newest load win when byte reads resolve out of order', async () => {

@@ -11,6 +11,8 @@
  *   - 其余 → 不支持（调用方汇总提示）。
  */
 
+import { extOfPath } from './path-ext.js';
+
 /** 可被应用内打开编辑的扩展名（小写）。 */
 export const OPENABLE_EXTS: ReadonlySet<string> = new Set(['md', 'markdown']);
 
@@ -45,24 +47,14 @@ export interface DroppedFilePlan {
   readonly unsupported: string[];
 }
 
-/** 取小写扩展名（无扩展名/末尾点为 ''）。 */
-export function extOf(path: string): string {
-  const base = path.split(/[\\/]/).pop() ?? path;
-  const dot = base.lastIndexOf('.');
-  if (dot <= 0 || dot === base.length - 1) {
-    return '';
-  }
-  return base.slice(dot + 1).toLowerCase();
-}
-
 /** 是否为以只读 reader 标签打开的电子书路径（按扩展名，不访问文件系统）。 */
 export function isReaderPath(path: string): boolean {
-  return READER_EXTS.has(extOf(path));
+  return READER_EXTS.has(extOfPath(path));
 }
 
 /** 是否为应用内可编辑的 Markdown 路径（按扩展名，不访问文件系统）。 */
 export function isMarkdownPath(path: string): boolean {
-  return OPENABLE_EXTS.has(extOf(path));
+  return OPENABLE_EXTS.has(extOfPath(path));
 }
 
 /** 把拖入的路径分类为 markdown / reader / 插图 / 不支持 四组（各组内保持原顺序）。 */
@@ -72,7 +64,7 @@ export function planDroppedFiles(paths: readonly string[]): DroppedFilePlan {
   const images: string[] = [];
   const unsupported: string[] = [];
   for (const path of paths) {
-    const ext = extOf(path);
+    const ext = extOfPath(path);
     if (OPENABLE_EXTS.has(ext)) {
       markdown.push(path);
     } else if (READER_EXTS.has(ext)) {

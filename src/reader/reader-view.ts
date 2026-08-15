@@ -68,6 +68,7 @@ import {
   sessionRemoteImagePolicy,
   type RemoteImagePolicy,
 } from '../media/remote-image-policy.js';
+import { extOfPath } from '../file/path-ext.js';
 import {
   chapterScrollRatio,
   chapterScrollTop,
@@ -81,12 +82,15 @@ import {
   advancePagedScroller,
   advanceScrolledScroller,
   applyPagedProgress,
+  createCoalescedScrollHandler,
   createPagedWheelGate,
   createResizeSettle,
   isReadingNavKey,
+  nearestVisibleSlot,
   pagedColumnStep,
   pagedProgressRatio,
   pagedSpreadMetrics,
+  rafFrameScheduler,
   readingNavDirection,
   snapPagedScroller,
 } from '../ui/reading-layout.js';
@@ -213,15 +217,6 @@ export function flowFrameContentHeight(frameDocument: Document): number {
     return 1;
   }
   return Math.ceil(Math.max(body.scrollHeight, 1));
-}
-
-function extOfPath(path: string): string {
-  const base = path.split(/[\\/]/).pop() ?? path;
-  const dot = base.lastIndexOf('.');
-  if (dot <= 0 || dot === base.length - 1) {
-    return '';
-  }
-  return base.slice(dot + 1).toLowerCase();
 }
 
 /** 仅用于稳定标注 id（无加密强度需求）。 */
@@ -781,23 +776,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     return articleRect.top - scrollerRect.top + scroller.scrollTop;
   };
 
+  /** 流式：视口顶部最近章节索引（共享 nearestVisibleSlot，与 PDF/CBZ 同一槽位判定）。 */
   const chapterFromScroll = (): number => {
-    const chapters = Array.from(scrollHost.querySelectorAll('.lightink-reader-chapter'));
+    const chapters = scrollHost.querySelectorAll<HTMLElement>('.lightink-reader-chapter');
     if (chapters.length === 0) {
       return 0;
     }
     const scroller = flowScrollContainer();
     const hostTop = scroller.getBoundingClientRect().top;
-    let best = 0;
-    let bestDist = Number.POSITIVE_INFINITY;
-    chapters.forEach((c, i) => {
-      const dist = Math.abs((c as HTMLElement).getBoundingClientRect().top - hostTop);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = i;
-      }
-    });
-    return best;
+    const slotTops = Array.from(chapters, (chapter) => chapter.getBoundingClientRect().top);
+    return Math.max(0, nearestVisibleSlot(slotTops, hostTop));
   };
 
   const firstVisibleChapter = (): number => {
@@ -866,9 +854,30 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       hideSelectionToolbar();
     }
   };
-  scrollHost.addEventListener('scroll', onFlowScroll, { passive: true });
+  // 三格式 scroll 统一经 rAF 合并：同帧连发的滚动事件只在帧回调里同步一次
+  // 章节/页指示与进度（缺 rAF 环境退化为直调，行为不变）。
+  const scrollFrames = rafFrameScheduler();
+  const flowScrollCoordinator =
+    scrollFrames === null ? null : createCoalescedScrollHandler(onFlowScroll, scrollFrames);
+  const pageScrollCoordinator =
+    scrollFrames === null ? null : createCoalescedScrollHandler(onPageScroll, scrollFrames);
+  const scheduleFlowScroll = (): void => {
+    if (flowScrollCoordinator === null) {
+      onFlowScroll();
+      return;
+    }
+    flowScrollCoordinator.schedule();
+  };
+  const schedulePageScroll = (): void => {
+    if (pageScrollCoordinator === null) {
+      onPageScroll();
+      return;
+    }
+    pageScrollCoordinator.schedule();
+  };
+  scrollHost.addEventListener('scroll', scheduleFlowScroll, { passive: true });
   const paneScroller = closestPane();
-  paneScroller?.addEventListener('scroll', onFlowScroll, { passive: true });
+  paneScroller?.addEventListener('scroll', scheduleFlowScroll, { passive: true });
   scrollHost.addEventListener(
     'wheel',
     (event) => {
@@ -1716,7 +1725,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const renderChapters = (chapters: ReaderChapter[], stylesheet = ''): void => {
     clearFlowBindings();
-    pageHost.removeEventListener('scroll', onPageScroll);
+    pageHost.removeEventListener('scroll', schedulePageScroll);
     pageHost.removeEventListener('mouseup', onPageHostSelection);
     pageHost.removeEventListener('click', onPageHostNoteClick);
     textLayerObserver?.disconnect();
@@ -2040,14 +2049,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     const previousCbz = cbzHandle;
     pdfHandle = staged.pdf;
     cbzHandle = staged.cbz;
-    pageHost.removeEventListener('scroll', onPageScroll);
-    closestPane()?.removeEventListener('scroll', onPageScroll);
+    pageHost.removeEventListener('scroll', schedulePageScroll);
+    closestPane()?.removeEventListener('scroll', schedulePageScroll);
     pageHost.removeEventListener('mouseup', onPageHostSelection);
     pageHost.removeEventListener('click', onPageHostNoteClick);
     pageHost.replaceWith(staged.host);
     pageHost = staged.host;
-    pageHost.addEventListener('scroll', onPageScroll, { passive: true });
-    closestPane()?.addEventListener('scroll', onPageScroll, { passive: true });
+    pageHost.addEventListener('scroll', schedulePageScroll, { passive: true });
+    closestPane()?.addEventListener('scroll', schedulePageScroll, { passive: true });
     pageHost.addEventListener('mouseup', onPageHostSelection);
     pageHost.addEventListener('click', onPageHostNoteClick);
     observeTextLayers(pageHost); // 文本层懒出现时重渲染该页高亮
@@ -2632,10 +2641,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       pdfSearch = null;
       searchPanel?.destroy();
       searchPanel = null;
-      scrollHost.removeEventListener('scroll', onFlowScroll);
-      paneScroller?.removeEventListener('scroll', onFlowScroll);
-      pageHost.removeEventListener('scroll', onPageScroll);
-      closestPane()?.removeEventListener('scroll', onPageScroll);
+      scrollHost.removeEventListener('scroll', scheduleFlowScroll);
+      paneScroller?.removeEventListener('scroll', scheduleFlowScroll);
+      pageHost.removeEventListener('scroll', schedulePageScroll);
+      closestPane()?.removeEventListener('scroll', schedulePageScroll);
+      flowScrollCoordinator?.cancel();
+      pageScrollCoordinator?.cancel();
       pageHost.removeEventListener('mouseup', onPageHostSelection);
     pageHost.removeEventListener('click', onPageHostNoteClick);
       textLayerObserver?.disconnect();

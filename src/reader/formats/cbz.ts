@@ -9,17 +9,15 @@ import { ParseError } from './types.js';
 import { openSafeArchive } from './safe-archive.js';
 import { enforcePageCount } from './page-limits.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
+import { extOfPath } from '../../file/path-ext.js';
+import {
+  createCoalescedScrollHandler,
+  nearestVisibleSlot,
+  rafFrameScheduler,
+} from '../../ui/reading-layout.js';
 
 const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 const CBZ_CACHE_RADIUS = 2;
-
-function extOf(name: string): string {
-  const dot = name.lastIndexOf('.');
-  if (dot <= 0) {
-    return '';
-  }
-  return name.slice(dot + 1).toLowerCase();
-}
 
 /** 把字符串拆为「非数字段 / 数字段」序列，供自然序比较。 */
 function splitNatural(s: string): Array<string | number> {
@@ -64,7 +62,7 @@ export function naturalCompare(a: string, b: string): number {
  * 纯逻辑，headless 可测。
  */
 export function listImageEntries(names: readonly string[]): string[] {
-  const images = names.filter((n) => !n.endsWith('/') && CBZ_IMAGE_EXTS.has(extOf(n)));
+  const images = names.filter((n) => !n.endsWith('/') && CBZ_IMAGE_EXTS.has(extOfPath(n)));
   return images.sort(naturalCompare);
 }
 
@@ -143,7 +141,7 @@ export async function renderCbzInto(
         if (destroyed || !wantedPages.has(index)) {
           return;
         }
-        const ext = extOf(name);
+        const ext = extOfPath(name);
         const mime = ext === 'jpg' ? 'jpeg' : ext;
         const imageBytes = Uint8Array.from(data);
         const url = URL.createObjectURL(
@@ -208,23 +206,28 @@ export async function renderCbzInto(
         ? (document.getElementById('lightink-editor-area') ?? container)
         : container;
 
+    // 槽位判定走共享 nearestVisibleSlot；scroll 事件经 rAF 合并，帧内连发只同步一次。
     const syncCurrentPage = (): void => {
       const top = scroller.getBoundingClientRect().top;
-      let closest = 0;
-      let distance = Number.POSITIVE_INFINITY;
-      for (let index = 0; index < slots.length; index += 1) {
-        const nextDistance = Math.abs(slots[index]!.getBoundingClientRect().top - top);
-        if (nextDistance < distance) {
-          closest = index;
-          distance = nextDistance;
-        }
-      }
+      const slotTops = slots.map((slot) => slot.getBoundingClientRect().top);
+      const nearest = nearestVisibleSlot(slotTops, top);
+      const closest = nearest >= 0 ? nearest : 0;
       currentPage = closest + 1;
       if (observer === null) {
         loadWindow(closest);
       }
     };
-    scroller.addEventListener('scroll', syncCurrentPage, { passive: true });
+    const scrollFrames = rafFrameScheduler();
+    const scrollCoordinator =
+      scrollFrames === null ? null : createCoalescedScrollHandler(syncCurrentPage, scrollFrames);
+    const onScrollEvent = (): void => {
+      if (scrollCoordinator === null) {
+        syncCurrentPage();
+        return;
+      }
+      scrollCoordinator.schedule();
+    };
+    scroller.addEventListener('scroll', onScrollEvent, { passive: true });
 
     if (typeof IntersectionObserver !== 'undefined') {
       observer = new IntersectionObserver(
@@ -255,7 +258,8 @@ export async function renderCbzInto(
       }
       destroyed = true;
       observer?.disconnect();
-      scroller.removeEventListener('scroll', syncCurrentPage);
+      scroller.removeEventListener('scroll', onScrollEvent);
+      scrollCoordinator?.cancel();
       for (const index of [...materialized.keys()]) {
         releasePage(index);
       }

@@ -19,6 +19,11 @@ import {
   ReaderLoadCancelledError,
   throwIfReaderLoadCancelled,
 } from '../load-lifecycle.js';
+import {
+  createCoalescedScrollHandler,
+  nearestVisibleSlot,
+  rafFrameScheduler,
+} from '../../ui/reading-layout.js';
 
 /** 缩放档位（与字号缩放独立，PDF 像素级）。 */
 export const PDF_SCALE_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -512,20 +517,26 @@ export async function renderPdfInto(
   }
 
   // 滚动时把视口顶部最近的页回写 controller.page（供书签/笔记定位与侧栏跳转）。
+  // 槽位判定走共享 nearestVisibleSlot；scroll 事件经 rAF 合并，帧内连发只同步一次。
   const onScroll = (): void => {
     const top = scroller.getBoundingClientRect().top;
-    let best = 1;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < slots.length; i += 1) {
-      const dist = Math.abs(slots[i]!.getBoundingClientRect().top - top);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = i + 1;
-      }
+    const slotTops = slots.map((slot) => slot.getBoundingClientRect().top);
+    const nearest = nearestVisibleSlot(slotTops, top);
+    if (nearest >= 0) {
+      controller.setPage(nearest + 1);
     }
-    controller.setPage(best);
   };
-  scroller.addEventListener('scroll', onScroll, { passive: true });
+  const scrollFrames = rafFrameScheduler();
+  const scrollCoordinator =
+    scrollFrames === null ? null : createCoalescedScrollHandler(onScroll, scrollFrames);
+  const onScrollEvent = (): void => {
+    if (scrollCoordinator === null) {
+      onScroll();
+      return;
+    }
+    scrollCoordinator.schedule();
+  };
+  scroller.addEventListener('scroll', onScrollEvent, { passive: true });
 
   const rerender = async (): Promise<void> => {
     renderGeneration += 1;
@@ -642,7 +653,8 @@ export async function renderPdfInto(
       signal?.removeEventListener('abort', onAbort);
       cancelRenderTasks();
       cancelTextLayers();
-      scroller.removeEventListener('scroll', onScroll);
+      scroller.removeEventListener('scroll', onScrollEvent);
+      scrollCoordinator?.cancel();
       observer?.disconnect();
       await loadingTask.destroy();
     },
