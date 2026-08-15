@@ -97,7 +97,7 @@ import {
   type ReadingLayout,
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
-import { ShortcutRegistry, isEditableTarget, isModalTarget } from './ui/shortcuts.js';
+import { ShortcutRegistry, pagingShouldIgnoreTarget } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
@@ -2183,8 +2183,10 @@ document.addEventListener(
     if (event.ctrlKey || event.metaKey || event.altKey || !isReadingNavKey(event.key)) {
       return;
     }
-    // 应用模态弹层（确认框、链接对话框等）打开时不劫持翻页键。
-    if (isModalTarget(event.target)) {
+    // 打开应用模态，或焦点在输入框/可编辑内容（正文 contenteditable、源码 textarea、
+    // 输入框）时不劫持翻页键：isReadingNavKey 含 Space 与方向键，放进翻页链会让
+    // 正文输入/光标移动被劫持成翻页。
+    if (pagingShouldIgnoreTarget(event.target)) {
       return;
     }
     if (activeReaderTab() !== null) {
@@ -2192,11 +2194,6 @@ document.addEventListener(
     }
     const tab = activeMarkdownTab();
     if (tab === null) {
-      return;
-    }
-    if (isEditableTarget(event.target)) {
-      // contenteditable/输入框/源码 textarea 一律排除：isReadingNavKey 含 Space 与
-      // 方向键，放进翻页链会让正文输入/光标移动被劫持成翻页。
       return;
     }
     const direction = readingNavDirection(event.key, event.shiftKey);
@@ -2210,8 +2207,10 @@ document.addEventListener(
   true,
 );
 
-// 滚轮翻页提升到 window：在大纲侧栏、顶部 chrome、状态栏之外的空白区也可翻页；
-// 输入框/可编辑内容/打开模态时早退，不劫持其自身滚动与文本输入。
+// R1：滚轮翻页提升到 window 级——窗口内任意位置（含大纲侧栏、顶部菜单/标签 chrome
+// 与空白区）滚动滚轮均按分页模式翻页正文；仅目标为输入框/可编辑内容或打开模态时
+// 早退、不劫持其自身滚动与文本输入。大纲侧栏在此是翻页面而非自身滚动面（R1 验收：
+// 悬停大纲侧栏滚轮 → 正文翻页）。
 window.addEventListener(
   'wheel',
   (event) => {
@@ -2221,7 +2220,7 @@ window.addEventListener(
     if (activeReaderTab() !== null || activeMarkdownTab() === null) {
       return;
     }
-    if (isModalTarget(event.target) || isEditableTarget(event.target)) {
+    if (pagingShouldIgnoreTarget(event.target)) {
       return;
     }
     const delta =

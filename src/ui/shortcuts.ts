@@ -172,6 +172,15 @@ export function isModalTarget(target: unknown): boolean {
   return false;
 }
 
+/**
+ * 分页翻页（滚轮/方向键）应忽略的事件目标：目标位于打开的应用模态，或位于
+ * 输入框/可编辑内容（input/textarea/select/contenteditable）时不劫持，交给目标
+ * 自身处理；其余窗口区域（含大纲侧栏、顶部 chrome、空白区）一律按 R1 翻页。
+ */
+export function pagingShouldIgnoreTarget(target: unknown): boolean {
+  return isModalTarget(target) || isEditableTarget(target);
+}
+
 /** Function keys and other non-text global chords that must work inside the editor. */
 export function isGlobalFunctionKey(key: string): boolean {
   return /^f([1-9]|1[0-2])$/.test(key.toLowerCase());

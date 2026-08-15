@@ -14,6 +14,7 @@ import {
   isEditableTarget,
   isModalTarget,
   matchEvent,
+  pagingShouldIgnoreTarget,
   ShortcutRegistry,
   type KeyboardEventLike,
 } from '../shortcuts.js';
@@ -107,6 +108,17 @@ describe('isModalTarget', () => {
     const button = { parentElement: dialog };
     expect(isModalTarget(button)).toBe(true);
     expect(isModalTarget({ parentElement: null })).toBe(false);
+  });
+});
+
+describe('pagingShouldIgnoreTarget', () => {
+  it('翻页忽略模态与可编辑目标，其余窗口区域翻页', () => {
+    const dialog = { getAttribute: (name: string) => name === 'aria-modal' ? 'true' : null };
+    expect(pagingShouldIgnoreTarget({ parentElement: dialog })).toBe(true);
+    expect(pagingShouldIgnoreTarget({ isContentEditable: true })).toBe(true);
+    expect(pagingShouldIgnoreTarget({ tagName: 'TEXTAREA' })).toBe(true);
+    expect(pagingShouldIgnoreTarget({ tagName: 'DIV' })).toBe(false);
+    expect(pagingShouldIgnoreTarget(null)).toBe(false);
   });
 });
 
