@@ -22,6 +22,7 @@ import {
 } from '../search-panel.js';
 import {
   clearSearchMarks,
+  flowSearchMarkKey,
   renderSearchMarks,
   SEARCH_MARK_CLASS,
   SEARCH_MARK_CURRENT_CLASS,
@@ -235,6 +236,32 @@ describe('搜索 overlay 共享幂等引擎（PDF 文本层 / 流式正文同引
     clearSearchMarks(root);
     expect(root.querySelector('[data-search-key]')).toBeNull();
     expect(root.textContent).toBe('前缀文字命中目标');
+  });
+
+  it('流式 key 含 end：同起始不同 end 的查询精化触发重包裹，高亮跟随新长度', () => {
+    // 同章同序同起始、end 不同 → 戳记必须不同（回归：key 曾缺 end，导致精化
+    // 查询命中 existing 分支只校正类名，高亮停留旧长度）。
+    expect(flowSearchMarkKey(0, 0, 4, 6)).not.toBe(flowSearchMarkKey(0, 0, 4, 7));
+    expect(flowSearchMarkKey(0, 0, 4, 7)).toBe('0:0:4:7');
+
+    const root = layer('正文 abc 后续');
+    const shortKey = flowSearchMarkKey(0, 0, 3, 5); // "ab"
+    renderSearchMarks(root, [{ key: shortKey, start: 3, end: 5 }], shortKey);
+    expect(root.querySelector<HTMLElement>(`[data-search-key="${shortKey}"]`)!.textContent)
+      .toBe('ab');
+
+    // 查询精化 ab → abc：同一起始、更长的 end。
+    const longKey = flowSearchMarkKey(0, 0, 3, 6); // "abc"
+    renderSearchMarks(root, [{ key: longKey, start: 3, end: 6 }], longKey);
+    expect(root.querySelector(`[data-search-key="${shortKey}"]`)).toBeNull();
+    const marked = root.querySelector<HTMLElement>(`[data-search-key="${longKey}"]`);
+    expect(marked?.textContent).toBe('abc');
+    expect(marked?.className).toBe(SEARCH_MARK_CURRENT_CLASS);
+
+    // 查询缩短 abc → ab：同一起始、更短的 end，同样重包裹。
+    renderSearchMarks(root, [{ key: shortKey, start: 3, end: 5 }], shortKey);
+    expect(root.querySelector(`[data-search-key="${longKey}"]`)).toBeNull();
+    expect(root.querySelector(`[data-search-key="${shortKey}"]`)?.textContent).toBe('ab');
   });
 });
 

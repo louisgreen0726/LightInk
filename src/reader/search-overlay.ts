@@ -32,6 +32,20 @@ function cssEscape(value: string): string {
 }
 
 /**
+ * 流式命中幂等戳记（与 PDF 的 page:start:end 对齐，补入命中序）。end 必须参与
+ * 戳记：查询精化（ab → abc）或缩短时，同章同序同起始命中的 end 会变化，戳记
+ * 随之变化才能让引擎把旧 span 解包并按新长度重包裹。
+ */
+export function flowSearchMarkKey(
+  chapter: number,
+  ordinal: number,
+  start: number,
+  end: number,
+): string {
+  return `${chapter}:${ordinal}:${start}:${end}`;
+}
+
+/**
  * 在单个 host 上幂等渲染命中 overlay：陈旧 key 解包、缺失 key 包裹、
  * 已有 key 只校正类名。currentKey 为当前活动命中（无则为 null）。
  */

@@ -54,6 +54,7 @@ import {
 } from './search-panel.js';
 import {
   clearSearchMarks,
+  flowSearchMarkKey,
   renderSearchMarks,
   SEARCH_MARK_CURRENT_CLASS,
   type SearchMarkSpec,
@@ -1395,7 +1396,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       byChapter.set(
         chapter,
         hits.map((hit, ordinal) => ({
-          key: `${chapter}:${ordinal}:${hit.start}`,
+          key: flowSearchMarkKey(chapter, ordinal, hit.start, hit.end),
           start: hit.start,
           end: hit.end,
         })),
