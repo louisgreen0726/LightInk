@@ -17,6 +17,7 @@ import {
   pagingShouldIgnoreTarget,
   ShortcutRegistry,
   type KeyboardEventLike,
+  wheelPagingShouldIgnoreTarget,
 } from '../shortcuts.js';
 
 function keyEvent(overrides: Partial<KeyboardEventLike> = {}): KeyboardEventLike & {
@@ -112,13 +113,26 @@ describe('isModalTarget', () => {
 });
 
 describe('pagingShouldIgnoreTarget', () => {
-  it('翻页忽略模态与可编辑目标，其余窗口区域翻页', () => {
+  it('键盘翻页忽略模态与可编辑目标，其余窗口区域翻页', () => {
     const dialog = { getAttribute: (name: string) => name === 'aria-modal' ? 'true' : null };
     expect(pagingShouldIgnoreTarget({ parentElement: dialog })).toBe(true);
     expect(pagingShouldIgnoreTarget({ isContentEditable: true })).toBe(true);
     expect(pagingShouldIgnoreTarget({ tagName: 'TEXTAREA' })).toBe(true);
     expect(pagingShouldIgnoreTarget({ tagName: 'DIV' })).toBe(false);
     expect(pagingShouldIgnoreTarget(null)).toBe(false);
+  });
+});
+
+describe('wheelPagingShouldIgnoreTarget', () => {
+  it('滚轮翻页忽略模态与表单控件，但正文 contenteditable 仍翻页', () => {
+    const dialog = { getAttribute: (name: string) => name === 'aria-modal' ? 'true' : null };
+    expect(wheelPagingShouldIgnoreTarget({ parentElement: dialog })).toBe(true);
+    expect(wheelPagingShouldIgnoreTarget({ tagName: 'INPUT' })).toBe(true);
+    expect(wheelPagingShouldIgnoreTarget({ tagName: 'TEXTAREA' })).toBe(true);
+    expect(wheelPagingShouldIgnoreTarget({ tagName: 'SELECT' })).toBe(true);
+    expect(wheelPagingShouldIgnoreTarget({ isContentEditable: true })).toBe(false);
+    expect(wheelPagingShouldIgnoreTarget({ tagName: 'DIV' })).toBe(false);
+    expect(wheelPagingShouldIgnoreTarget(null)).toBe(false);
   });
 });
 

@@ -156,6 +156,17 @@ export function isEditableTarget(target: unknown): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+/** 目标是否为表单控件（input/textarea/select），不含 contenteditable 正文。 */
+export function isFormControlTarget(target: unknown): boolean {
+  if (target === null || typeof target !== 'object') {
+    return false;
+  }
+  const tag = typeof (target as { tagName?: unknown }).tagName === 'string'
+    ? (target as { tagName: string }).tagName.toUpperCase()
+    : '';
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
 /** Global commands yield while focus is inside an application modal. */
 export function isModalTarget(target: unknown): boolean {
   let current = target as {
@@ -173,12 +184,20 @@ export function isModalTarget(target: unknown): boolean {
 }
 
 /**
- * 分页翻页（滚轮/方向键）应忽略的事件目标：目标位于打开的应用模态，或位于
- * 输入框/可编辑内容（input/textarea/select/contenteditable）时不劫持，交给目标
- * 自身处理；其余窗口区域（含大纲侧栏、顶部 chrome、空白区）一律按 R1 翻页。
+ * 键盘翻页（方向键/Space/PageUp/PageDown）应忽略的事件目标：目标位于打开的应用
+ * 模态，或位于输入框/可编辑内容（input/textarea/select/contenteditable）时不劫持。
  */
 export function pagingShouldIgnoreTarget(target: unknown): boolean {
   return isModalTarget(target) || isEditableTarget(target);
+}
+
+/**
+ * 滚轮翻页应忽略的事件目标：打开模态或表单控件（input/textarea/select）时不劫持。
+ * 注意：不排除 contenteditable 正文——分页模式下悬停正文滚轮仍需翻页（R1 窗口级翻页，
+ * 悬停大纲侧栏/顶部 chrome/空白区/正文均按当前模式翻页）。
+ */
+export function wheelPagingShouldIgnoreTarget(target: unknown): boolean {
+  return isModalTarget(target) || isFormControlTarget(target);
 }
 
 /** Function keys and other non-text global chords that must work inside the editor. */

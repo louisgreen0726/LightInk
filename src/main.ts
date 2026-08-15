@@ -97,7 +97,7 @@ import {
   type ReadingLayout,
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
-import { ShortcutRegistry, pagingShouldIgnoreTarget } from './ui/shortcuts.js';
+import { ShortcutRegistry, pagingShouldIgnoreTarget, wheelPagingShouldIgnoreTarget } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
@@ -2207,10 +2207,10 @@ document.addEventListener(
   true,
 );
 
-// R1：滚轮翻页提升到 window 级——窗口内任意位置（含大纲侧栏、顶部菜单/标签 chrome
-// 与空白区）滚动滚轮均按分页模式翻页正文；仅目标为输入框/可编辑内容或打开模态时
-// 早退、不劫持其自身滚动与文本输入。大纲侧栏在此是翻页面而非自身滚动面（R1 验收：
-// 悬停大纲侧栏滚轮 → 正文翻页）。
+// R1：滚轮翻页提升到 window 级——窗口内任意位置（含正文、大纲侧栏、顶部菜单/标签
+// chrome 与空白区）滚动滚轮均按分页模式翻页正文；仅目标为表单控件（输入框/源码
+// textarea/select）或打开模态时早退、不劫持其自身滚动与文本输入。正文 contenteditable
+// 是翻页面而非被排除对象（R1 验收：悬停大纲侧栏滚轮 → 正文翻页）。
 window.addEventListener(
   'wheel',
   (event) => {
@@ -2220,7 +2220,7 @@ window.addEventListener(
     if (activeReaderTab() !== null || activeMarkdownTab() === null) {
       return;
     }
-    if (pagingShouldIgnoreTarget(event.target)) {
+    if (wheelPagingShouldIgnoreTarget(event.target)) {
       return;
     }
     const delta =
