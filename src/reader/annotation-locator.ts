@@ -166,7 +166,12 @@ export function resolveTextQuoteRange(root: Node, anchor: TextQuoteAnchor): Rang
 }
 
 /** Wrap each selected text fragment independently so highlighting preserves element structure. */
-export function markTextRange(root: Node, range: Range, annotationId: string): number {
+export function markTextRange(
+  root: Node,
+  range: Range,
+  annotationId: string,
+  kind?: string,
+): number {
   const { spans } = textSpans(root);
   const selected = spans.flatMap(({ node }) => {
     if (!range.intersectsNode(node)) {
@@ -187,6 +192,9 @@ export function markTextRange(root: Node, range: Range, annotationId: string): n
     const mark = documentOf(root).createElement('mark');
     mark.className = 'lightink-reader-highlight';
     mark.dataset.annotationId = annotationId;
+    if (kind !== undefined && kind !== '') {
+      mark.dataset.annotationKind = kind;
+    }
     selectedNode.replaceWith(mark);
     mark.appendChild(selectedNode);
   }

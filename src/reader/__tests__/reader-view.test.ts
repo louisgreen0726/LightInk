@@ -93,6 +93,14 @@ class FakeDoc {
   createElement(tag: string): FakeEl {
     return new FakeEl(tag);
   }
+
+  addEventListener(): void {
+    /* no-op：reader-view 监听 lightink:font-scale */
+  }
+
+  removeEventListener(): void {
+    /* no-op */
+  }
 }
 
 const originalDocument = (globalThis as { document?: unknown }).document;
@@ -189,6 +197,7 @@ describe('划选工具栏（selection-toolbar）', () => {
     expect(toolbar.isVisible()).toBe(true);
     expect(buttonByAction(toolbar, 'highlight')!.textContent).toBe('annotation.highlight');
     expect(buttonByAction(toolbar, 'note')!.textContent).toBe('annotation.note');
+    expect(buttonByAction(toolbar, 'copy')!.textContent).toBe('annotation.copy');
     expect(buttonByAction(toolbar, 'removeHighlight')!.hidden).toBe(true);
 
     toolbar.showAt({ left: 100, top: 100, width: 80, height: 20 }, { canRemoveHighlight: true });

@@ -78,7 +78,8 @@ describe('exportActiveTabHtml', () => {
     expect(html).toContain('<meta charset="utf-8">');
     expect(html).toContain('data-theme="warm-light"');
     expect(html).toContain('/* fake-css */');
-    expect(html).toContain('<h1>标题</h1>');
+    expect(html).toContain('lightink-export-toc');
+    expect(html).toContain('<h1 id="section">标题</h1>');
     // 相对图片已内嵌为 data URI；绝对 URL 保留且未触达 resolver。
     expect(html).toContain('src="data:image/png;base64,QUJD"');
     expect(html).toContain('src="https://example.com/ext.png"');

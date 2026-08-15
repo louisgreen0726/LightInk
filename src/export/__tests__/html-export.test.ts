@@ -12,6 +12,7 @@ import {
   escapeHtmlText,
   isEmbeddableImageSrc,
   mimeFromPath,
+  outlineFromHeadingHtml,
   UnsafeCssBoundaryError,
 } from '../html-export.js';
 
@@ -71,6 +72,49 @@ describe('buildHtmlDocument', () => {
         cssText: 'body { color: black } /* </StYlE boundary */',
       }),
     ).toThrow(UnsafeCssBoundaryError);
+  });
+});
+
+describe('outlineFromHeadingHtml', () => {
+  it('给标题补稳定 id 并生成目录项', () => {
+    const { bodyHtml, outline } = outlineFromHeadingHtml(
+      '<h1>设计</h1><p>正文</p><h2>文本层</h2>',
+    );
+    expect(outline).toEqual([
+      { level: 1, text: '设计', id: 'section' },
+      { level: 2, text: '文本层', id: 'section-2' },
+    ]);
+    expect(bodyHtml).toContain('<h1 id="section">设计</h1>');
+    expect(bodyHtml).toContain('<h2 id="section-2">文本层</h2>');
+  });
+
+  it('保留已有 id，重复标题加后缀', () => {
+    const { outline, bodyHtml } = outlineFromHeadingHtml(
+      '<h1 id="keep">A</h1><h2>Same</h2><h2>Same</h2>',
+    );
+    expect(outline.map((item) => item.id)).toEqual(['keep', 'same', 'same-2']);
+    expect(bodyHtml).toContain('<h1 id="keep">A</h1>');
+  });
+});
+
+describe('buildHtmlDocument outline', () => {
+  it('有目录时写入导航，无目录时不插空 nav', () => {
+    const withToc = buildHtmlDocument({
+      title: 't',
+      theme: 'warm-light',
+      bodyHtml: '<h1 id="a">A</h1>',
+      cssText: '',
+      outline: [{ level: 1, text: 'A', id: 'a' }],
+    });
+    expect(withToc).toContain('lightink-export-toc');
+    expect(withToc).toContain('href="#a"');
+    const bare = buildHtmlDocument({
+      title: 't',
+      theme: 'warm-light',
+      bodyHtml: '<p>x</p>',
+      cssText: '',
+    });
+    expect(bare).not.toContain('lightink-export-toc');
   });
 });
 

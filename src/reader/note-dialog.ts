@@ -1,10 +1,9 @@
 /**
- * `note-dialog` — 标注笔记多行输入弹层（R4）。
+ * `note-dialog` — 阅读器笔记写作弹层。
  *
- * 基于 confirm-dialog/modal-focus 的主题化模态：textarea 多行输入 + 保存/取消，
- * resolve 为文本（保存，允许空串）或 null（取消/Esc/遮罩点击）。新建与编辑备注共用，
- * 替换旧 window.prompt 路径。Ctrl/Cmd+Enter 提交（Enter 留给换行）。
- * 样式走 lightink-modal-* 既有体系；textarea 尺寸经内联样式（弹层组件自包含）。
+ * 划选原文预览 + 多行备注 + 保存/取消。resolve 为文本（允许空串）或 null
+ * （取消 / Esc / 遮罩 / 关闭）。Ctrl/Cmd+Enter 提交，Enter 留给换行。
+ * 焦点陷阱复用 modal-focus；版式独立于确认弹层。
  */
 
 import { labelModal, mountModalFocus } from '../ui/modal-focus.js';
@@ -12,6 +11,8 @@ import type { MessageKey } from '../i18n/messages.js';
 
 export interface NoteDialogDeps {
   t: (key: MessageKey) => string;
+  /** 编辑已有备注时用「编辑笔记」标题。 */
+  editing?: boolean;
 }
 
 /**
@@ -21,6 +22,7 @@ export function showNoteDialog(
   doc: Document,
   initialText: string,
   deps: NoteDialogDeps,
+  quote?: string,
 ): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     let settled = false;
@@ -39,40 +41,83 @@ export function showNoteDialog(
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
 
+    const header = doc.createElement('div');
+    header.className = 'lightink-note-header';
     const title = doc.createElement('div');
-    title.className = 'lightink-modal-title';
-    title.textContent = deps.t('annotation.noteDialog.title');
+    title.className = 'lightink-modal-title lightink-note-title';
+    title.textContent = deps.t(
+      deps.editing === true ? 'annotation.noteDialog.editTitle' : 'annotation.noteDialog.title',
+    );
+    const close = doc.createElement('button');
+    close.type = 'button';
+    close.className = 'lightink-note-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', deps.t('annotation.noteDialog.cancel'));
+    close.addEventListener('click', () => settle(null));
+    header.append(title, close);
 
+    const body = doc.createElement('div');
+    body.className = 'lightink-note-body';
+
+    const quoteText = quote?.trim() ?? '';
+    if (quoteText !== '') {
+      const quoteField = doc.createElement('div');
+      quoteField.className = 'lightink-note-field';
+      const quoteLabel = doc.createElement('div');
+      quoteLabel.className = 'lightink-note-label';
+      quoteLabel.textContent = deps.t('annotation.noteDialog.quoteLabel');
+      const preview = doc.createElement('blockquote');
+      preview.className = 'lightink-note-quote';
+      preview.textContent = quoteText;
+      quoteField.append(quoteLabel, preview);
+      body.appendChild(quoteField);
+    }
+
+    const noteField = doc.createElement('div');
+    noteField.className = 'lightink-note-field';
+    const noteLabel = doc.createElement('label');
+    noteLabel.className = 'lightink-note-label';
+    noteLabel.htmlFor = 'lightink-note-textarea';
+    noteLabel.textContent = deps.t('annotation.noteDialog.noteLabel');
     const textarea = doc.createElement('textarea');
+    textarea.id = 'lightink-note-textarea';
     textarea.className = 'lightink-note-textarea';
     textarea.value = initialText;
-    textarea.rows = 5;
-    textarea.style.width = '100%';
-    textarea.style.minHeight = '6rem';
-    textarea.style.resize = 'vertical';
-    textarea.style.font = 'inherit';
-    textarea.style.boxSizing = 'border-box';
+    textarea.rows = 6;
+    textarea.placeholder = deps.t('annotation.noteDialog.placeholder');
+    textarea.setAttribute('spellcheck', 'true');
+    noteField.append(noteLabel, textarea);
+    body.appendChild(noteField);
     labelModal(dialog, title, textarea);
 
+    const footer = doc.createElement('div');
+    footer.className = 'lightink-note-footer';
+    const hint = doc.createElement('span');
+    hint.className = 'lightink-note-hint';
+    const mac =
+      typeof navigator !== 'undefined' && /Mac/i.test(`${navigator.platform} ${navigator.userAgent}`);
+    hint.textContent = deps.t(
+      mac ? 'annotation.noteDialog.shortcutMac' : 'annotation.noteDialog.shortcut',
+    );
     const actions = doc.createElement('div');
     actions.className = 'lightink-modal-actions';
-    const save = doc.createElement('button');
-    save.type = 'button';
-    save.className = 'lightink-modal-btn lightink-modal-btn--primary';
-    save.textContent = deps.t('annotation.noteDialog.save');
-    save.addEventListener('click', () => settle(textarea.value));
     const cancel = doc.createElement('button');
     cancel.type = 'button';
     cancel.className = 'lightink-modal-btn lightink-modal-btn--plain';
     cancel.textContent = deps.t('annotation.noteDialog.cancel');
     cancel.addEventListener('click', () => settle(null));
-    actions.append(save, cancel);
+    const save = doc.createElement('button');
+    save.type = 'button';
+    save.className = 'lightink-modal-btn lightink-modal-btn--primary';
+    save.textContent = deps.t('annotation.noteDialog.save');
+    save.addEventListener('click', () => settle(textarea.value));
+    actions.append(cancel, save);
+    footer.append(hint, actions);
 
-    dialog.append(title, textarea, actions);
+    dialog.append(header, body, footer);
     overlay.appendChild(dialog);
 
     textarea.addEventListener('keydown', (event) => {
-      // 多行输入：Enter 换行，Ctrl/Cmd+Enter 提交。
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         settle(textarea.value);

@@ -18,7 +18,9 @@ describe('snapFontScale', () => {
     expect(snapFontScale(1)).toBe(1);
     expect(snapFontScale(1.1)).toBe(1.125);
     expect(snapFontScale(0.9)).toBe(0.925);
+    expect(snapFontScale(1.9)).toBe(2);
     expect(snapFontScale(99)).toBe(FONT_SCALE_STEPS[FONT_SCALE_STEPS.length - 1]);
+    expect(FONT_SCALE_STEPS[FONT_SCALE_STEPS.length - 1]).toBe(5);
     expect(snapFontScale(Number.NaN)).toBe(DEFAULT_FONT_SCALE);
   });
 });
@@ -75,5 +77,34 @@ describe('installFontScale', () => {
     expect(handle.reset()).toBe(1);
     handle.dispose();
     expect(props['--lightink-font-scale']).toBeUndefined();
+  });
+});
+
+describe('font-scale change event', () => {
+  it('dispatches lightink:font-scale for page-format rerender', () => {
+    if (typeof document === 'undefined' || typeof CustomEvent !== 'function') {
+      return;
+    }
+    const seen: number[] = [];
+    const onChange = (event: Event): void => {
+      seen.push((event as CustomEvent<number>).detail);
+    };
+    document.addEventListener('lightink:font-scale', onChange);
+    const props: Record<string, string> = {};
+    const root = {
+      style: {
+        setProperty(name: string, value: string) {
+          props[name] = value;
+        },
+        removeProperty(name: string) {
+          delete props[name];
+        },
+      },
+    };
+    const handle = installFontScale(root, null, 1);
+    handle.zoomIn();
+    document.removeEventListener('lightink:font-scale', onChange);
+    handle.dispose();
+    expect(seen[seen.length - 1]).toBe(1.125);
   });
 });

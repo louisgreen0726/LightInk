@@ -680,8 +680,23 @@ function loadExportPipeline(): Promise<ExportPipeline> {
 // src/export/ 下（可 headless 测试）。
 function activeExportSnapshot(): ExportTabSnapshot | null {
   const tab = manager.activeTab;
-  if (tab === null || !isMarkdownTab(tab)) {
-    return null; // reader 标签不可导出为 Markdown HTML
+  if (tab === null) {
+    return null;
+  }
+  if (tab.kind === 'reader') {
+    const contentHtml = tab.reader.getExportHtml?.() ?? null;
+    if (contentHtml === null) {
+      return null;
+    }
+    return {
+      title: tab.title,
+      filePath: tab.filePath,
+      sessionId: tab.syntheticId,
+      contentHtml,
+    };
+  }
+  if (!isMarkdownTab(tab)) {
+    return null;
   }
   return {
     title: tab.title,
@@ -1089,6 +1104,7 @@ manager = new TabManager({
       const active = manager?.activeTab;
       if (active?.kind === 'reader' && active.reader === reader) {
         statusBar?.refresh(getActiveStatusSnapshot);
+        outline?.refreshNow();
       }
     });
     return reader;
@@ -1253,6 +1269,13 @@ outline = createOutlineView({
     } catch {
       return null;
     }
+  },
+  getActiveReaderOutline: () => {
+    const tab = activeReaderTab();
+    return tab === null ? null : tab.reader.getOutline();
+  },
+  jumpToReaderOutlineItem: (item) => {
+    activeReaderTab()?.reader.jumpToOutlineItem(item);
   },
   // T4/R2：大纲↔编辑器折叠双向联动（序号口径与 buildOutline anchor 一致）。
   getFoldedOrdinals: () => activeMarkdownTab()?.editor.getFoldedOrdinals() ?? [],

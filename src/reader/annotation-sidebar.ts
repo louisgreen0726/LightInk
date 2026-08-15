@@ -120,6 +120,18 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     kind.className = `lightink-reader-sidebar-kind lightink-reader-sidebar-kind--${annotation.kind}`;
     kind.textContent = deps.t(`annotation.kind.${annotation.kind}`);
 
+    const meta = document.createElement('div');
+    meta.className = 'lightink-reader-sidebar-item-meta';
+    meta.appendChild(kind);
+    const location = locationText(annotation, deps.t);
+    if (location !== null) {
+      const where = document.createElement('span');
+      where.className = 'lightink-reader-sidebar-location';
+      where.textContent = location;
+      meta.appendChild(where);
+    }
+    li.appendChild(meta);
+
     const text = document.createElement('span');
     text.className = 'lightink-reader-sidebar-text';
     // 笔记优先显示备注（fallback quote），避免 quote 遮蔽备注（R4 编辑结果可见）。
@@ -128,24 +140,31 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
         ? annotation.note ?? annotation.quote
         : annotation.quote ?? annotation.note;
     text.textContent = body ?? deps.t(`annotation.kind.${annotation.kind}`);
+    li.appendChild(text);
 
-    li.append(kind, text);
-
-    const location = locationText(annotation, deps.t);
-    if (location !== null) {
-      const where = document.createElement('span');
-      where.className = 'lightink-reader-sidebar-location';
-      where.textContent = location;
-      li.appendChild(where);
+    if (
+      annotation.kind === 'note' &&
+      annotation.quote !== undefined &&
+      annotation.quote !== '' &&
+      annotation.note !== undefined &&
+      annotation.note !== '' &&
+      annotation.note !== annotation.quote
+    ) {
+      const quote = document.createElement('span');
+      quote.className = 'lightink-reader-sidebar-quote';
+      quote.textContent = annotation.quote;
+      li.appendChild(quote);
     }
+
+    const actions = document.createElement('div');
+    actions.className = 'lightink-reader-sidebar-actions';
 
     const jump = document.createElement('button');
     jump.type = 'button';
     jump.className = 'lightink-reader-sidebar-jump';
     jump.textContent = deps.t('annotation.jump');
     jump.addEventListener('click', () => deps.onJump(annotation));
-
-    li.appendChild(jump);
+    actions.appendChild(jump);
 
     if (annotation.kind === 'note' && deps.onEditNote !== undefined) {
       const edit = document.createElement('button');
@@ -153,18 +172,26 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
       edit.className = 'lightink-reader-sidebar-edit';
       edit.textContent = deps.t('annotation.edit');
       edit.addEventListener('click', () => deps.onEditNote?.(annotation));
-      li.appendChild(edit);
+      actions.appendChild(edit);
     }
 
     if (deps.onRemove !== undefined) {
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'lightink-reader-sidebar-remove';
-      remove.textContent = '×';
+      remove.textContent = deps.t('annotation.remove');
       remove.setAttribute('aria-label', deps.t('annotation.remove'));
       remove.addEventListener('click', () => deps.onRemove?.(annotation));
-      li.appendChild(remove);
+      actions.appendChild(remove);
     }
+    li.appendChild(actions);
+    li.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('button') !== null) {
+        return;
+      }
+      deps.onJump(annotation);
+    });
     return li;
   };
 

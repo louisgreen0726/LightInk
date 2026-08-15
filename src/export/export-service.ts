@@ -11,6 +11,7 @@
 import {
   buildHtmlDocument,
   embedImages,
+  outlineFromHeadingHtml,
   UnsafeCssBoundaryError,
   type HtmlExportOptions,
 } from './html-export.js';
@@ -132,12 +133,14 @@ async function assembleActiveTab(
       null,
     );
   }
+  const outlined = outlineFromHeadingHtml(embedded.html);
   return {
     options: {
       title: snap.title,
       theme: deps.getTheme(),
-      bodyHtml: embedded.html,
+      bodyHtml: outlined.bodyHtml,
       cssText: deps.getCssText(),
+      outline: outlined.outline,
     },
     missingImages: embedded.missing,
   };

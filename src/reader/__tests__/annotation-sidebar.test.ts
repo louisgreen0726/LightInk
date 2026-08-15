@@ -95,6 +95,11 @@ describe('annotation-sidebar 重做', () => {
         ?.textContent;
     expect(textOf('h1')).toBe('pdf 文字'); // highlight 显示 quote
     expect(textOf('n1')).toBe('旧备注'); // note 优先显示 note（不被 quote 遮蔽）
+    expect(
+      sidebar.element.querySelector(
+        '[data-annotation-id="n1"] .lightink-reader-sidebar-quote',
+      )?.textContent,
+    ).toBe('txt 片段');
 
     const locations = Array.from(
       sidebar.element.querySelectorAll('.lightink-reader-sidebar-location'),
@@ -158,6 +163,9 @@ describe('annotation-sidebar 重做', () => {
     expect(edits).toEqual(['n1']);
     expect(jumps).toEqual(['h1']);
     expect(removals).toEqual(['h1']);
+
+    (byId('b1').querySelector('.lightink-reader-sidebar-text') as HTMLElement).click();
+    expect(jumps).toEqual(['h1', 'b1']);
   });
 });
 
@@ -169,6 +177,7 @@ describe('note-dialog', () => {
     const saved = showNoteDialog(document, '初始', { t: t as never });
     const textarea = dialogTextarea();
     expect(textarea.value).toBe('初始');
+    expect(document.querySelector('.lightink-note-quote')).toBeNull();
     textarea.value = '新备注';
     (
       document.querySelector<HTMLButtonElement>('.lightink-modal-btn--primary')!
@@ -185,5 +194,29 @@ describe('note-dialog', () => {
     const escaped = showNoteDialog(document, '', { t: t as never });
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await expect(escaped).resolves.toBeNull();
+  });
+
+  it('传入划选原文时显示引用预览，编辑态用编辑标题', async () => {
+    const pending = showNoteDialog(document, '', { t: t as never }, '划选的句子');
+    expect(document.querySelector('.lightink-note-quote')?.textContent).toBe('划选的句子');
+    expect(document.querySelector('.lightink-note-title')?.textContent).toBe(
+      'annotation.noteDialog.title',
+    );
+    expect(document.querySelector('.lightink-note-label')?.textContent).toBe(
+      'annotation.noteDialog.quoteLabel',
+    );
+    (
+      document.querySelector<HTMLButtonElement>('.lightink-modal-btn--plain')!
+    ).click();
+    await expect(pending).resolves.toBeNull();
+
+    const editing = showNoteDialog(document, '旧备注', { t: t as never, editing: true });
+    expect(document.querySelector('.lightink-note-title')?.textContent).toBe(
+      'annotation.noteDialog.editTitle',
+    );
+    (
+      document.querySelector<HTMLButtonElement>('.lightink-note-close')!
+    ).click();
+    await expect(editing).resolves.toBeNull();
   });
 });

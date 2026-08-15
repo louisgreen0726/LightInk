@@ -9,7 +9,7 @@
 
 import type { MessageKey } from '../i18n/messages.js';
 
-export type SelectionToolbarAction = 'highlight' | 'note' | 'removeHighlight';
+export type SelectionToolbarAction = 'highlight' | 'note' | 'copy' | 'removeHighlight';
 
 export interface SelectionToolbarRect {
   left: number;
@@ -82,8 +82,9 @@ export function createSelectionToolbar(deps: SelectionToolbarDeps): SelectionToo
 
   const highlightButton = makeButton('highlight', 'annotation.highlight');
   const noteButton = makeButton('note', 'annotation.note');
+  const copyButton = makeButton('copy', 'annotation.copy');
   const removeButton = makeButton('removeHighlight', 'annotation.removeHighlight');
-  root.append(highlightButton, noteButton, removeButton);
+  root.append(highlightButton, noteButton, copyButton, removeButton);
 
   /** 显示期间点击工具栏外部即隐藏（capture：先于正文点击收尾）。 */
   const onPointerDownOutside = (event: Event): void => {

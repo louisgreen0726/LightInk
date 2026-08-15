@@ -10,8 +10,10 @@
 
 export const FONT_SCALE_STORAGE_KEY = 'lightink.fontScale';
 
-/** Discrete steps (≈ −15% … +50% around the tier baseline). */
-export const FONT_SCALE_STEPS = [0.85, 0.925, 1, 1.125, 1.25, 1.375, 1.5] as const;
+/** Discrete steps (≈ −15% … +400% around the tier baseline). */
+export const FONT_SCALE_STEPS = [
+  0.85, 0.925, 1, 1.125, 1.25, 1.375, 1.5, 1.75, 2, 2.5, 3, 4, 5,
+] as const;
 
 export type FontScaleStep = (typeof FONT_SCALE_STEPS)[number];
 
@@ -116,6 +118,10 @@ export function installFontScale(
     scale = next;
     root.style.setProperty('--lightink-font-scale', String(next));
     saveFontScale(storage, next);
+    // PDF 页宿主不走 CSS zoom，需按新字号重栅格化（reader-view 监听此事件）。
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: next }));
+    }
     return next;
   };
 

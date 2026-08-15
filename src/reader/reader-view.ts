@@ -35,6 +35,8 @@ import {
   type SelectionToolbar,
 } from './selection-toolbar.js';
 import { showNoteDialog } from './note-dialog.js';
+import { outlineFromEntries } from './outline.js';
+import type { OutlineItem } from '../outline/outline-model.js';
 import {
   canWrapSearchMark,
   createSearchPanel,
@@ -83,6 +85,10 @@ th, td { padding: 0.35rem 0.5rem; border: 1px solid currentColor; }
 pre { overflow-x: auto; white-space: pre-wrap; }
 a { color: inherit; text-decoration: underline; }
 mark.lightink-reader-highlight { background: #f2d675; color: #111; }
+mark.lightink-reader-highlight[data-annotation-kind='note'] {
+  background: rgba(154, 88, 40, 0.22);
+  box-shadow: inset 0 -0.12em 0 #9a5828;
+}
 .lightink-remote-image-placeholder { display: flex; align-items: center; min-height: 2.5rem; }
 `;
 
@@ -118,8 +124,16 @@ function cssEscape(value: string): string {
 }
 
 /** 文本层相关变更：层容器插入，或层内部 childList 变更（pdfjs TextLayer.render 异步追加 span）。 */
+function isEndOfContent(node: Node): boolean {
+  return node.nodeType === 1 && (node as Element).classList.contains('endOfContent');
+}
+
 export function isTextLayerMutation(records: readonly MutationRecord[]): boolean {
   return records.some((record) => {
+    const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+    if (nodes.length > 0 && nodes.every(isEndOfContent)) {
+      return false;
+    }
     for (const node of Array.from(record.addedNodes)) {
       if (
         node.nodeType === 1 &&
@@ -132,7 +146,8 @@ export function isTextLayerMutation(records: readonly MutationRecord[]): boolean
     return (
       target.nodeType === 1 &&
       typeof (target as Element).closest === 'function' &&
-      (target as Element).closest('.lightink-reader-text-layer') !== null
+      (target as Element).closest('.lightink-reader-text-layer') !== null &&
+      !(target as Element).classList.contains('endOfContent')
     );
   });
 }
@@ -219,6 +234,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     frame: HTMLIFrameElement | null;
   } | null = null;
   let loadedExt = '';
+  let readerOutline: OutlineItem[] = [];
+  let exportChapters: ReaderChapter[] = [];
   let loadGeneration = 0;
   let activeLoadController: AbortController | null = null;
   let destroyed = false;
@@ -336,9 +353,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     selectionToolbar?.hide();
   };
 
-  /** 工具栏动作派发（R3）：确认后才创建/移除标注。 */
+  /** 工具栏动作派发（R3）：确认后才创建/移除标注；复制始终可用。 */
   const ensureSelectionToolbar = (): void => {
-    if (selectionToolbar !== null || deps.writeAnnotations === undefined) {
+    if (selectionToolbar !== null) {
       return;
     }
     selectionToolbar = createSelectionToolbar({
@@ -364,10 +381,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
           return;
         }
+        if (action === 'copy') {
+          void navigator.clipboard?.writeText(pending.quote).catch(() => undefined);
+          return;
+        }
+        if (deps.writeAnnotations === undefined) {
+          return;
+        }
         if (action === 'note') {
           void (async () => {
             const generation = loadGeneration;
-            const input = await showNoteDialog(document, '', { t });
+            const input = await showNoteDialog(document, '', { t }, pending.quote);
             if (input === null) {
               return; // 取消：保留选区、不产生标注
             }
@@ -544,6 +568,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         if (loc.format === 'pdf' && pdfHandle !== null) {
           pdfHandle.scrollToPage(loc.page);
           syncPageState();
+          pageHost
+            .querySelector<HTMLElement>(
+              `[data-annotation-id="${cssEscape(annotation.id)}"]`,
+            )
+            ?.scrollIntoView({ block: 'center' });
           return;
         }
         if (loc.format === 'cbz') {
@@ -596,7 +625,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       onEditNote: (annotation) => {
         void (async () => {
           const generation = loadGeneration;
-          const input = await showNoteDialog(document, annotation.note ?? '', { t });
+          const input = await showNoteDialog(
+            document,
+            annotation.note ?? '',
+            { t, editing: true },
+            annotation.quote,
+          );
           if (input === null) {
             return;
           }
@@ -653,10 +687,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       .map((frame) => frame.contentDocument)
       .filter((doc): doc is Document => doc !== null && doc.body !== null);
 
-  /** PDF 文本层高亮：把含 anchor 的 pdf 标注渲染到对应页文本层（幂等，层未就绪则跳过）。 */
+  /** PDF 文本层标注：把含 anchor 的高亮/笔记渲染到对应页文本层（幂等，层未就绪则跳过）。 */
   const renderPdfHighlights = (): void => {
     for (const hl of annotations) {
-      if (hl.kind !== 'highlight') {
+      if (hl.kind !== 'highlight' && hl.kind !== 'note') {
         continue;
       }
       const locator = hl.locator;
@@ -679,7 +713,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       }
       const range = resolveTextQuoteRange(layer, locator.anchor);
       if (range !== null && !range.collapsed) {
-        markTextRange(layer, range, hl.id);
+        markTextRange(layer, range, hl.id, hl.kind);
       }
     }
   };
@@ -710,7 +744,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   /** PDF 文本层选区（主文档 DOM，无 iframe 偏移）：捕获文字级定位并唤起工具栏。 */
   const onPageHostSelection = (): void => {
-    if (deps.writeAnnotations === undefined || pdfHandle === null) {
+    if (pdfHandle === null) {
       return;
     }
     const selection = typeof window !== 'undefined' ? window.getSelection() : null;
@@ -936,7 +970,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (PAGE_EXTS.has(loadedExt)) {
       return;
     }
-    const highlights = annotations.filter((a) => a.kind === 'highlight' && a.quote !== undefined);
+    const highlights = annotations.filter(
+      (a) => (a.kind === 'highlight' || a.kind === 'note') && a.quote !== undefined,
+    );
     for (const hl of highlights) {
       // 幂等：该标注的 <mark> 已存在则跳过，避免重复嵌套包裹。
       const documents = flowDocuments();
@@ -962,7 +998,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       }
       const range = resolveTextQuoteRange(doc.body, locator);
       if (range !== null && !range.collapsed) {
-        markTextRange(doc.body, range, hl.id);
+        markTextRange(doc.body, range, hl.id, hl.kind);
       }
     }
   };
@@ -977,9 +1013,6 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     body: HTMLElement,
     frame: HTMLIFrameElement,
   ): void => {
-    if (deps.writeAnnotations === undefined) {
-      return;
-    }
     const text = selection?.toString().trim() ?? '';
     if (selection === null || selection.rangeCount === 0 || text.length === 0) {
       hideSelectionToolbar();
@@ -1026,6 +1059,26 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       },
       { canRemoveHighlight: existingMark !== null },
     );
+  };
+
+  const jumpToOutlineItem = (item: OutlineItem): void => {
+    if (item.page !== undefined) {
+      if (pdfHandle !== null) {
+        pdfHandle.scrollToPage(item.page);
+        syncPageState();
+        return;
+      }
+      if (cbzHandle !== null) {
+        cbzHandle.scrollToPage(item.page);
+        syncPageState();
+      }
+      return;
+    }
+    if (item.chapter !== undefined) {
+      scrollHost
+        .querySelector<HTMLElement>(`.lightink-reader-chapter[data-chapter-index="${item.chapter}"]`)
+        ?.scrollIntoView({ block: 'start' });
+    }
   };
 
   const renderChapters = (chapters: ReaderChapter[]): void => {
@@ -1175,9 +1228,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     stagedHost.hidden = false;
     stagedHost.dataset.readerActive = 'true';
     if (ext === 'pdf') {
+      stagedHost.dataset.readerFormat = 'pdf';
       const pdf = await renderPdfInto(bytes, stagedHost, signal);
       return { host: stagedHost, pdf, cbz: null };
     }
+    stagedHost.dataset.readerFormat = 'cbz';
     const cbz = await renderCbzInto(bytes, stagedHost, signal);
     return { host: stagedHost, pdf: null, cbz };
   };
@@ -1243,6 +1298,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     renderHighlights(); // flow/txt 正文与 PDF 文本层（含旧 anchor 数据重渲染）
     ensureSidebar();
   };
+
+  const onFontScaleChange = (): void => {
+    if (destroyed || pdfHandle === null) {
+      return;
+    }
+    void pdfHandle.rerender();
+  };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('lightink:font-scale', onFontScaleChange);
+  }
 
   // PDF 连续滚动：←/→ 滚到上/下一页，+/- 缩放，0 还原。
   root.addEventListener('keydown', (event) => {
@@ -1320,6 +1385,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       activeLoadController?.abort();
       annotationWriteQueue.invalidate();
       hideSelectionToolbar();
+      readerOutline = [];
+      exportChapters = [];
       closeOpenNoteDialog(); // 打开中的笔记弹层经 Escape 正规 release（续体守卫丢弃迟到保存）
       closePdfSearch(); // 切换文档清掉搜索状态与命中 overlay
       const controller = new AbortController();
@@ -1361,6 +1428,18 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           contentHash = null;
           sidebar?.render(annotations);
           commitStagedPages(staged);
+          readerOutline =
+            staged.pdf !== null
+              ? await staged.pdf.outline()
+              : outlineFromEntries(
+                  Array.from({ length: staged.cbz?.totalPages ?? 0 }, (_, index) => ({
+                    title: t('annotation.location.page', { page: String(index + 1) }),
+                  })),
+                  'page',
+                );
+          if (!isCurrent()) {
+            return;
+          }
         } else {
           const content = await (deps.parseContent ?? parseReaderContent)(
             filePath,
@@ -1387,6 +1466,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           flowContentDispose = content.dispose ?? null;
           try {
             renderChapters(content.chapters);
+            exportChapters = content.chapters;
+            readerOutline = outlineFromEntries(
+              content.chapters.map((chapter, index) => ({
+                title: chapter.title.trim() || t('reader.chapter', { n: String(index + 1) }),
+              })),
+              'chapter',
+            );
           } catch (error) {
             flowContentDispose?.();
             flowContentDispose = previousFlowDispose;
@@ -1448,6 +1534,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       selectionToolbar?.destroy();
       selectionToolbar = null;
       pendingSelection = null;
+      readerOutline = [];
+      exportChapters = [];
       searchGeneration += 1;
       if (searchDebounce !== null) {
         clearTimeout(searchDebounce);
@@ -1462,6 +1550,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       pageHost.removeEventListener('mouseup', onPageHostSelection);
       textLayerObserver?.disconnect();
       textLayerObserver = null;
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('lightink:font-scale', onFontScaleChange);
+      }
       closeOpenNoteDialog();
       setReaderPhase('destroyed', true);
       stateListeners.clear();
@@ -1479,6 +1570,21 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     toggleSidebar: () => setSidebarVisible(!sidebarVisible),
     isSidebarVisible: () => sidebarVisible,
     openSearch,
+    getOutline: () => readerOutline,
+    jumpToOutlineItem,
     isAnnotationEnabled: () => annotationsEnabled,
+    getExportHtml: () => {
+      if (exportChapters.length === 0) {
+        return null;
+      }
+      const escape = (value: string): string =>
+        value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return exportChapters
+        .map((chapter, index) => {
+          const title = chapter.title.trim() || t('reader.chapter', { n: String(index + 1) });
+          return `<section class="lightink-export-chapter"><h1>${escape(title)}</h1>${chapter.html}</section>`;
+        })
+        .join('');
+    },
   };
 }

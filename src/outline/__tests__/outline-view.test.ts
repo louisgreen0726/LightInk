@@ -303,6 +303,27 @@ describe('createOutlineView 跳转', () => {
     expect(h2.scrollIntoView).toHaveBeenCalled();
     view.destroy();
   });
+
+  it('阅读器大纲优先于 markdown，点击走 jumpToReaderOutlineItem', () => {
+    const jumps: Array<{ text: string; page?: number; chapter?: number }> = [];
+    const view = createOutlineView({
+      doc: fakeDocument(),
+      getActiveHost: () => null,
+      getActiveMarkdown: () => '# Markdown heading\n',
+      getActiveReaderOutline: () => [
+        { level: 1, text: '第一章', anchor: 0, page: 3 },
+        { level: 2, text: '1.1', anchor: 1, page: 4 },
+      ],
+      jumpToReaderOutlineItem: (item) => {
+        jumps.push({ text: item.text, page: item.page, chapter: item.chapter });
+      },
+    });
+    expect(itemTexts(view)).toEqual(['第一章', '1.1']);
+    expect(bodyOf(view).children[1].classList.contains('level-2')).toBe(true);
+    (bodyOf(view).children[0] as FakeElement).click();
+    expect(jumps).toEqual([{ text: '第一章', page: 3, chapter: undefined }]);
+    view.destroy();
+  });
 });
 
 describe('createOutlineView 刷新', () => {

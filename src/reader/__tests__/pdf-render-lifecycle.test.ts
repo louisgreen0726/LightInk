@@ -88,6 +88,7 @@ const originalIntersectionObserver = globalThis.IntersectionObserver;
 beforeEach(() => {
   globalThis.IntersectionObserver =
     IdleIntersectionObserver as unknown as typeof IntersectionObserver;
+  document.documentElement.style.setProperty('--lightink-font-scale', '1');
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
     {} as CanvasRenderingContext2D,
   );
@@ -122,7 +123,13 @@ function mockPdf(): {
   };
   const destroy = vi.fn(async () => undefined);
   pdfRuntime.getDocument.mockReturnValue({
-    promise: Promise.resolve({ numPages: 1, getPage: vi.fn(async () => page) }),
+    promise: Promise.resolve({
+      numPages: 1,
+      getPage: vi.fn(async () => page),
+      getOutline: vi.fn(async () => []),
+      getDestination: vi.fn(async () => null),
+      getPageIndex: vi.fn(async () => 0),
+    }),
     destroy,
   });
   return { tasks, destroy, getTextContent };
@@ -184,7 +191,7 @@ describe('PDF text layer', () => {
     const layer = pdfRuntime.textLayerInstances[0]!;
     expect(layer.container.classList.contains('lightink-reader-text-layer')).toBe(true);
     expect(layer.container.parentElement?.className).toBe('lightink-reader-page-slot');
-    // 文本层用 CSS 尺寸 viewport（scale，不含 dpr）与 --total-scale-factor 约定。
+    // 文本层用 CSS 尺寸 viewport（controller.scale × 字号，不含 dpr）。
     expect(layer.options.viewport.width).toBe(100 * 1.25);
     expect(layer.container.style.getPropertyValue('--total-scale-factor')).toBe('1.25');
     layer.resolveRender();
@@ -231,6 +238,26 @@ describe('PDF text layer', () => {
       expect(slot?.querySelector('.lightink-reader-text-layer')).toBeNull();
       expect(slot?.querySelector('canvas')).not.toBeNull();
     });
+    await handle.destroy();
+  });
+
+  it('multiplies the text-layer viewport by the reading font scale', async () => {
+    document.documentElement.style.setProperty('--lightink-font-scale', '1.25');
+    const runtime = mockPdf();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const handle = await renderPdfInto(new Uint8Array([1]), container);
+
+    const rerendering = handle.rerender();
+    await waitForTask(runtime.tasks, 1);
+    runtime.tasks[0]!.resolve();
+    await rerendering;
+
+    await vi.waitFor(() => expect(pdfRuntime.textLayerInstances).toHaveLength(1));
+    const layer = pdfRuntime.textLayerInstances[0]!;
+    expect(layer.options.viewport.width).toBe(100 * 1.25);
+    expect(layer.container.style.getPropertyValue('--total-scale-factor')).toBe('1.25');
+    layer.resolveRender();
     await handle.destroy();
   });
 });

@@ -10,6 +10,8 @@
  * 订阅只观察状态，不参与格式渲染生命周期。
  */
 
+import type { OutlineItem } from '../outline/outline-model.js';
+
 export type ReaderPhase =
   | 'empty'
   | 'loading'
@@ -65,8 +67,14 @@ export interface ReaderInstance {
   isSidebarVisible(): boolean;
   /** 打开 PDF 内搜索面板（非 PDF 文档空操作；旧宿主/测试 stub 可缺省）。 */
   openSearch?(): void;
+  /** 当前文档大纲（PDF 书签 / 流式章节 / CBZ 页）；未就绪为空。 */
+  getOutline(): readonly OutlineItem[];
+  /** 跳转到大纲条目（PDF 按页，流式按章节）。 */
+  jumpToOutlineItem(item: OutlineItem): void;
   /** 当前文档是否启用了标注（取决于 content_hash / 标注存储是否可用）。 */
   isAnnotationEnabled(): boolean;
+  /** 流式阅读内容的导出 HTML（章节标题 + 正文）；页式格式返回 null。 */
+  getExportHtml?(): string | null;
 }
 
 export interface ReaderLoadOptions {

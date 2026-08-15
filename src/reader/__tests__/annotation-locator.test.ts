@@ -28,8 +28,11 @@ describe('annotation text quote locators', () => {
     const resolved = resolveTextQuoteRange(paragraph, anchor)!;
     expect(resolved.toString()).toBe('pha beta gam');
 
-    expect(markTextRange(paragraph, resolved, 'cross-node')).toBe(3);
+    expect(markTextRange(paragraph, resolved, 'cross-node', 'note')).toBe(3);
     expect(paragraph.querySelectorAll('mark')).toHaveLength(3);
+    expect(
+      paragraph.querySelector('mark')?.getAttribute('data-annotation-kind'),
+    ).toBe('note');
     expect(paragraph.querySelector('strong')).not.toBeNull();
     expect(paragraph.textContent).toBe('Alpha beta gamma');
 

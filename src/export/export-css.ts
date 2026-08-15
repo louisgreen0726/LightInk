@@ -74,6 +74,26 @@ table { border-collapse: collapse; margin: 8px 0; }
 th, td { border: 1px solid var(--lightink-border); padding: 4px 10px; }
 th { background: var(--lightink-bg-elevated); }
 .lightink-math-block, .lightink-mermaid { margin: 8px 0; }
+.lightink-export-toc {
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--lightink-border);
+  border-radius: 6px;
+  background: var(--lightink-bg-elevated);
+}
+.lightink-export-toc ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lightink-export-toc-item { margin: 0.15rem 0; }
+.lightink-export-toc-item.level-2 { padding-left: 1rem; }
+.lightink-export-toc-item.level-3 { padding-left: 2rem; }
+.lightink-export-toc-item.level-4 { padding-left: 3rem; }
+.lightink-export-toc-item.level-5 { padding-left: 4rem; }
+.lightink-export-toc-item.level-6 { padding-left: 5rem; }
+.lightink-export-toc a { color: inherit; text-decoration: none; }
+.lightink-export-toc a:hover { color: var(--lightink-accent); }
 .lightink-math-error, .lightink-mermaid-error { color: var(--lightink-accent); }
 ::selection { background: var(--lightink-selection); }
 `;

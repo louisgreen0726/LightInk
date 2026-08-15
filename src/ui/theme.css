@@ -2559,6 +2559,10 @@ body.lightink-outline-resizing * {
     min-width: 0;
   }
 
+  .lightink-note-dialog {
+    padding: 0;
+  }
+
   .lightink-modal-actions {
     flex-wrap: wrap;
   }

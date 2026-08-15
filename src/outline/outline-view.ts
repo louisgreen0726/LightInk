@@ -2,11 +2,11 @@
  * 大纲侧栏视图（T7, R7）：实时大纲列表 + 点击跳转 + 三态显示。
  *
  * 职责：
- *   - 按活动标签的 markdown 内容重建大纲（`buildOutline`，见 outline-model）；
+ *   - Markdown：按活动标签内容重建大纲（`buildOutline`）；
+ *   - 阅读器：消费 ReaderInstance.getOutline（PDF 书签 / EPUB 章节 / CBZ 页）；
  *   - `scheduleRefresh()` 防抖重算（默认 250ms），由 TabManager 的
  *     `onActiveContentChanged` 回调驱动（切换标签/活动标签内容变化）；
- *   - 点击条目 → 在活动标签宿主 DOM 中按序号锚点定位第 n 个 h1-h6
- *     并 `scrollIntoView({ block: 'start' })`；
+ *   - 点击条目 → Markdown 按序号锚点滚到 h1-h6；阅读器走 jumpToOutlineItem；
  *   - 显示三态循环（菜单 / Ctrl+Shift+L / 侧栏按钮）：
  *       expanded → rail（窄条 »）→ hidden（完全隐藏）→ expanded
  *   - T4/R2 折叠联动：条目左侧三角显示编辑器对应标题的折叠态、点击切换；
@@ -45,6 +45,10 @@ export interface OutlineViewDeps {
   getActiveHost(): HTMLElement | null;
   /** 当前活动标签的 markdown（无活动标签或读取失败时返回 null）。 */
   getActiveMarkdown(): string | null;
+  /** 阅读器大纲；缺省或返回 null 时回退 markdown。 */
+  getActiveReaderOutline?: () => readonly OutlineItem[] | null;
+  /** 阅读器大纲跳转；有 page/chapter 的条目优先走这里。 */
+  jumpToReaderOutlineItem?: (item: OutlineItem) => void;
   /**
    * T4/R2：当前活动 markdown 标签已折叠标题的序号列表（与 anchor 同口径）。无活动
    * markdown 标签或缺省时视为「无折叠」。供大纲渲染折叠标记态。
@@ -236,6 +240,10 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   /** 点击跳转：按序号锚点取活动宿主中第 n 个 h1-h6 并滚动到视口顶部。 */
   function scrollToItem(item: OutlineItem): void {
     try {
+      if (item.page !== undefined || item.chapter !== undefined) {
+        deps.jumpToReaderOutlineItem?.(item);
+        return;
+      }
       const host = deps.getActiveHost();
       if (host === null || typeof host.querySelectorAll !== 'function') {
         return;
@@ -259,17 +267,19 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
   }
 
   function render(): void {
+    const readerItems = deps.getActiveReaderOutline?.() ?? null;
     const markdown = deps.getActiveMarkdown();
-    if (markdown === null) {
+    if (readerItems === null && markdown === null) {
       renderEmpty(t('outline.noTab'));
       return;
     }
-    const items = buildOutline(markdown);
+    const items = readerItems ?? buildOutline(markdown ?? '');
     if (items.length === 0) {
       renderEmpty(t('outline.empty'));
       return;
     }
-    const foldedOrdinals = new Set(deps.getFoldedOrdinals?.() ?? []);
+    const foldingEnabled = readerItems === null;
+    const foldedOrdinals = new Set(foldingEnabled ? (deps.getFoldedOrdinals?.() ?? []) : []);
     // 叶子标题（无子标题）不渲染折叠三角。
     const leafAnchors = leafHeadingAnchors(items);
     // 大纲与编辑器折叠保持独立：编辑器侧折叠只隐藏编辑器正文，大纲始终渲染
@@ -287,7 +297,11 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
         // 渲染——测试不注入，故 body.children 仍是纯 item 按钮，既有断言不变）。
         // 叶子标题（无子标题）无折叠三角；标记点击 stopPropagation 不触发条目
         // 跳转，单独联动编辑器折叠。
-        if (deps.toggleFoldAtOrdinal !== undefined && !leafAnchors.has(item.anchor)) {
+        if (
+          foldingEnabled &&
+          deps.toggleFoldAtOrdinal !== undefined &&
+          !leafAnchors.has(item.anchor)
+        ) {
           const isFolded = foldedOrdinals.has(item.anchor);
           const marker = doc.createElement('span');
           marker.classList.add('lightink-outline-fold');

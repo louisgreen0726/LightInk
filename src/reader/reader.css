@@ -33,16 +33,22 @@
 }
 
 /* 页式格式：连续垂直滚动（PDF/CBZ）。默认隐藏，T5 激活页模式时显示。
-   zoom 让 Ctrl+/- 整体放大缩小整个 PDF/CBZ 页面（与流式同一缩放因子）。 */
+   不走 CSS zoom：已栅格化的 canvas 被放大只会糊。字号缩放由 pdf.ts 乘入
+   viewport 后重栅格化（见 lightink:font-scale）。CBZ 图片走 object-fit。 */
 .lightink-reader-pages {
   display: none;
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
-  overflow-x: hidden;
-  zoom: var(--lightink-font-scale, 1);
+  overflow-x: auto;
 }
 .lightink-reader-pages[data-reader-active='true'] {
   display: block;
+}
+
+/* CBZ 是位图，字号缩放仍用 CSS zoom；PDF 由栅格化倍率承担。 */
+.lightink-reader-pages[data-reader-format='cbz'] {
+  zoom: var(--lightink-font-scale, 1);
 }
 
 /* PDF 连续滚动：每页一个 slot 占位，懒栅格化 canvas + 文本层。 */
@@ -82,12 +88,35 @@
   user-select: text;
 }
 
-.lightink-reader-text-layer > span {
+.lightink-reader-text-layer > :not(.endOfContent),
+.lightink-reader-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
   --font-height: 0;
   font-size: calc(var(--text-scale-factor) * var(--font-height));
   --scale-x: 1;
   --rotate: 0deg;
   transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.lightink-reader-text-layer .markedContent {
+  display: contents;
+}
+
+.lightink-reader-text-layer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+
+.lightink-reader-text-layer.selecting .endOfContent {
+  top: 0;
+}
+
+.lightink-reader-text-layer br::selection {
+  background: transparent;
 }
 
 /* pdfjs 约定：页面 /Rotate 时容器带 data-main-rotation，按官方规则旋转。 */
@@ -102,14 +131,21 @@
 }
 
 .lightink-reader-text-layer ::selection {
-  background: var(--lightink-annotation, rgba(242, 214, 117, 0.5));
+  background: var(--lightink-annotation-wash, rgba(154, 88, 40, 0.32));
   color: transparent;
 }
 
-/* PDF 持久高亮（T5 markTextRange 于文本层内）与搜索命中 overlay（T6）。 */
+/* PDF 持久高亮：半透明叠在 canvas 字形上，不能用不透明 --lightink-annotation。 */
 .lightink-reader-text-layer mark.lightink-reader-highlight {
-  background: var(--lightink-annotation);
+  background: var(--lightink-annotation-wash, rgba(154, 88, 40, 0.32));
   color: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+.lightink-reader-text-layer mark.lightink-reader-highlight[data-annotation-kind='note'] {
+  background: color-mix(in srgb, var(--lightink-accent) 22%, transparent);
+  box-shadow: inset 0 -0.12em 0 var(--lightink-accent);
 }
 
 .lightink-reader-text-layer .lightink-reader-search-mark {
@@ -121,7 +157,7 @@
 
 .lightink-reader-text-layer .lightink-reader-search-mark--current {
   position: initial;
-  background: var(--lightink-accent);
+  background: color-mix(in srgb, var(--lightink-accent) 45%, transparent);
   color: transparent;
   outline: 1px solid var(--lightink-fg);
 }
@@ -295,7 +331,7 @@
   max-width: min(100%, 32rem);
 }
 
-/* 标注高亮（T6）。 */
+/* 流式正文高亮（T6）：文字在 mark 内，用不透明主题色。 */
 .lightink-reader-highlight {
   background: var(--lightink-annotation);
   border-radius: 2px;
@@ -303,16 +339,29 @@
   cursor: pointer;
 }
 
-/* 标注侧栏（T6）：默认隐藏；桌面作为 flex 子项占位，窄窗改为覆盖式 drawer。
-   .lightink-reader--sidebar 由 reader-view 在 toggleSidebar 时加到根节点。 */
+.lightink-reader-highlight[data-annotation-kind='note'] {
+  background: color-mix(in srgb, var(--lightink-accent) 22%, var(--lightink-bg));
+  box-shadow: inset 0 -0.12em 0 var(--lightink-accent);
+}
+
+/*
+ * 标注侧栏：覆盖在阅读区右侧，不挤占 PDF/流式正文宽度。
+ * .lightink-reader--sidebar 由 reader-view 在 toggleSidebar 时加到根节点。
+ */
 .lightink-reader-sidebar {
-  flex: 0 0 16rem;
-  width: 16rem;
-  overflow-y: auto;
+  position: absolute;
+  inset: 0 0 0 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(20rem, calc(100% - 2.5rem));
+  max-width: 22rem;
+  overflow: hidden;
   background: var(--lightink-bg-elevated);
-  border-left: 1px solid color-mix(in srgb, var(--lightink-fg) 12%, transparent);
-  padding: 0.75rem;
-  font-size: 0.9em;
+  border-left: 1px solid var(--lightink-border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  padding: 0;
+  font-size: var(--lightink-font-size-ui, 0.8rem);
   z-index: 3;
 }
 .lightink-reader:not(.lightink-reader--sidebar) .lightink-reader-sidebar {
@@ -323,24 +372,30 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  flex: 0 0 auto;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--lightink-border);
   font-weight: 600;
-  margin-bottom: 0.5rem;
   color: var(--lightink-fg);
 }
 .lightink-reader-sidebar-close {
-  display: none;
-  width: 2rem;
-  height: 2rem;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 3px;
-  color: var(--lightink-fg);
+  border-radius: 4px;
+  color: var(--lightink-muted);
   background: transparent;
-  font-size: 1.2rem;
+  font-size: 1.15rem;
+  line-height: 1;
   cursor: pointer;
 }
 .lightink-reader-sidebar-close:hover {
-  background: color-mix(in srgb, var(--lightink-fg) 8%, transparent);
+  background: var(--lightink-accent-soft);
+  color: var(--lightink-fg);
 }
 .lightink-reader-sidebar-close:focus-visible {
   outline: 2px solid var(--lightink-accent);
@@ -352,60 +407,114 @@
 .lightink-reader-sidebar-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0.5rem 0.65rem 0.85rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .lightink-reader-sidebar-item {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.5rem;
-  margin-bottom: 0.5rem;
+  gap: 0.3rem;
+  padding: 0.55rem 0.6rem;
+  margin-bottom: 0.45rem;
   background: var(--lightink-bg);
-  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--lightink-border) 80%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.lightink-reader-sidebar-item:hover {
+  border-color: var(--lightink-accent);
+}
+.lightink-reader-sidebar-item-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 .lightink-reader-sidebar-kind {
-  font-size: 0.75em;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  opacity: 0.7;
+  color: var(--lightink-muted);
+}
+.lightink-reader-sidebar-kind--highlight {
+  color: var(--lightink-accent);
+}
+.lightink-reader-sidebar-kind--note {
+  color: var(--lightink-accent);
 }
 .lightink-reader-sidebar-text {
   color: var(--lightink-fg);
   word-break: break-word;
+  line-height: 1.45;
+}
+.lightink-reader-sidebar-quote {
+  color: var(--lightink-muted);
+  font-size: 0.9em;
+  line-height: 1.4;
+  word-break: break-word;
+  border-left: 2px solid var(--lightink-border);
+  padding-left: 0.45rem;
 }
 /* 定位信息（页码/章节）与类型筛选（R4）。 */
 .lightink-reader-sidebar-location {
   font-size: 0.75em;
   color: var(--lightink-muted);
+  white-space: nowrap;
 }
 .lightink-reader-sidebar-filters {
   display: flex;
   gap: 0.25rem;
   flex-wrap: wrap;
+  flex: 0 0 auto;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 1px solid var(--lightink-border);
 }
 .lightink-reader-sidebar-filter {
   cursor: pointer;
-  background: var(--lightink-bg-elevated);
-  border: 1px solid color-mix(in srgb, var(--lightink-fg) 15%, transparent);
-  border-radius: 3px;
-  padding: 0.1rem 0.5rem;
-  font-size: 0.85em;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8em;
+  color: var(--lightink-muted);
+}
+.lightink-reader-sidebar-filter:hover {
+  background: var(--lightink-accent-soft);
   color: var(--lightink-fg);
 }
 .lightink-reader-sidebar-filter--active {
   background: var(--lightink-accent-soft);
   border-color: var(--lightink-accent);
+  color: var(--lightink-fg);
+}
+.lightink-reader-sidebar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
 }
 .lightink-reader-sidebar-jump,
 .lightink-reader-sidebar-edit,
 .lightink-reader-sidebar-remove {
-  align-self: flex-start;
   cursor: pointer;
-  background: var(--lightink-bg-elevated);
-  border: 1px solid color-mix(in srgb, var(--lightink-fg) 15%, transparent);
-  border-radius: 3px;
-  padding: 0.1rem 0.5rem;
-  font-size: 0.85em;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--lightink-fg) 12%, transparent);
+  border-radius: 4px;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.8em;
   color: var(--lightink-fg);
+}
+.lightink-reader-sidebar-jump:hover,
+.lightink-reader-sidebar-edit:hover {
+  background: var(--lightink-accent-soft);
+}
+.lightink-reader-sidebar-remove {
+  margin-left: auto;
+  color: var(--lightink-danger);
+}
+.lightink-reader-sidebar-remove:hover {
+  background: color-mix(in srgb, var(--lightink-danger) 12%, transparent);
 }
 .lightink-reader-sidebar-jump:focus-visible,
 .lightink-reader-sidebar-edit:focus-visible,
@@ -414,37 +523,151 @@
   outline-offset: 2px;
 }
 .lightink-reader-sidebar-empty {
-  color: var(--lightink-fg);
-  opacity: 0.6;
+  color: var(--lightink-muted);
+  padding: 0.75rem 0.25rem;
 }
 
-/* 笔记弹层输入区（R4；模态框架复用 lightink-modal-* 体系）。 */
+/* 笔记写作弹层：原文预览 + 备注输入，独立于确认弹层。 */
+.lightink-note-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(28rem, calc(100vw - 2rem));
+  min-width: 0;
+  max-height: min(36rem, calc(100vh - 2.5rem));
+  padding: 0;
+  overflow: hidden;
+}
+
+.lightink-note-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex: 0 0 auto;
+  padding: 0.85rem 1rem 0.7rem;
+  border-bottom: 1px solid var(--lightink-border);
+}
+
+.lightink-note-title {
+  margin: 0;
+}
+
+.lightink-note-close {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--lightink-muted);
+  background: transparent;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lightink-note-close:hover {
+  background: var(--lightink-accent-soft);
+  color: var(--lightink-fg);
+}
+
+.lightink-note-close:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 2px;
+}
+
+.lightink-note-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0.9rem 1rem;
+  overflow-y: auto;
+}
+
+.lightink-note-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+
+.lightink-note-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--lightink-muted);
+}
+
+.lightink-note-quote {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--lightink-border);
+  border-left: 3px solid var(--lightink-accent);
+  border-radius: 6px;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  font-size: 0.88em;
+  line-height: 1.5;
+  max-height: 7.5rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .lightink-note-textarea {
+  box-sizing: border-box;
   width: 100%;
-  min-height: 6rem;
+  min-height: 8.5rem;
   resize: vertical;
+  padding: 0.55rem 0.7rem;
   font: inherit;
+  font-size: 0.95em;
+  line-height: 1.55;
   color: var(--lightink-fg);
   background: var(--lightink-bg);
   border: 1px solid var(--lightink-border);
-  border-radius: 3px;
+  border-radius: 6px;
+  outline: none;
+}
+
+.lightink-note-textarea:focus {
+  border-color: var(--lightink-accent);
+  box-shadow: 0 0 0 3px var(--lightink-accent-soft);
+}
+
+.lightink-note-textarea::placeholder {
+  color: var(--lightink-muted);
+}
+
+.lightink-note-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  padding: 0.65rem 1rem 0.85rem;
+  border-top: 1px solid var(--lightink-border);
+}
+
+.lightink-note-hint {
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--lightink-muted);
+}
+
+.lightink-note-footer .lightink-modal-actions {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 700px) {
   .lightink-reader-sidebar {
-    position: absolute;
-    inset: 0 0 0 auto;
-    box-sizing: border-box;
     width: min(20rem, calc(100% - 2.5rem));
     max-width: calc(100% - 2.5rem);
-    padding: 0.75rem;
-    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2);
-  }
-
-  .lightink-reader-sidebar-close {
-    display: inline-grid;
-    place-items: center;
-    flex: 0 0 auto;
   }
 
   .lightink-reader--sidebar .lightink-reader-sidebar-backdrop {

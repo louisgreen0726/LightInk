@@ -207,17 +207,38 @@ pub fn read_image_base64(
 // ---------------------------------------------------------------------------
 //
 // `window.print()` → 系统打印对话框的路径依赖打印驱动，可能把内容栅格化成
-// 图片（无可选文字）。WebView2 的 `ICoreWebView2_7::PrintToPdf` 用 Chromium
-// PDF 引擎生成**含原生可选文字**的矢量 PDF，保真度与编辑器渲染一致。
+// 图片（无可选文字）。Windows 走 CDP `Page.printToPDF` + `generateDocumentOutline`：
+// 官方 `ICoreWebView2_7::PrintToPdf` 没有书签开关，导出 PDF 侧栏会是空的。
 //
 // 流程：前端把导出文档装进 #lightink-export-print-root（@media print 仅它可见），
-// 弹保存对话框取 .pdf 路径，调本命令；本命令取主窗口 WebView2 控制器 →
-// CoreWebView2 → cast ICoreWebView2_7 → PrintToPdf 写入路径。
+// 弹保存对话框取 .pdf 路径，调本命令；本命令经 CallDevToolsProtocolMethod 打
+// Page.printToPDF，把返回的 base64 写成文件。标题树变成 PDF 书签。
 //
 // 必须是 async 命令：同步命令跑在 UI 线程，任何 recv / wait_with_pump 都会堵住
 // 消息循环，导致 PrintToPdf 完成回调永远派发不了（PDF 已写出，但 IPC 永不返回，
 // 后续打开/关闭全部挂起）。async 命令在 tokio worker 上 await，主线程只负责
 // 发起 PrintToPdf 并立刻回到 run loop。
+
+/// 从 CDP `Page.printToPDF` 返回的 JSON 取出 base64 载荷。
+fn cdp_pdf_base64(json: &str) -> Result<&str, String> {
+    let key = "\"data\"";
+    let start = json
+        .find(key)
+        .ok_or_else(|| "CDP Page.printToPDF 未返回 data".to_string())?;
+    let after_key = &json[start + key.len()..];
+    let colon = after_key
+        .find(':')
+        .ok_or_else(|| "CDP Page.printToPDF JSON 无效".to_string())?;
+    let rest = after_key[colon + 1..].trim_start();
+    if !rest.starts_with('"') {
+        return Err("CDP Page.printToPDF data 不是字符串".to_string());
+    }
+    let body = &rest[1..];
+    let end = body
+        .find('"')
+        .ok_or_else(|| "CDP Page.printToPDF data 未闭合".to_string())?;
+    Ok(&body[..end])
+}
 
 #[cfg(windows)]
 #[tauri::command]
@@ -225,53 +246,55 @@ pub async fn print_webview_to_pdf(
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows::core::PCWSTR;
 
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
-    use webview2_com::PrintToPdfCompletedHandler;
-    use windows::core::Interface;
-
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
     let mut tx = Some(tx);
 
     window
         .with_webview(move |wv: tauri::webview::PlatformWebview| {
-            // 发起 PrintToPdf 后立即返回，完成回调经 oneshot 通知 worker。
-            // 绝不能用 wait_for_async_operation：其 GetMessageA 泵会嵌套消息循环，
-            // 且 completed 回调只 send 不 PostMessage，主线程永远醒不过来。
+            // 走 CDP Page.printToPDF，而不是 ICoreWebView2_7::PrintToPdf：
+            // 后者没有 generateDocumentOutline，导出 PDF 不会带书签。
             let sync_outcome = (|| -> Result<(), String> {
                 let controller = wv.controller();
                 let core = unsafe { controller.CoreWebView2() }
                     .map_err(|e| format!("取 CoreWebView2 失败: {e}"))?;
-                let core7: ICoreWebView2_7 = core
-                    .cast()
-                    .map_err(|e| format!("当前 WebView2 运行时不支持 PrintToPdf: {e}"))?;
 
-                // 路径 → UTF-16 + NUL（PCWSTR 要求）。PrintToPdf 同步复制路径，
-                // 返回后 wide 可安全释放。
-                let mut wide: Vec<u16> = std::ffi::OsStr::new(&path).encode_wide().collect();
-                wide.push(0);
-                let pcws = windows::core::PCWSTR::from_raw(wide.as_ptr());
+                let method: Vec<u16> = "Page.printToPDF"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                // 标题树 → PDF 书签；打印背景关（导出根已是浅色正文）。
+                let params = "{\"landscape\":false,\"displayHeaderFooter\":false,\"printBackground\":false,\"preferCSSPageSize\":true,\"generateDocumentOutline\":true}";
+                let params_wide: Vec<u16> = params
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
 
                 let Some(tx) = tx.take() else {
                     return Err("打印通道已关闭".to_string());
                 };
-                let handler = PrintToPdfCompletedHandler::create(Box::new(
-                    move |hr: windows::core::Result<()>, _success: bool| {
-                        let result = hr.map_err(|e| format!("PrintToPdf 失败: {e}"));
+                let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                    move |hr: windows::core::Result<()>, json: String| {
+                        let result = hr
+                            .map_err(|e| format!("Page.printToPDF 失败: {e}"))
+                            .map(|_| json);
                         let _ = tx.send(result);
                         Ok(())
                     },
                 ));
 
-                // 默认打印设置（背景由前端 @media print 强制浅色：深字白底，
-                // 不依赖「打印背景」即清晰且为矢量文字）。
-                unsafe { core7.PrintToPdf(pcws, None, &handler) }
-                    .map_err(|e| format!("PrintToPdf 失败: {e}"))
+                unsafe {
+                    core.CallDevToolsProtocolMethod(
+                        PCWSTR::from_raw(method.as_ptr()),
+                        PCWSTR::from_raw(params_wide.as_ptr()),
+                        &handler,
+                    )
+                }
+                .map_err(|e| format!("CallDevToolsProtocolMethod 失败: {e}"))
             })();
 
-            // 同步失败（如路径无效 E_INVALIDARG）不会触发 completed 回调，必须在此
-            // 通知 worker，否则 rx.await 永远挂起。
             if let Err(e) = sync_outcome {
                 if let Some(tx) = tx.take() {
                     let _ = tx.send(Err(e));
@@ -280,8 +303,12 @@ pub async fn print_webview_to_pdf(
         })
         .map_err(|e| format!("with_webview 失败: {e}"))?;
 
-    rx.await
-        .map_err(|_| "打印通道关闭（completion 未派发）".to_string())?
+    let json = rx
+        .await
+        .map_err(|_| "打印通道关闭（completion 未派发）".to_string())??;
+    let encoded = cdp_pdf_base64(&json)?;
+    let bytes = crate::asset::decode_base64(encoded)?;
+    std::fs::write(&path, bytes).map_err(|e| format!("写 PDF 失败: {e}"))
 }
 
 /// macOS：WKWebView `createPDFWithConfiguration:completionHandler:`（macOS 11+）
@@ -376,6 +403,16 @@ mod tests {
     }
 
     // -- base64 编码（与 asset.rs 解码测试向量互逆） --
+
+    #[test]
+    fn cdp_pdf_base64_extracts_payload() {
+        assert_eq!(
+            cdp_pdf_base64(r#"{"data":"SGVsbG8="}"#).unwrap(),
+            "SGVsbG8="
+        );
+        assert!(cdp_pdf_base64("{}").is_err());
+        assert!(cdp_pdf_base64(r#"{"data":1}"#).is_err());
+    }
 
     #[test]
     fn base64_encode_vectors() {

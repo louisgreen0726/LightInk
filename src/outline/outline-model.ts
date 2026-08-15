@@ -27,6 +27,9 @@ export interface OutlineItem {
   readonly text: string;
   /** 序号锚点：该标题是文档中第 n 个 heading（从 0 起，含各层级）。 */
   readonly anchor: number;
+  /** 阅读器定位：PDF 页码（1-based）或流式章节序号（0-based）。 */
+  readonly page?: number;
+  readonly chapter?: number;
 }
 
 /** 递归提取行内节点的纯文本（text/inlineCode 取 value，image 取 alt）。 */

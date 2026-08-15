@@ -16,6 +16,12 @@
  * 继续，调用方负责提示），不静默丢弃也不中断整个导出。
  */
 
+export interface HtmlExportOutlineItem {
+  readonly level: number;
+  readonly text: string;
+  readonly id: string;
+}
+
 export interface HtmlExportOptions {
   /** 文档标题（写入 <title>，会做 HTML 转义）。 */
   readonly title: string;
@@ -25,6 +31,8 @@ export interface HtmlExportOptions {
   readonly bodyHtml: string;
   /** 内嵌样式文本（生产为 buildExportCss 的产物）。 */
   readonly cssText: string;
+  /** 可选目录：写入导航 + 标题 id，供 PDF 书签定位。 */
+  readonly outline?: readonly HtmlExportOutlineItem[];
 }
 
 const STYLE_END_BOUNDARY = /<\/style/i;
@@ -53,6 +61,60 @@ export function escapeHtmlAttr(text: string): string {
   return escapeHtmlText(text).replace(/"/g, '&quot;');
 }
 
+function slugifyHeading(text: string, used: Map<string, number>): string {
+  const ascii = text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/[^\x00-\x7f]/g, '')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  const base = ascii === '' ? 'section' : ascii;
+  const count = used.get(base) ?? 0;
+  used.set(base, count + 1);
+  return count === 0 ? base : `${base}-${count + 1}`;
+}
+
+/** 按文档顺序给 h1-h6 补稳定 id，并生成与大纲侧栏同序的目录项。 */
+export function outlineFromHeadingHtml(html: string): {
+  bodyHtml: string;
+  outline: HtmlExportOutlineItem[];
+} {
+  const used = new Map<string, number>();
+  const outline: HtmlExportOutlineItem[] = [];
+  const bodyHtml = html.replace(
+    /<(h[1-6])(\s[^>]*)?>([\s\S]*?)<\/h[1-6]>/gi,
+    (full, tag: string, attrs = '', inner: string) => {
+      const text = inner.replace(/<[^>]+>/g, '').trim();
+      const existing = attrs.match(/\sid\s*=\s*("([^"]*)"|'([^']*)')/i);
+      const id = existing?.[2] ?? existing?.[3] ?? slugifyHeading(text || `section-${outline.length + 1}`, used);
+      outline.push({
+        level: Number(tag.slice(1)),
+        text: text === '' ? id : text,
+        id,
+      });
+      if (existing !== null) {
+        return full;
+      }
+      return `<${tag}${attrs} id="${escapeHtmlAttr(id)}">${inner}</${tag}>`;
+    },
+  );
+  return { bodyHtml, outline };
+}
+
+function renderExportToc(items: readonly HtmlExportOutlineItem[]): string {
+  if (items.length === 0) {
+    return '';
+  }
+  const rows = items
+    .map((item) => {
+      const indent = Math.min(6, Math.max(1, item.level));
+      return `<li class="lightink-export-toc-item level-${indent}"><a href="#${escapeHtmlAttr(item.id)}">${escapeHtmlText(item.text)}</a></li>`;
+    })
+    .join('');
+  return `<nav class="lightink-export-toc" aria-label="Outline"><ol>${rows}</ol></nav>`;
+}
+
 /**
  * 装配独立 HTML 文档：doctype + `<html data-theme>` + charset utf-8 +
  * 内嵌 `<style>` + 内容。charset 必须在文档前 1024 字节内才可靠，
@@ -61,6 +123,7 @@ export function escapeHtmlAttr(text: string): string {
 export function buildHtmlDocument(opts: HtmlExportOptions): string {
   assertSafeCssBoundary(opts.cssText);
   const theme = opts.theme.trim() === '' ? 'warm-light' : opts.theme;
+  const toc = renderExportToc(opts.outline ?? []);
   return [
     '<!DOCTYPE html>',
     `<html lang="zh-CN" data-theme="${escapeHtmlAttr(theme)}">`,
@@ -72,6 +135,7 @@ export function buildHtmlDocument(opts: HtmlExportOptions): string {
     `<style>${opts.cssText}</style>`,
     '</head>',
     '<body>',
+    ...(toc === '' ? [] : [toc]),
     opts.bodyHtml,
     '</body>',
     '</html>',

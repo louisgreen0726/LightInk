@@ -8,9 +8,12 @@
  * 返回 handle 供导航/缩放重绘。canvas/文本层真实渲染留手工验证（无 jsdom/pdf 样本的 node 测试）。
  */
 
+import type { OutlineItem } from '../../outline/outline-model.js';
+import { outlineFromPdf } from '../outline.js';
 import { ParseError } from './types.js';
 import { enforcePageCount } from './page-limits.js';
 import { findPdfMatches } from '../search-panel.js';
+import { bindTextLayerSelection } from '../text-layer-selection.js';
 import {
   isReaderLoadCancelled,
   ReaderLoadCancelledError,
@@ -114,6 +117,8 @@ export interface PdfRenderHandle {
   scrollToPage(page: number): void;
   /** 全文搜索（大小写不敏感）：按页序返回命中（页码 + 该页拼接文本偏移）。 */
   search(query: string): Promise<PdfSearchMatch[]>;
+  /** PDF 书签树拍平后的大纲（无书签则为空）。 */
+  outline(): Promise<OutlineItem[]>;
   /** 释放 pdfjs 文档资源 + 断开 observer（关闭/重开 PDF 时调用）。 */
   destroy(): Promise<void>;
 }
@@ -128,6 +133,18 @@ export interface PdfSearchMatch {
 /** 当前设备像素比（WebView2 下读 window.devicePixelRatio）。 */
 function devicePixelRatio(): number {
   return typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
+}
+
+/** 阅读字号缩放（页宿主不走 CSS zoom，栅格化时乘入 viewport）。 */
+export function readingFontScale(): number {
+  if (typeof document === 'undefined') {
+    return 1;
+  }
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue('--lightink-font-scale')
+    .trim();
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
 /**
@@ -227,11 +244,13 @@ export async function renderPdfInto(
     slot.style.height = `${Math.floor(h)}px`;
   };
 
+  const pageCssScale = (): number => controller.scale * readingFontScale();
+
   container.replaceChildren();
   for (let i = 1; i <= total; i += 1) {
     const page = await doc.getPage(i);
     throwIfReaderLoadCancelled(signal);
-    const vp = page.getViewport({ scale: controller.scale });
+    const vp = page.getViewport({ scale: pageCssScale() });
     sizes.push({ width: vp.width, height: vp.height });
     const slot = document.createElement('div');
     slot.className = 'lightink-reader-page-slot';
@@ -278,18 +297,33 @@ export async function renderPdfInto(
     const container = document.createElement('div');
     container.className = 'lightink-reader-text-layer';
     // pdfjs TextLayer 约定：容器按 CSS 变量计算宽高，缩放因子为 CSS 尺寸 scale（非 dpr）。
-    container.style.setProperty('--total-scale-factor', String(controller.scale));
+    const cssScale = pageCssScale();
+    container.style.setProperty('--total-scale-factor', String(cssScale));
     container.style.setProperty('--scale-round-x', '1px');
     container.style.setProperty('--scale-round-y', '1px');
     slot.appendChild(container);
     const layer = new pdfjs.TextLayer({
       textContentSource: textContent,
       container,
-      viewport: page.getViewport({ scale: controller.scale }),
+      viewport: page.getViewport({ scale: cssScale }),
     });
     textLayers.set(index, layer);
     try {
       await layer.render();
+      if (
+        !destroyed &&
+        !isAborted() &&
+        generation === renderGeneration &&
+        container.isConnected
+      ) {
+        const unbind = bindTextLayerSelection(container);
+        textLayers.set(index, {
+          cancel() {
+            unbind();
+            layer.cancel();
+          },
+        });
+      }
     } catch (error) {
       container.remove();
       if (
@@ -330,7 +364,8 @@ export async function renderPdfInto(
       return;
     }
     const dpr = devicePixelRatio();
-    const viewport = page.getViewport({ scale: controller.scale * dpr });
+    const cssScale = pageCssScale();
+    const viewport = page.getViewport({ scale: cssScale * dpr });
     const canvas = document.createElement('canvas');
     canvas.className = 'lightink-reader-page';
     canvas.width = Math.floor(viewport.width);
@@ -437,7 +472,7 @@ export async function renderPdfInto(
       if (destroyed || isAborted() || generation !== renderGeneration) {
         return;
       }
-      const vp = page.getViewport({ scale: controller.scale });
+      const vp = page.getViewport({ scale: pageCssScale() });
       sizes[i] = { width: vp.width, height: vp.height };
       sizeSlot(slots[i]!, vp.width, vp.height);
       // 旧画布按旧 scale 栅格化，清掉重渲染。
@@ -489,11 +524,19 @@ export async function renderPdfInto(
     return findPdfMatches(texts, query);
   };
 
+  const outline = async (): Promise<OutlineItem[]> => {
+    if (destroyed || isAborted()) {
+      return [];
+    }
+    return outlineFromPdf(doc);
+  };
+
   return {
     controller,
     rerender,
     scrollToPage,
     search,
+    outline,
     destroy: async () => {
       if (destroyed) {
         return;

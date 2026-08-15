@@ -90,11 +90,13 @@ describe('PDF 文字级标注闭环', () => {
     const resolved = resolveTextQuoteRange(rebuilt, locator.anchor!);
     expect(resolved).not.toBeNull();
     expect(resolved!.toString()).toBe('正文内容甲');
-    const marks = markTextRange(rebuilt, resolved!, 'p1');
+    const marks = markTextRange(rebuilt, resolved!, 'p1', 'note');
     expect(marks).toBeGreaterThan(0);
-    expect(
-      rebuilt.querySelector('mark.lightink-reader-highlight[data-annotation-id="p1"]'),
-    ).not.toBeNull();
+    const marked = rebuilt.querySelector(
+      'mark.lightink-reader-highlight[data-annotation-id="p1"]',
+    );
+    expect(marked).not.toBeNull();
+    expect(marked?.getAttribute('data-annotation-kind')).toBe('note');
 
     removeTextRangeMarks(rebuilt, 'p1');
     expect(
@@ -159,6 +161,12 @@ describe('PDF 文字级标注闭环', () => {
 
     // 无关变更不触发。
     host.appendChild(document.createElement('div'));
+    expect(isTextLayerMutation(await settle())).toBe(false);
+
+    // 拖选护栏移动 .endOfContent 不触发高亮重绘。
+    const end = document.createElement('div');
+    end.className = 'endOfContent';
+    layer.appendChild(end);
     expect(isTextLayerMutation(await settle())).toBe(false);
     observer.disconnect();
   });
