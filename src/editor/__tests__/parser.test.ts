@@ -107,13 +107,20 @@ describe('parser', () => {
     expect(normalizeTaskItem(listItem)).toBeNull();
   });
 
-  it('parses a 10k-char document within a lenient cold-load budget', () => {
-    const doc = '# 万字级\n\n' + '重复负载段落。'.repeat(1200);
+  it('parses a 10k-char mixed-syntax document within a lenient cold-load budget', () => {
+    const lines = ['# 万字级', '', '段落含 **加粗**、*斜体*、`行内码` 与 [链接](https://x)。'];
+    lines.push('- 列表项', '- [x] 任务', '');
+    lines.push('| a | b |', '| - | - |', '| 1 | 2 |', '');
+    lines.push('```ts', 'const x = 1;', '```', '', '---', '');
+    while (lines.join('\n').length < 10_000) {
+      lines.push('重复负载段落，用于达到万字级文档规模。');
+    }
+    const doc = lines.join('\n');
     const start = Date.now();
     const parsed = parseDocument(doc);
     const elapsedMs = Date.now() - start;
-    expect(doc.length).toBeGreaterThan(8000);
-    expect(parsed.root.children.length).toBeGreaterThan(0);
+    expect(doc.length).toBeGreaterThan(8_000);
+    expect(parsed.root.children.length).toBeGreaterThan(5);
     expect(elapsedMs).toBeLessThan(2000);
   });
 });
