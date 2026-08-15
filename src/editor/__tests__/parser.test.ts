@@ -12,7 +12,7 @@ import {
   parseDocument,
   parseMarkdownToMdast,
 } from '../parser.js';
-import { findNode, isMdastType } from '../schema.js';
+import { findNode, isMdastType, mdastTypeToSyntaxKind } from '../schema.js';
 
 describe('parser', () => {
   it('parses an empty document to a root-only MDAST', () => {
@@ -60,5 +60,23 @@ describe('parser', () => {
     expect(total).toBeGreaterThanOrEqual(3); // hello, world, bye
     // Fence contents should not be counted.
     expect(total).toBeLessThan(8);
+  });
+
+  it('classifies every relevant MDAST type into a known SyntaxKind', () => {
+    expect(mdastTypeToSyntaxKind('heading', { headingDepth: 3 })).toBe('heading-3');
+    expect(mdastTypeToSyntaxKind('list', { ordered: false })).toBe('bullet-list');
+    expect(mdastTypeToSyntaxKind('list', { ordered: true })).toBe('ordered-list');
+    expect(mdastTypeToSyntaxKind('blockquote')).toBe('blockquote');
+    expect(mdastTypeToSyntaxKind('inlineCode')).toBe('inline-code');
+    expect(mdastTypeToSyntaxKind('code')).toBe('code-block');
+    expect(mdastTypeToSyntaxKind('table')).toBe('table');
+    expect(mdastTypeToSyntaxKind('link')).toBe('link');
+    expect(mdastTypeToSyntaxKind('image')).toBe('image');
+    expect(mdastTypeToSyntaxKind('strong')).toBe('strong');
+    expect(mdastTypeToSyntaxKind('emphasis')).toBe('emphasis');
+    expect(mdastTypeToSyntaxKind('delete')).toBe('strikethrough');
+    expect(mdastTypeToSyntaxKind('thematicBreak')).toBe('thematic-break');
+    expect(mdastTypeToSyntaxKind('yaml')).toBe('front-matter');
+    expect(mdastTypeToSyntaxKind('footnoteReference')).toBe('footnote');
   });
 });
