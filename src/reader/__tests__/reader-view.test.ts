@@ -390,8 +390,12 @@ describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式�
       Number(body.style.fontSize.match(/(\d+(?:\.\d+)?)px/)?.[1] ?? 0);
     const visibleBody = frames[0]!.contentDocument!.body;
     const scaledUp = (): boolean => bodyFontPx(visibleBody) >= 32;
+    // 帧高重同步是异步的：syncVisibleFrames 只改字号，帧高由 ResizeObserver
+    // 在首个 rAF 后重写——settle 同步时刻章高仍是旧几何，锚点恢复必须推迟
+    // 到新几何落地（测试分帧推进模拟该时序）。
+    let heightResynced = false;
     vi.spyOn(chapters[0]!, 'getBoundingClientRect').mockImplementation(() =>
-      scaledUp() ? rect(50, 1600) : rect(100, 800),
+      heightResynced ? rect(50, 1600) : rect(100, 800),
     );
     vi.spyOn(frames[0]!, 'getBoundingClientRect').mockReturnValue(rect(100, 800));
     scroll.scrollTop = 100;
@@ -405,7 +409,50 @@ describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式�
 
     expect(scaledUp()).toBe(true); // 可见帧已按新档刷新
     expect(bodyFontPx(frames[1]!.contentDocument!.body)).toBeLessThan(32); // 离屏帧不动
+    // settle 时帧高未重同步（heightResynced 仍为 false）：不得用旧几何抢跑恢复。
+    expect(scroll.scrollTop).toBe(100);
+    await vi.advanceTimersByTimeAsync(16); // 首个 rAF：此刻模拟 RO 重写帧高
+    heightResynced = true;
+    await vi.advanceTimersByTimeAsync(16); // 第二个 rAF：新几何落地后恢复锚点
     // 视口锚点（章内 0.1875 处）回到中心：scrollTop 100 → 200，内容不漂移。
+    expect(scroll.scrollTop).toBe(200);
+    await view.destroy();
+  });
+
+  it('滚动模式锚点恢复：scroller 视口偏移非零时按相对坐标归一化，不把 chrome 偏移累进滚动量', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const { view, scroll, chapters, frames } = await loadFlowBook(2);
+
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
+    // scroller 不在视口原点（上方有标签栏/工具栏 chrome）：top 70、left 30。
+    vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue({
+      ...rect(70, 500),
+      left: 30,
+      right: 430,
+    } as DOMRect);
+    vi.spyOn(chapters[1]!, 'getBoundingClientRect').mockReturnValue(rect(5000, 800));
+    vi.spyOn(frames[1]!, 'getBoundingClientRect').mockReturnValue(rect(5000, 800));
+    let heightResynced = false;
+    // 章节坐标是 getBoundingClientRect 的视口绝对坐标（含 chrome 偏移 70/30）。
+    // 旧几何 top 170（= 70 + 100）、新几何 top 120（= 70 + 50）、高 800 → 1600。
+    const chapterRect = (top: number, height: number): DOMRect =>
+      ({ ...rect(top, height), left: 30 }) as DOMRect;
+    vi.spyOn(chapters[0]!, 'getBoundingClientRect').mockImplementation(() =>
+      heightResynced ? chapterRect(120, 1600) : chapterRect(170, 800),
+    );
+    vi.spyOn(frames[0]!, 'getBoundingClientRect').mockReturnValue(chapterRect(170, 800));
+    scroll.scrollTop = 100;
+
+    document.documentElement.style.setProperty('--lightink-font-scale', '2');
+    document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: 2 }));
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(16); // 首个 rAF：此刻模拟 RO 重写帧高
+    heightResynced = true;
+    await vi.advanceTimersByTimeAsync(16); // 第二个 rAF：恢复锚点
+
+    // 不归一化时 slot.top=120 会被当作 scroller 内偏移，scrollTop 错成
+    // 100 + 120 + 300 - 250 = 270（多算 70 的 chrome 偏移）；归一化后 200。
     expect(scroll.scrollTop).toBe(200);
     await view.destroy();
   });
@@ -440,6 +487,30 @@ describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式�
     view.jumpToOutlineItem({ level: 1, text: 'Chapter 2', anchor: 1, chapter: 1 });
     expect(htmls[1]!.style.width).not.toBe('777px');
     expect(htmls[2]!.style.width).toBe('888px');
+    await view.destroy();
+  });
+
+  it('settle 前加载新文档：pending 缩放刷新（含锚点恢复）被作废，不抢跑新文档滚动', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const { view, scroll } = await loadFlowBook(2);
+
+    document.documentElement.style.setProperty('--lightink-font-scale', '2');
+    document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: 2 }));
+    document.documentElement.style.removeProperty('--lightink-font-scale');
+
+    // renderChapters：作废待 settle 的缩放刷新与推迟中的锚点恢复（与 destroy 对称）。
+    await view.load('book.epub');
+    const frames = Array.from(
+      scroll.querySelectorAll<HTMLIFrameElement>('.lightink-reader-chapter-frame'),
+    );
+    for (const frame of frames) {
+      frame.dispatchEvent(new Event('load'));
+    }
+    scroll.scrollTop = 300; // 用户已在新文档开始阅读
+    await vi.advanceTimersByTimeAsync(200 + 64);
+    // 未作废的迟到 settle 会按旧几何重算锚点把 scrollTop 抢走（jsdom 零尺寸下变为 50）。
+    expect(scroll.scrollTop).toBe(300);
     await view.destroy();
   });
 });

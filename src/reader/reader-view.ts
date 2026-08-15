@@ -1657,6 +1657,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     delete pageHost.dataset.readerActive;
     // 页宿主滚动合并帧作废（T3 review 遗留：交换点与 destroy 对称 cancel）。
     pageScrollCoordinator?.cancel();
+    // T6 review P3：新文档渲染前作废待 settle 的缩放刷新与推迟中的锚点恢复
+    // （与 destroy 对称，防迟到刷新按新文档几何套旧档位）。
+    cancelFontScaleRefresh?.();
+    cancelFontScaleRefresh = null;
     stalePaginatedChapters = null; // 新文档：帧 load 时各自应用分栏，无待补章
     flowRenderer.render(chapters, stylesheet);
     setActiveChapter(0);
@@ -1710,6 +1714,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     pageHost.removeEventListener('click', onPageHostNoteClick);
     // 交换 pageHost 时作废待执行的页滚动合并帧（与 destroy 对称，防迟到帧写旧状态）。
     pageScrollCoordinator?.cancel();
+    // T6 review P3：切到页格式同样作废流式缩放的 pending settle（与 destroy 对称）。
+    cancelFontScaleRefresh?.();
+    cancelFontScaleRefresh = null;
     pageHost.replaceWith(staged.host);
     pageHost = staged.host;
     pageHost.addEventListener('scroll', schedulePageScroll, { passive: true });
@@ -1838,6 +1845,32 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
    */
   const FONT_SCALE_SETTLE_MS = 200;
   const settleFontScaleRefresh = createResizeSettle(FONT_SCALE_SETTLE_MS);
+  /**
+   * 双 rAF 后执行 task：滚动模式下 syncVisibleFrames 只改帧内字号，帧高由
+   * flow-renderer 的 ResizeObserver→syncHeight 异步重写——settle 同步时刻读
+   * 章节几何仍是旧高度，此时恢复锚点等于恒等式（视口漂移不被纠正）。第一帧
+   * 后高度重同步落地，第二帧读到新几何再恢复。返回 cancel 与 destroy/
+   * 重渲染/下一次缩放对称作废。
+   */
+  const afterVisibleHeightResync = (task: () => void): (() => void) => {
+    let cancelled = false;
+    let handle: number | null = null;
+    const schedule = (next: () => void): void => {
+      handle = requestAnimationFrame(() => {
+        handle = null;
+        if (!cancelled) {
+          next();
+        }
+      });
+    };
+    schedule(() => schedule(task));
+    return () => {
+      cancelled = true;
+      if (handle !== null) {
+        cancelAnimationFrame(handle);
+      }
+    };
+  };
   const applyFontScaleRefresh = (): void => {
     cancelFontScaleRefresh = null;
     if (destroyed || pdfHandle !== null || cbzHandle !== null || PAGE_EXTS.has(loadedExt)) {
@@ -1869,11 +1902,31 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       stalePaginatedChapters = null;
     }
     syncVisibleFlowFrames();
-    if (anchor !== null) {
-      const slot = chapters[anchor.index]?.getBoundingClientRect();
-      if (slot !== undefined) {
-        scroller.scrollTop = scrollToKeepViewportAnchor(scroller, slot, anchor).scrollTop;
-      }
+    if (anchor !== null && chapters[anchor.index] !== undefined) {
+      const anchored = chapters[anchor.index]!;
+      cancelFontScaleRefresh = afterVisibleHeightResync(() => {
+        cancelFontScaleRefresh = null;
+        if (destroyed) {
+          return;
+        }
+        // getBoundingClientRect 是视口绝对坐标，scrollToKeepViewportAnchor 期望
+        // 相对 scroller 的坐标；不归一化会把应用 chrome（标签栏/侧栏）的偏移
+        // 累加进新滚动位置，锚点随每次缩放漂移（与 pdf.ts rerender 同一数学）。
+        const scrollerRect = scroller.getBoundingClientRect();
+        const next = anchored.getBoundingClientRect();
+        scroller.scrollTop = scrollToKeepViewportAnchor(
+          scroller,
+          {
+            left: next.left - scrollerRect.left,
+            top: next.top - scrollerRect.top,
+            width: next.width,
+            height: next.height,
+          },
+          anchor,
+        ).scrollTop;
+        syncFlowState();
+        schedulePersistReadingProgress();
+      });
     }
     syncFlowState();
     schedulePersistReadingProgress();
@@ -1886,6 +1939,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       void pdfHandle.rerender();
       return;
     }
+    // 作废上一轮遗留（settle 定时器或推迟中的锚点恢复 rAF），防止迟到回调用
+    // 旧锚点/旧档位中途抢跑。
+    cancelFontScaleRefresh?.();
     cancelFontScaleRefresh = settleFontScaleRefresh(applyFontScaleRefresh);
   };
   if (typeof document !== 'undefined') {
