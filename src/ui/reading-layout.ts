@@ -135,6 +135,43 @@ export function pagedSpreadMetrics(
   return { width, columnWidth, columns, gap, step: pagedColumnStep(width, gap) };
 }
 
+/** Minimal style surface shared by real elements and fake test elements. */
+export interface PagedSpreadStyleTarget {
+  style: {
+    setProperty(name: string, value: string, priority?: string): void;
+    removeProperty(name: string): string;
+  };
+}
+
+const PAGED_SPREAD_VARS = [
+  '--lightink-reader-column-width',
+  '--lightink-reader-column-gap',
+  '--lightink-reader-column-count',
+] as const;
+
+/**
+ * Single host layout applier for paginated spreads: writes the shared
+ * `--lightink-reader-column-*` custom properties derived from
+ * `pagedSpreadMetrics`. The Markdown scroller (main.ts) and the flow iframe
+ * roots (flow-renderer) consume the same variables, so both hosts step in
+ * whole, integer-aligned pages.
+ */
+export function applyPagedSpreadVars(
+  target: PagedSpreadStyleTarget,
+  metrics: { columnWidth: number; columns: number; gap: number },
+): void {
+  target.style.setProperty('--lightink-reader-column-width', `${metrics.columnWidth}px`);
+  target.style.setProperty('--lightink-reader-column-gap', `${metrics.gap}px`);
+  target.style.setProperty('--lightink-reader-column-count', String(metrics.columns));
+}
+
+/** Drop the paginated spread variables (scroll mode / teardown). */
+export function clearPagedSpreadVars(target: PagedSpreadStyleTarget): void {
+  for (const name of PAGED_SPREAD_VARS) {
+    target.style.removeProperty(name);
+  }
+}
+
 export function applyPagedProgress(
   scroller: { scrollLeft: number; scrollWidth: number; clientWidth: number },
   ratio: number,

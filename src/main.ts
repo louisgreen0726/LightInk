@@ -85,11 +85,13 @@ import { installWheelZoom } from './ui/wheel-zoom.js';
 import {
   advancePagedScroller,
   advanceScrolledScroller,
+  applyPagedSpreadVars,
   applyReadingLayout,
+  clearPagedSpreadVars,
   createPagedWheelGate,
   isReadingNavKey,
   loadReadingLayout,
-  readingColumnLayout,
+  pagedSpreadMetrics,
   readingNavDirection,
   saveReadingLayout,
   type ReadingLayout,
@@ -137,20 +139,22 @@ function readingSurfaceWidth(): number {
   return Math.max(1, scroller.clientWidth - sidebarWidth);
 }
 
+/**
+ * Markdown 侧翻页分栏：与流式 iframe 根共用同一宿主布局应用器
+ * （applyPagedSpreadVars）与同一度量（pagedSpreadMetrics），CSS 变量同源，
+ * 两宿主按整页步进（平行 readingColumnLayout 直写实现已删除）。
+ */
 function syncReadingColumns(): void {
   const scroller = document.getElementById('lightink-editor-area');
   if (scroller === null) {
     return;
   }
   if (readingLayout !== 'paginated') {
-    scroller.style.removeProperty('--lightink-reader-column-width');
-    scroller.style.removeProperty('--lightink-reader-column-gap');
+    clearPagedSpreadVars(scroller);
     return;
   }
   const fontSize = parseFloat(getComputedStyle(scroller).fontSize);
-  const layout = readingColumnLayout(readingSurfaceWidth(), fontSize);
-  scroller.style.setProperty('--lightink-reader-column-width', `${layout.columnWidth}px`);
-  scroller.style.setProperty('--lightink-reader-column-gap', `${layout.gap}px`);
+  applyPagedSpreadVars(scroller, pagedSpreadMetrics(readingSurfaceWidth(), fontSize));
 }
 
 function setReadingLayout(next: ReadingLayout): void {

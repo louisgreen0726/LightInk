@@ -6,8 +6,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createReaderView, flowFrameContentHeight } from '../reader-view.js';
+import { createReaderView } from '../reader-view.js';
+import { createFlowRenderer, flowFrameContentHeight } from '../flow-renderer.js';
+import type { FlowRendererHooks } from '../flow-renderer.js';
+import { sessionRemoteImagePolicy } from '../../media/remote-image-policy.js';
 import { createSelectionToolbar, toolbarPosition } from '../selection-toolbar.js';
+import {
+  applyPagedSpreadVars,
+  clearPagedSpreadVars,
+  pagedSpreadMetrics,
+} from '../../ui/reading-layout.js';
 
 /** 最小 fake 元素：覆盖 createReaderView 用到的 DOM 表面。 */
 class FakeEl {
@@ -255,6 +263,69 @@ describe('flowFrameContentHeight', () => {
     Object.defineProperty(doc.body, 'scrollHeight', { configurable: true, value: 420 });
     Object.defineProperty(doc.documentElement, 'scrollHeight', { configurable: true, value: 100000 });
     expect(flowFrameContentHeight(doc)).toBe(420);
+    iframe.remove();
+  });
+});
+
+describe('共享翻页布局应用器（T5：markdown 与流式同源）', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('applyPagedSpreadVars 写入 pagedSpreadMetrics 派生的共享列变量', () => {
+    const el = document.createElement('div');
+    const metrics = pagedSpreadMetrics(1000, 16);
+    applyPagedSpreadVars(el, metrics);
+    expect(el.style.getPropertyValue('--lightink-reader-column-width')).toBe(
+      `${metrics.columnWidth}px`,
+    );
+    expect(el.style.getPropertyValue('--lightink-reader-column-gap')).toBe(`${metrics.gap}px`);
+    expect(el.style.getPropertyValue('--lightink-reader-column-count')).toBe(
+      String(metrics.columns),
+    );
+    clearPagedSpreadVars(el);
+    expect(el.style.getPropertyValue('--lightink-reader-column-width')).toBe('');
+    expect(el.style.getPropertyValue('--lightink-reader-column-gap')).toBe('');
+    expect(el.style.getPropertyValue('--lightink-reader-column-count')).toBe('');
+  });
+
+  it('flow-renderer applyPaginatedDocument 写入与 markdown 侧相同的列变量', () => {
+    const hooks: FlowRendererHooks = {
+      t: (key) => key,
+      remoteImagePolicy: sessionRemoteImagePolicy,
+      syncState: () => undefined,
+      applyPendingRestore: () => undefined,
+      renderHighlights: () => undefined,
+      handleNoteMarkClick: () => false,
+      onSelectionMouseUp: () => undefined,
+      openSearch: () => undefined,
+      advanceReading: () => false,
+      advancePagedWheel: () => false,
+      dismissSelectionToolbar: () => false,
+      isLayoutSwitching: () => false,
+      scrollContainer: () => document.body,
+    };
+    const root = document.createElement('div');
+    const scrollHost = document.createElement('div');
+    root.appendChild(scrollHost);
+    document.body.appendChild(root);
+    const renderer = createFlowRenderer(scrollHost, root, hooks);
+
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<p>chapter</p>';
+    renderer.applyPaginatedDocument(iframe, doc);
+
+    const html = doc.documentElement;
+    const metrics = pagedSpreadMetrics(Math.max(1, scrollHost.clientWidth), 16);
+    expect(html.style.getPropertyValue('--lightink-reader-column-width')).toBe(
+      `${metrics.columnWidth}px`,
+    );
+    expect(html.style.getPropertyValue('--lightink-reader-column-count')).toBe(
+      String(metrics.columns),
+    );
+    expect(html.style.columnWidth).toBe(`${metrics.columnWidth}px`);
     iframe.remove();
   });
 });
