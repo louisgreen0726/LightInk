@@ -70,6 +70,8 @@ export interface OutlineViewDeps {
    * Tests may inject a Map-backed fake.
    */
   storage?: Pick<Storage, 'getItem' | 'setItem'>;
+  /** 大纲三态可见性变化回调（生产用于触发分栏重算）。 */
+  onVisibilityChange?: () => void;
 }
 
 export interface OutlineView {
@@ -387,6 +389,7 @@ export function createOutlineView(deps: OutlineViewDeps): OutlineView {
     resizeHandle.style.display = next === 'expanded' ? '' : 'none';
     resizeHandle.setAttribute('aria-hidden', next === 'expanded' ? 'false' : 'true');
     syncHostClass();
+    deps.onVisibilityChange?.();
   }
 
   function endDrag(): void {

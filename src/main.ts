@@ -1012,10 +1012,7 @@ shell = createAppShell(
     canReloadCustomTheme: () => themeService.customThemePath !== null,
     canResetCustomTheme: () =>
       themeService.isCustomThemeActive || themeService.customThemePath !== null,
-    onToggleOutline: () => {
-      outline.toggleCollapse();
-      scheduleReadingColumnSync();
-    },
+    onToggleOutline: () => outline.toggleCollapse(),
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),
     getReadingLayout: () => readingLayout,
@@ -1474,6 +1471,7 @@ outline = createOutlineView({
     activeMarkdownTab()?.editor.toggleFoldAtOrdinal(ordinal);
   },
   t: (key) => i18n.t(key),
+  onVisibilityChange: () => scheduleReadingColumnSync(),
 });
 shell.outlineSidebar.appendChild(outline.root);
 
