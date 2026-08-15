@@ -2,7 +2,8 @@
  * `file-dialog` — 系统文件对话框封装（T3）。
  *
  * 基于 @tauri-apps/plugin-dialog。打开与另存为使用不同过滤器：
- *   - 打开：Markdown + 电子书（PDF/EPUB/MOBI/FB2/CBZ/TXT）+ 全部；
+ *   - 打开：单一「所有支持格式」条目（md/markdown/pdf/epub/mobi/fb2/cbz/txt）
+ *     + 所有文件（T1：合并 Markdown / 电子书两条目，避免下拉分裂）；
  *   - 另存为：仅 Markdown（reader 标签只读，不可另存为）。
  *
  * 在无窗口的测试环境里该模块会被 `vi.mock('@tauri-apps/plugin-dialog')`
@@ -11,20 +12,21 @@
 
 import { open, save } from '@tauri-apps/plugin-dialog';
 
-/** Markdown 过滤器（打开与另存为共用）。 */
+/** Markdown 过滤器（另存为用）。 */
 const MARKDOWN_FILTERS = [
   { name: 'Markdown', extensions: ['md', 'markdown'] },
 ];
 
-/** 只读电子书过滤器（仅出现在「打开」对话框）。 */
-const READER_FILTERS = [
-  { name: 'eBook', extensions: ['pdf', 'epub', 'mobi', 'fb2', 'cbz', 'txt'] },
-];
+/** 「打开」对话框的单一支持格式条目（Markdown + 全部电子书格式）。 */
+const SUPPORTED_FORMATS_FILTER = {
+  name: 'All Supported Formats',
+  extensions: ['md', 'markdown', 'pdf', 'epub', 'mobi', 'fb2', 'cbz', 'txt'],
+};
 
 const ALL_FILES_FILTER = { name: 'All Files', extensions: ['*'] };
 
-/** 「打开」对话框过滤器：Markdown + 电子书 + 全部。 */
-export const OPEN_FILTERS = [...MARKDOWN_FILTERS, ...READER_FILTERS, ALL_FILES_FILTER];
+/** 「打开」对话框过滤器：所有支持格式 + 所有文件（T1：单一条目）。 */
+export const OPEN_FILTERS = [SUPPORTED_FORMATS_FILTER, ALL_FILES_FILTER];
 
 /** 「另存为」对话框过滤器：仅 Markdown + 全部（reader 标签只读不另存）。 */
 export const SAVE_FILTERS = [...MARKDOWN_FILTERS, ALL_FILES_FILTER];

@@ -356,6 +356,43 @@ export function buildMenus(actions: AppShellActions): Menu[] {
   // 内联双语（同既有「查找…」「字数统计」先例：i18n 目录不在本改动 scope）。
   const ll = (en: string, zh: string): string => (actions.getLocale() === 'en' ? en : zh);
 
+  /**
+   * T1：视图 →「字体布局」子菜单——收纳放大/缩小/重置缩放与滚动/翻页模式
+   * （当前模式打勾并禁用，选择另一模式即切换；Ctrl+M 快捷键行为不变）。
+   * 工厂在每次展开时现取，勾选态随布局切换刷新。
+   */
+  const fontLayoutSubmenu = (): MenuItem[] => {
+    const current = actions.getReadingLayout?.() ?? 'scroll';
+    const layoutItem = (mode: 'scroll' | 'paginated'): MenuItem =>
+      menuItem(
+        `view-layout-${mode}`,
+        () => {
+          const label =
+            mode === 'paginated' ? t('view.layout.paginated') : t('view.layout.scroll');
+          return current === mode ? `✓ ${label}` : label;
+        },
+        () => {
+          // 「选择模式」语义：点击非当前模式触发一次切换；当前模式禁用不可点。
+          if (current !== mode) actions.onToggleReadingLayout?.();
+        },
+        sc(actions, 'Ctrl+M'),
+        () => current !== mode,
+      );
+    return [
+      menuItem('view-zoom-in', () => t('view.zoomIn'), actions.onZoomIn, sc(actions, 'Ctrl+=')),
+      menuItem('view-zoom-out', () => t('view.zoomOut'), actions.onZoomOut, sc(actions, 'Ctrl+-')),
+      menuItem(
+        'view-zoom-reset',
+        () => `${t('view.zoomReset')} (${actions.getFontScaleLabel()})`,
+        actions.onZoomReset,
+        sc(actions, 'Ctrl+0'),
+      ),
+      separator('view-font-layout-sep'),
+      layoutItem('scroll'),
+      layoutItem('paginated'),
+    ];
+  };
+
   /** reader 态「标注」菜单：书签 / 笔记 / 侧栏开关（侧栏默认隐藏，勾选标记当前态）。 */
   const annotationMenu: Menu = {
     id: 'annotation',
@@ -506,24 +543,18 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           actions.onToggleOutline,
           sc(actions, 'Ctrl+Shift+L'),
         ),
-        menuItem(
-          'view-source-mode',
-          () => t('view.sourceMode'),
-          actions.onToggleSourceMode,
-          sc(actions, 'Ctrl+/'),
-          () => true,
-        ),
-        menuItem(
-          'view-layout-toggle',
-          () => {
-            const layout = actions.getReadingLayout?.() ?? 'scroll';
-            const label =
-              layout === 'paginated' ? t('view.layout.paginated') : t('view.layout.scroll');
-            return `${label} → ${layout === 'paginated' ? t('view.layout.scroll') : t('view.layout.paginated')}`;
-          },
-          () => actions.onToggleReadingLayout?.(),
-          sc(actions, 'Ctrl+M'),
-        ),
+        // T1：reader 态隐藏「源码模式」（只读文档无源码视图；markdown 标签恢复）。
+        ...(isReader
+          ? []
+          : [
+              menuItem(
+                'view-source-mode',
+                () => t('view.sourceMode'),
+                actions.onToggleSourceMode,
+                sc(actions, 'Ctrl+/'),
+                () => true,
+              ),
+            ]),
         // T5/R3：字数统计状态栏开关（勾选标记式）。i18n 目录不在本任务 scope，
         // 标签按当前 locale 内联双语（同 T4「查找…」先例）。
         menuItem(
@@ -534,15 +565,13 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           },
           () => actions.onToggleStatusBar?.(),
         ),
-        separator('view-font-sep'),
-        menuItem('view-zoom-in', () => t('view.zoomIn'), actions.onZoomIn, sc(actions, 'Ctrl+=')),
-        menuItem('view-zoom-out', () => t('view.zoomOut'), actions.onZoomOut, sc(actions, 'Ctrl+-')),
-        menuItem(
-          'view-zoom-reset',
-          () => `${t('view.zoomReset')} (${actions.getFontScaleLabel()})`,
-          actions.onZoomReset,
-          sc(actions, 'Ctrl+0'),
-        ),
+        // T1：放大/缩小/重置与滚动/翻页收纳为「字体布局」子菜单，主菜单原位置移除。
+        {
+          id: 'view-font-layout',
+          label: () => t('view.fontLayout'),
+          action: () => undefined,
+          submenu: fontLayoutSubmenu,
+        },
       ],
     },
     {

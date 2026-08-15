@@ -8,6 +8,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { InsertElementId } from '../../editor/insert-commands.js';
+import { OPEN_FILTERS } from '../../file/file-dialog.js';
+import { translate, type MessageKey } from '../../i18n/messages.js';
 import type { BuiltinThemeId } from '../../theme/theme-service.js';
 import {
   abbreviatePath,
@@ -445,6 +447,108 @@ describe('buildMenus 生产结构', () => {
     expect(items.some((i) => i.id === 'view-reload-custom-theme')).toBe(true);
     // Toggle still present inside the submenu.
     expect(items.some((i) => i.id === 'view-theme-toggle')).toBe(true);
+  });
+
+  it('reader 标签下视图菜单隐藏「源码模式」，切回 Markdown 恢复（T1）', () => {
+    const markdownView = menus.find((m) => m.id === 'view');
+    expect(markdownView?.items.some((i) => i.id === 'view-source-mode')).toBe(true);
+    const readerView = buildMenus({ ...stubActions(), activeTabKind: () => 'reader' }).find(
+      (m) => m.id === 'view',
+    );
+    expect(readerView?.items.some((i) => i.id === 'view-source-mode')).toBe(false);
+  });
+
+  it('视图菜单收纳「字体布局」子菜单：5 项，主菜单原位置移除，快捷键保留（T1）', () => {
+    const view = menus.find((m) => m.id === 'view');
+    // 主菜单不再平铺缩放与滚动/翻页切换项。
+    for (const removed of ['view-zoom-in', 'view-zoom-out', 'view-zoom-reset', 'view-layout-toggle']) {
+      expect(view?.items.some((i) => i.id === removed)).toBe(false);
+    }
+    const entry = view?.items.find((i) => i.id === 'view-font-layout');
+    expect(typeof entry?.submenu).toBe('function');
+    const label = typeof entry?.label === 'function' ? entry!.label() : entry?.label;
+    expect(label).toMatch(/字体布局|view\.fontLayout/);
+    const items = entry!.submenu!() as import('../menus.js').MenuItem[];
+    const actionable = items.filter((i) => i.separator !== true);
+    expect(actionable.map((i) => i.id)).toEqual([
+      'view-zoom-in',
+      'view-zoom-out',
+      'view-zoom-reset',
+      'view-layout-scroll',
+      'view-layout-paginated',
+    ]);
+    // 快捷键提示随迁，行为不变。
+    expect(actionable[0]?.shortcut).toBe('Ctrl+=');
+    expect(actionable[1]?.shortcut).toBe('Ctrl+-');
+    expect(actionable[2]?.shortcut).toBe('Ctrl+0');
+    expect(actionable[3]?.shortcut).toBe('Ctrl+M');
+    // stub getReadingLayout = 'scroll'：滚动为当前模式（打勾禁用），翻页可选。
+    const scroll = actionable.find((i) => i.id === 'view-layout-scroll');
+    const paginated = actionable.find((i) => i.id === 'view-layout-paginated');
+    expect(scroll?.enabled?.()).toBe(false);
+    const scrollLabel = typeof scroll!.label === 'function' ? scroll!.label() : scroll!.label;
+    expect(scrollLabel).toMatch(/^✓/);
+    expect(paginated?.enabled?.()).toBe(true);
+  });
+
+  it('子菜单选择非当前布局触发切换；已选模式点击不重复切换（T1）', () => {
+    let toggles = 0;
+    const view = buildMenus({ ...stubActions(), onToggleReadingLayout: () => { toggles += 1; } }).find(
+      (m) => m.id === 'view',
+    );
+    const entry = view?.items.find((i) => i.id === 'view-font-layout');
+    const items = (entry!.submenu!() as import('../menus.js').MenuItem[]).filter(
+      (i) => i.separator !== true,
+    );
+    // 当前模式（scroll）点击不切换；选择翻页触发一次切换。
+    items.find((i) => i.id === 'view-layout-scroll')!.action();
+    expect(toggles).toBe(0);
+    items.find((i) => i.id === 'view-layout-paginated')!.action();
+    expect(toggles).toBe(1);
+  });
+
+  it('「字体布局」子菜单在 zh/en 双语下标签齐备（语言切换重建，T1）', () => {
+    for (const locale of ['en', 'zh-CN'] as const) {
+      const localized = buildMenus({
+        ...stubActions(),
+        getLocale: () => locale,
+        t: (key: MessageKey) => translate(locale, key),
+      });
+      const view = localized.find((m) => m.id === 'view');
+      const entry = view?.items.find((i) => i.id === 'view-font-layout');
+      const entryLabel = typeof entry?.label === 'function' ? entry!.label() : entry?.label;
+      expect(entryLabel).not.toBe('view.fontLayout'); // 已解析为文案，非裸 key
+      const items = (entry!.submenu!() as import('../menus.js').MenuItem[]).filter(
+        (i) => i.separator !== true,
+      );
+      for (const item of items) {
+        const text = typeof item.label === 'function' ? item.label() : item.label;
+        expect(text.trim()).not.toBe('');
+      }
+      // reader 态隐藏源码模式在两种 locale 下一致。
+      const readerView = buildMenus({
+        ...stubActions(),
+        getLocale: () => locale,
+        t: (key: MessageKey) => translate(locale, key),
+        activeTabKind: () => 'reader',
+      }).find((m) => m.id === 'view');
+      expect(readerView?.items.some((i) => i.id === 'view-source-mode')).toBe(false);
+    }
+  });
+
+  it('打开对话框过滤只剩单一「所有支持格式」条目 + 所有文件（T1）', () => {
+    expect(OPEN_FILTERS).toHaveLength(2);
+    expect([...OPEN_FILTERS[0]!.extensions].sort()).toEqual([
+      'cbz',
+      'epub',
+      'fb2',
+      'markdown',
+      'md',
+      'mobi',
+      'pdf',
+      'txt',
+    ]);
+    expect(OPEN_FILTERS[1]!.extensions).toEqual(['*']);
   });
 
   });
