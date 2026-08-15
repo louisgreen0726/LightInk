@@ -21,6 +21,7 @@ import {
 } from '../autosave.js';
 import { TabManager, type TabManagerDeps } from '../tab-manager.js';
 import type { CloseChoice, TabState } from '../types.js';
+import { fakeHost, makeFakeEditor } from './test-harness.js';
 
 /** 内存 storage fake。 */
 function makeStorage(initial: Record<string, string> = {}): StorageLike & {
@@ -209,43 +210,6 @@ describe('createAutosave 调度', () => {
 // ---------------------------------------------------------------------------
 // TabManager.autosaveDirtyTabs（harness 克隆 tab-manager.test.ts 风格）
 // ---------------------------------------------------------------------------
-
-function makeFakeEditor(initial: string): EditorInstance & { content: string } {
-  const state = { content: initial };
-  return {
-    ready: Promise.resolve(),
-    get content() {
-      return state.content;
-    },
-    setMarkdown(md: string) {
-      state.content = md;
-    },
-    getMarkdown() {
-      return state.content;
-    },
-    getSelection: () => null,
-    getCursorPosition: () => null,
-    getLinkAtCursor: () => null,
-    getLinkAtPoint: () => null,
-    toggleMark: () => undefined,
-    setLink: () => undefined,
-    insertImage: () => undefined,
-    insertMarkdown: () => false,
-    isInTable: () => false,
-    runTableOp: () => false,
-    focus: vi.fn(),
-    selectAll: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    toggleFoldAtOrdinal: vi.fn(),
-    getFoldedOrdinals: vi.fn(() => []),
-    destroy: vi.fn(async () => undefined),
-  };
-}
-
-function fakeHost(): HTMLElement {
-  return { style: { display: '' } } as unknown as HTMLElement;
-}
 
 interface Harness {
   manager: TabManager;

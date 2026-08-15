@@ -18,6 +18,7 @@ import type {
 } from '../../file/external-change.js';
 import { fileNameOf, snapshotKeyOf, TabManager, type TabManagerDeps } from '../tab-manager.js';
 import type { CloseChoice, TabState } from '../types.js';
+import { fakeHost, makeFakeEditor } from './test-harness.js';
 
 type ConfirmCloseMock = Mock<
   (tab: Pick<TabState, 'title' | 'filePath'>) => Promise<CloseChoice>
@@ -25,43 +26,6 @@ type ConfirmCloseMock = Mock<
 type PromptRestoreMock = Mock<(path: string) => Promise<boolean>>;
 
 /** 假编辑器：内存字符串模拟内容。 */
-function makeFakeEditor(initial: string): EditorInstance & { content: string } {
-  const state = { content: initial };
-  return {
-    ready: Promise.resolve(),
-    get content() {
-      return state.content;
-    },
-    setMarkdown(md: string) {
-      state.content = md;
-    },
-    getMarkdown() {
-      return state.content;
-    },
-    getSelection: () => null,
-    getCursorPosition: () => null,
-    getLinkAtCursor: () => null,
-    getLinkAtPoint: () => null,
-    toggleMark: () => undefined,
-    setLink: () => undefined,
-    insertImage: () => undefined,
-    insertMarkdown: () => false,
-    isInTable: () => false,
-    runTableOp: () => false,
-    focus: vi.fn(),
-    selectAll: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    toggleFoldAtOrdinal: vi.fn(),
-    getFoldedOrdinals: vi.fn(() => []),
-    destroy: vi.fn(async () => undefined),
-  };
-}
-
-function fakeHost(): HTMLElement {
-  return { style: { display: '' } } as unknown as HTMLElement;
-}
-
 interface Harness {
   manager: TabManager;
   deps: TabManagerDeps;
