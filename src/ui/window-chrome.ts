@@ -7,6 +7,7 @@ export interface AppWindowLike {
   isFullscreen(): Promise<boolean>;
   setFullscreen(fullscreen: boolean): Promise<void>;
   setDecorations?(decorations: boolean): Promise<void>;
+  setTheme?(theme: 'light' | 'dark' | null): Promise<void>;
 }
 
 /** Resolve the current Tauri webview/window, or null outside Tauri. */
@@ -66,5 +67,22 @@ export async function setNativeTitleBar(
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('[lightink] setDecorations failed', error);
+  }
+}
+
+/** Sync the native window theme (title bar dark/light) with the app theme. */
+export async function setNativeTheme(
+  dark: boolean,
+  getWindow: () => Promise<AppWindowLike | null> = getAppWindow,
+): Promise<void> {
+  const win = await getWindow();
+  if (win === null || typeof win.setTheme !== 'function') {
+    return;
+  }
+  try {
+    await win.setTheme(dark ? 'dark' : 'light');
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('[lightink] setTheme failed', error);
   }
 }

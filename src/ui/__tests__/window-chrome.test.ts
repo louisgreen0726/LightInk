@@ -4,7 +4,12 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { setNativeTitleBar, toggleFullscreen, type AppWindowLike } from '../window-chrome.js';
+import {
+  setNativeTheme,
+  setNativeTitleBar,
+  toggleFullscreen,
+  type AppWindowLike,
+} from '../window-chrome.js';
 
 describe('toggleFullscreen', () => {
   it('returns false when no window is available', async () => {
@@ -50,5 +55,28 @@ describe('setNativeTitleBar', () => {
       setFullscreen: vi.fn(async () => undefined),
     };
     await expect(setNativeTitleBar(true, async () => win)).resolves.toBeUndefined();
+  });
+});
+
+describe('setNativeTheme', () => {
+  it('syncs dark/light native window theme', async () => {
+    const win: AppWindowLike = {
+      isFullscreen: vi.fn(async () => false),
+      setFullscreen: vi.fn(async () => undefined),
+      setTheme: vi.fn(async () => undefined),
+    };
+    await setNativeTheme(true, async () => win);
+    expect(win.setTheme).toHaveBeenCalledWith('dark');
+    await setNativeTheme(false, async () => win);
+    expect(win.setTheme).toHaveBeenCalledWith('light');
+  });
+
+  it('no-ops when no window or no setTheme support', async () => {
+    await expect(setNativeTheme(false, async () => null)).resolves.toBeUndefined();
+    const win: AppWindowLike = {
+      isFullscreen: vi.fn(async () => false),
+      setFullscreen: vi.fn(async () => undefined),
+    };
+    await expect(setNativeTheme(true, async () => win)).resolves.toBeUndefined();
   });
 });

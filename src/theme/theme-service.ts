@@ -71,6 +71,8 @@ export interface ThemeServiceDeps {
   storage?: StorageLike | null;
   /** 重新读取自定义主题文件（生产为 file-service 的 readFile）。 */
   readFile?: (path: string) => Promise<string>;
+  /** 主题切换后同步原生窗口明暗（生产为 Tauri setTheme）。 */
+  syncNativeTheme?: (dark: boolean) => void;
 }
 
 /** 生产实现：在 document.head 创建专用 <style> 并返回其注入槽。 */
@@ -97,10 +99,21 @@ function isBuiltinThemeId(value: string | null): value is BuiltinThemeId {
   );
 }
 
+/** 解析自定义 CSS 的首个 `color-scheme` 值是否为深色（缺失/无法解析回退浅色）。 */
+export function customThemeIsDark(cssText: string): boolean {
+  const match = /(?:^|[;{}\s])color-scheme\s*:\s*([^;}{]+)/i.exec(cssText);
+  if (match === null) {
+    return false;
+  }
+  const first = match[1]?.trim().split(/\s+/)[0]?.toLowerCase();
+  return first === 'dark';
+}
+
 export class ThemeService {
   private readonly deps: ThemeServiceDeps;
   private current: BuiltinThemeId | typeof CUSTOM_THEME_ID;
   private customPath: string | null = null;
+  private customCss: string | null = null;
 
   constructor(deps: ThemeServiceDeps) {
     this.deps = deps;
@@ -114,6 +127,7 @@ export class ThemeService {
         ? saved
         : DEFAULT_THEME_ID;
     this.deps.root.setAttribute('data-theme', this.current);
+    this.notifyNativeTheme();
   }
 
   /** 当前主题 id：内置 id 或 'custom'。 */
@@ -143,6 +157,7 @@ export class ThemeService {
     this.deps.customStyleSlot.clear();
     this.deps.root.setAttribute('data-theme', themeId);
     this.deps.storage?.setItem(THEME_STORAGE_KEY, themeId);
+    this.notifyNativeTheme();
   }
 
   /** 浅色 ↔ 深色一键切换（自定义主题激活时切换到深色）。返回新主题 id。 */
@@ -161,12 +176,14 @@ export class ThemeService {
       this.customPath = path;
     }
     this.current = CUSTOM_THEME_ID;
+    this.customCss = cssText;
     this.deps.customStyleSlot.set(cssText);
     this.deps.root.setAttribute('data-theme', CUSTOM_THEME_ID);
     this.deps.storage?.setItem(THEME_STORAGE_KEY, CUSTOM_THEME_ID);
     if (this.customPath !== null) {
       this.deps.storage?.setItem(CUSTOM_THEME_PATH_KEY, this.customPath);
     }
+    this.notifyNativeTheme();
   }
 
   /**
@@ -207,7 +224,23 @@ export class ThemeService {
   /** 移除自定义主题并回到默认护眼浅色。 */
   resetCustomTheme(): void {
     this.customPath = null;
+    this.customCss = null;
     this.deps.storage?.removeItem?.(CUSTOM_THEME_PATH_KEY);
     this.apply(DEFAULT_THEME_ID);
+  }
+
+  /**
+   * 当前主题是否为深色：内置主题按 id 判定（dark/midnight 为深），
+   * 自定义主题按注入 CSS 的首个 `color-scheme` 判定（缺失回退浅色）。
+   */
+  isDark(): boolean {
+    if (this.current === CUSTOM_THEME_ID) {
+      return customThemeIsDark(this.customCss ?? '');
+    }
+    return this.current === 'dark' || this.current === 'midnight';
+  }
+
+  private notifyNativeTheme(): void {
+    this.deps.syncNativeTheme?.(this.isDark());
   }
 }

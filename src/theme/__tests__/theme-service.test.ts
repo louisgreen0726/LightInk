@@ -13,6 +13,7 @@ import {
   BUILTIN_THEMES,
   CUSTOM_THEME_ID,
   CUSTOM_THEME_PATH_KEY,
+  customThemeIsDark,
   ThemeService,
   THEME_STORAGE_KEY,
   type StorageLike,
@@ -25,6 +26,7 @@ interface Harness {
   slot: { css: string | null };
   store: Map<string, string>;
   files: Map<string, string>;
+  syncCalls: boolean[];
 }
 
 function makeHarness(options: { savedTheme?: string; savedCustomPath?: string } = {}): Harness {
@@ -38,6 +40,7 @@ function makeHarness(options: { savedTheme?: string; savedCustomPath?: string } 
     store.set(CUSTOM_THEME_PATH_KEY, options.savedCustomPath);
   }
   const files = new Map<string, string>();
+  const syncCalls: boolean[] = [];
   const storage: StorageLike = {
     getItem: (key) => store.get(key) ?? null,
     setItem: (key, value) => {
@@ -69,8 +72,11 @@ function makeHarness(options: { savedTheme?: string; savedCustomPath?: string } 
       }
       return content;
     }),
+    syncNativeTheme: (dark) => {
+      syncCalls.push(dark);
+    },
   };
-  return { service: new ThemeService(deps), attrs, slot, store, files };
+  return { service: new ThemeService(deps), attrs, slot, store, files, syncCalls };
 }
 
 describe('ThemeService 内置主题', () => {
@@ -209,5 +215,44 @@ describe('ThemeService 自定义主题（热替换）', () => {
     expect(h.attrs.get('data-theme')).toBe('warm-light');
     expect(h.store.get(THEME_STORAGE_KEY)).toBe('warm-light');
     expect(h.store.has(CUSTOM_THEME_PATH_KEY)).toBe(false);
+  });
+});
+
+describe('ThemeService 明暗判定与原生同步', () => {
+  it('内置主题按 id 判定明暗', () => {
+    const h = makeHarness();
+    h.service.apply('warm-light');
+    expect(h.service.isDark()).toBe(false);
+    h.service.apply('cool-light');
+    expect(h.service.isDark()).toBe(false);
+    h.service.apply('dark');
+    expect(h.service.isDark()).toBe(true);
+    h.service.apply('midnight');
+    expect(h.service.isDark()).toBe(true);
+  });
+
+  it('自定义主题按 color-scheme 判定明暗，缺失回退浅色', () => {
+    expect(customThemeIsDark(':root { color-scheme: dark; }')).toBe(true);
+    expect(customThemeIsDark(':root { color-scheme: light dark; }')).toBe(false);
+    expect(customThemeIsDark(':root { color-scheme: dark light; }')).toBe(true);
+    expect(customThemeIsDark(':root { --lightink-bg: #111; }')).toBe(false);
+    const h = makeHarness();
+    h.service.loadCustomTheme(':root { color-scheme: dark; }');
+    expect(h.service.isDark()).toBe(true);
+  });
+
+  it('apply/loadCustomTheme/toggle 同步原生窗口明暗', () => {
+    const h = makeHarness();
+    h.syncCalls.length = 0;
+    h.service.apply('dark');
+    expect(h.syncCalls).toEqual([true]);
+    h.service.apply('warm-light');
+    expect(h.syncCalls).toEqual([true, false]);
+    h.syncCalls.length = 0;
+    h.service.loadCustomTheme(':root { color-scheme: dark; }');
+    expect(h.syncCalls).toEqual([true]);
+    h.syncCalls.length = 0;
+    h.service.toggle();
+    expect(h.syncCalls).toEqual([true]);
   });
 });

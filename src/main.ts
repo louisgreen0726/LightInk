@@ -98,7 +98,7 @@ import {
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry, pagingShouldIgnoreTarget, wheelPagingShouldIgnoreTarget } from './ui/shortcuts.js';
-import { setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
+import { setNativeTheme, setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
 import {
@@ -241,11 +241,13 @@ function applyLocaleChrome(): void {
 applyLocaleChrome();
 
 // 主题服务：首次启动默认 warm-light，恢复上次选择；自定义主题走 <style> 注入槽。
+// R3：主题切换同步原生窗口明暗（Tauri setTheme → 原生标题栏颜色）。
 const themeService = new ThemeService({
   root: document.documentElement,
   customStyleSlot: createStyleTagSlot(document),
   storage: window.localStorage,
   readFile,
+  syncNativeTheme: (dark) => void setNativeTheme(dark),
 });
 
 function reportCustomThemeError(error: unknown): void {
