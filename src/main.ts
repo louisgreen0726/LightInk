@@ -97,7 +97,7 @@ import {
   type ReadingLayout,
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
-import { ShortcutRegistry } from './ui/shortcuts.js';
+import { ShortcutRegistry, isEditableTarget, isModalTarget } from './ui/shortcuts.js';
 import { toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
@@ -2183,6 +2183,10 @@ document.addEventListener(
     if (event.ctrlKey || event.metaKey || event.altKey || !isReadingNavKey(event.key)) {
       return;
     }
+    // 应用模态弹层（确认框、链接对话框等）打开时不劫持翻页键。
+    if (isModalTarget(event.target)) {
+      return;
+    }
     if (activeReaderTab() !== null) {
       return;
     }
@@ -2190,14 +2194,9 @@ document.addEventListener(
     if (tab === null) {
       return;
     }
-    const target = event.target;
-    if (
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      (target instanceof HTMLElement && target.isContentEditable)
-    ) {
-      // contenteditable 一律排除：isReadingNavKey 含 Space 与方向键，放进翻页链会
-      // 让分页 Markdown 里的正文输入/光标移动被劫持成翻页。
+    if (isEditableTarget(event.target)) {
+      // contenteditable/输入框/源码 textarea 一律排除：isReadingNavKey 含 Space 与
+      // 方向键，放进翻页链会让正文输入/光标移动被劫持成翻页。
       return;
     }
     const direction = readingNavDirection(event.key, event.shiftKey);
@@ -2211,13 +2210,18 @@ document.addEventListener(
   true,
 );
 
-editorScroller.addEventListener(
+// 滚轮翻页提升到 window：在大纲侧栏、顶部 chrome、状态栏之外的空白区也可翻页；
+// 输入框/可编辑内容/打开模态时早退，不劫持其自身滚动与文本输入。
+window.addEventListener(
   'wheel',
   (event) => {
     if (event.ctrlKey || event.metaKey || readingLayout !== 'paginated') {
       return;
     }
     if (activeReaderTab() !== null || activeMarkdownTab() === null) {
+      return;
+    }
+    if (isModalTarget(event.target) || isEditableTarget(event.target)) {
       return;
     }
     const delta =
