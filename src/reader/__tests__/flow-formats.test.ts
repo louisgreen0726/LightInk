@@ -626,6 +626,48 @@ describe('parseEpub', () => {
       else Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
     }
   });
+
+  it('快路径 await 窗口内并发 release 吊销共享条目后重新物化（不装破图）', async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    let created = 0;
+    const revoked: string[] = [];
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => `blob:epub-race-${(created += 1)}`,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: (url: string) => revoked.push(url),
+    });
+    try {
+      const content = await parseEpub(await buildSharedImageEpub());
+      const doc1 = document.implementation.createHTMLDocument('');
+      doc1.body.innerHTML = content.chapters[0]!.html;
+      const doc2 = document.implementation.createHTMLDocument('');
+      doc2.body.innerHTML = content.chapters[1]!.html;
+      await content.chapters[0]!.resolveResources?.(doc1);
+      expect(created).toBe(1);
+      // 快路径回归:materializeOne 命中已物化条目,await 让出微任务;在 map 查找与
+      // refs++/setAttribute 之间插入另一章的 release——共享条目被 revoke 并孤儿化。
+      const pending = content.chapters[1]!.resolveResources?.(doc2);
+      content.chapters[0]!.releaseResources?.(doc1);
+      expect(revoked).toEqual(['blob:epub-race-1']);
+      await pending;
+      // continuation 校验条目仍受记账,孤儿化则重新物化,不把已吊销 URL 装进 img。
+      expect(doc2.querySelector('img')?.getAttribute('src')).toBe('blob:epub-race-2');
+      expect(created).toBe(2);
+      content.chapters[1]!.releaseResources?.(doc2);
+      expect(revoked).toEqual(['blob:epub-race-1', 'blob:epub-race-2']);
+      content.dispose?.();
+      expect(revoked).toEqual(['blob:epub-race-1', 'blob:epub-race-2']);
+    } finally {
+      if (originalCreate === undefined) Reflect.deleteProperty(URL, 'createObjectURL');
+      else Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      if (originalRevoke === undefined) Reflect.deleteProperty(URL, 'revokeObjectURL');
+      else Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+    }
+  });
 });
 
 describe('parseMobi', () => {

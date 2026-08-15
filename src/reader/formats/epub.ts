@@ -292,7 +292,13 @@ export async function parseEpub(
         if (manifestItem === undefined) {
           continue;
         }
-        const entry = await materializeOne(source, manifestItem.mediaType);
+        let entry = await materializeOne(source, manifestItem.mediaType);
+        // 快路径 await 会让出微任务：跨章并发下另一章的 releaseImages 可在此窗口
+        // 把共享条目计数减到 0、revokeObjectURL 并从记账表删除。计数获取与 map
+        // 查找须原子化——条目已不在记账表(孤儿化)时重新物化,绝不装已吊销 URL。
+        while (entry !== null && materialized.get(source) !== entry) {
+          entry = await materializeOne(source, manifestItem.mediaType);
+        }
         if (entry === null) {
           continue;
         }
