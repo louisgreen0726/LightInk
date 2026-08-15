@@ -232,7 +232,8 @@ export async function renderPdfInto(
   throwIfReaderLoadCancelled(signal);
   pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
 
-  const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+  // 字节来自 raw IPC 专属拷贝，无复用方，直接移交 pdfjs，避免整本 PDF 防御拷贝。
+  const loadingTask = pdfjs.getDocument({ data: bytes });
   let doc: Awaited<typeof loadingTask.promise>;
   const cancelInitialLoad = (): void => {
     void loadingTask.destroy();
