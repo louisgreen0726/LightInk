@@ -301,6 +301,11 @@ export class TabManager {
     return this.saveStatuses.get(id) ?? (tab.dirty ? 'dirty' : 'saved');
   }
 
+  /** 内容版本号（每次输入变更 +1）；供状态栏等按版本跳过冗余全量序列化。 */
+  getContentRevision(id: string): number {
+    return this.contentRevisions.get(id) ?? 0;
+  }
+
   /** 新建未命名标签。快照键含跨会话唯一 token，避免复用覆盖崩溃草稿。 */
   async newTab(initialMarkdown = ''): Promise<MarkdownTabState> {
     this.untitledCounter += 1;

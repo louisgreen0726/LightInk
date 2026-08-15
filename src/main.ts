@@ -1514,6 +1514,9 @@ statusBar = createStatusBar(document, shell.statusBarHost, {
   }),
 });
 
+/** R8：状态栏 Markdown 序列化缓存——按内容版本去重，避免光标移动时重复全量序列化。 */
+let statusMarkdownCache: { tabId: string; revision: number; markdown: string } | null = null;
+
 /** Build the active editor or Reader status from its owning instance. */
 function getActiveStatusSnapshot(): StatusBarSnapshot {
   const tab = manager.activeTab;
@@ -1526,7 +1529,18 @@ function getActiveStatusSnapshot(): StatusBarSnapshot {
     };
   }
   try {
-    const markdown = tab.editor.getMarkdown();
+    const revision = manager.getContentRevision(tab.id);
+    let markdown: string;
+    if (
+      statusMarkdownCache !== null &&
+      statusMarkdownCache.tabId === tab.id &&
+      statusMarkdownCache.revision === revision
+    ) {
+      markdown = statusMarkdownCache.markdown;
+    } else {
+      markdown = tab.editor.getMarkdown();
+      statusMarkdownCache = { tabId: tab.id, revision, markdown };
+    }
     const source = sourceViews.get(tab.id);
     const textarea =
       source?.isSourceMode === true
