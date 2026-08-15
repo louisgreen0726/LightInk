@@ -89,6 +89,7 @@ import {
   applyReadingLayout,
   clearPagedSpreadVars,
   createPagedWheelGate,
+  createResizeSettle,
   isReadingNavKey,
   loadReadingLayout,
   pagedSpreadMetrics,
@@ -155,6 +156,13 @@ function syncReadingColumns(): void {
   }
   const fontSize = parseFloat(getComputedStyle(scroller).fontSize);
   applyPagedSpreadVars(scroller, pagedSpreadMetrics(readingSurfaceWidth(), fontSize));
+}
+
+// R5：窗口尺寸/大纲三态/chrome pin 变化时分栏重算合并去抖（settle 180ms），
+// 避免 resize 突发强制回流；字号缩放（lightink:font-scale）保持即时同步。
+const settleReadingColumns = createResizeSettle(180);
+function scheduleReadingColumnSync(): void {
+  settleReadingColumns(syncReadingColumns);
 }
 
 function setReadingLayout(next: ReadingLayout): void {
@@ -1004,7 +1012,10 @@ shell = createAppShell(
     canReloadCustomTheme: () => themeService.customThemePath !== null,
     canResetCustomTheme: () =>
       themeService.isCustomThemeActive || themeService.customThemePath !== null,
-    onToggleOutline: () => outline.toggleCollapse(),
+    onToggleOutline: () => {
+      outline.toggleCollapse();
+      scheduleReadingColumnSync();
+    },
     // T7/R10：整窗 WYSIWYG ↔ 源码模式切换。
     onToggleSourceMode: () => toggleActiveSourceMode(),
     getReadingLayout: () => readingLayout,
@@ -1094,12 +1105,14 @@ function toggleChromePinnedWithOutline(): void {
       outlineVisibilityBeforeImmersive = outline.visibility;
       outline.setVisibility('hidden');
     }
+    scheduleReadingColumnSync();
     return;
   }
   if (nowPinned && outlineVisibilityBeforeImmersive !== null && outline !== undefined) {
     outline.setVisibility(outlineVisibilityBeforeImmersive);
     outlineVisibilityBeforeImmersive = null;
   }
+  scheduleReadingColumnSync();
 }
 
 /** Fullscreen also forces unpinned chrome + fully hidden outline for a clean canvas. */
@@ -1548,7 +1561,7 @@ function changeReadingScale(action: 'in' | 'out' | 'reset'): void {
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。
 statusBar.refresh(getActiveStatusSnapshot);
 syncReadingColumns();
-window.addEventListener('resize', syncReadingColumns);
+window.addEventListener('resize', scheduleReadingColumnSync);
 document.addEventListener('lightink:font-scale', syncReadingColumns);
 document.addEventListener('selectionchange', () => {
   statusBar.scheduleUpdate(getActiveStatusSnapshot);
