@@ -270,3 +270,162 @@ export function createPagedWheelGate(minIntervalMs = 160): (
     return moved;
   };
 }
+
+/**
+ * Slot (chapter / page) whose top edge is nearest to the viewport top.
+ * Single source for the flow chapter scan, the PDF page scan and the CBZ
+ * page scan. Ties keep the earlier slot (strict `<`), and empty input
+ * returns -1 so callers can apply their own default.
+ */
+export function nearestVisibleSlot(slotTops: readonly number[], viewportTop: number): number {
+  let best = -1;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < slotTops.length; i += 1) {
+    const dist = Math.abs(slotTops[i]! - viewportTop);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Axis-aligned rect in viewport coordinates (e.g. getBoundingClientRect). */
+export interface LayoutRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Slot under the viewport center, plus the point inside that slot (0..1). */
+export interface ViewportAnchor {
+  index: number;
+  xRatio: number;
+  yRatio: number;
+}
+
+/**
+ * Shared zoom anchor math (extracted from the PDF reader): find the slot under
+ * the viewport center and the exact point inside it, so a zoom can keep that
+ * document point under the viewport center. When the center is not inside any
+ * slot, the nearest slot midpoint wins; `fallbackIndex` breaks empty input.
+ */
+export function viewportAnchor(
+  viewport: LayoutRect,
+  slots: readonly LayoutRect[],
+  fallbackIndex = 0,
+): ViewportAnchor {
+  const cx = viewport.left + viewport.width / 2;
+  const cy = viewport.top + viewport.height / 2;
+  let index = Math.max(0, Math.min(slots.length - 1, fallbackIndex));
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < slots.length; i += 1) {
+    const slot = slots[i]!;
+    const inside =
+      cx >= slot.left &&
+      cx <= slot.left + slot.width &&
+      cy >= slot.top &&
+      cy <= slot.top + slot.height;
+    if (inside) {
+      index = i;
+      break;
+    }
+    const midX = slot.left + slot.width / 2;
+    const midY = slot.top + slot.height / 2;
+    const dist = (midX - cx) ** 2 + (midY - cy) ** 2;
+    if (dist < best) {
+      best = dist;
+      index = i;
+    }
+  }
+  const slot = slots[index];
+  if (slot === undefined || slot.width <= 0 || slot.height <= 0) {
+    return { index, xRatio: 0.5, yRatio: 0.5 };
+  }
+  return {
+    index,
+    xRatio: (cx - slot.left) / slot.width,
+    yRatio: (cy - slot.top) / slot.height,
+  };
+}
+
+/**
+ * Keep the captured document point under the viewport center after a zoom.
+ * `slotInViewport` is the anchored slot's rect in the *new* viewport
+ * coordinates; the result is the scroller offset to apply.
+ */
+export function scrollToKeepViewportAnchor(
+  scroller: { scrollLeft: number; scrollTop: number; clientWidth: number; clientHeight: number },
+  slotInViewport: LayoutRect,
+  anchor: ViewportAnchor,
+): { scrollLeft: number; scrollTop: number } {
+  const targetX = scroller.scrollLeft + slotInViewport.left + slotInViewport.width * anchor.xRatio;
+  const targetY = scroller.scrollTop + slotInViewport.top + slotInViewport.height * anchor.yRatio;
+  return {
+    scrollLeft: Math.max(0, targetX - scroller.clientWidth / 2),
+    scrollTop: Math.max(0, targetY - scroller.clientHeight / 2),
+  };
+}
+
+/** Injectable animation-frame source so the coalescing logic stays headless-testable. */
+export interface FrameScheduler {
+  request(callback: () => void): number;
+  cancel(handle: number): void;
+}
+
+/** FrameScheduler over the ambient requestAnimationFrame, or null when absent. */
+export function rafFrameScheduler(): FrameScheduler | null {
+  const g = globalThis as {
+    requestAnimationFrame?: (callback: () => void) => number;
+    cancelAnimationFrame?: (handle: number) => void;
+  };
+  if (typeof g.requestAnimationFrame !== 'function' || typeof g.cancelAnimationFrame !== 'function') {
+    return null;
+  }
+  return {
+    request: (callback) => g.requestAnimationFrame!(callback),
+    cancel: (handle) => g.cancelAnimationFrame!(handle),
+  };
+}
+
+/**
+ * Coalesce bursty scroll events into one callback per animation frame:
+ * the first event requests a frame, later events within the same frame are
+ * merged away, and `cancel()` drops a pending frame (e.g. on teardown).
+ * Chapter/page indicators and progress snapshots run in the same frame.
+ */
+export function createCoalescedScrollHandler(
+  onFrame: () => void,
+  scheduler: FrameScheduler,
+): { schedule(): void; cancel(): void } {
+  let handle: number | null = null;
+  let pending = false;
+  const run = (): void => {
+    if (!pending) {
+      return; // stale frame fired after cancel()
+    }
+    pending = false;
+    handle = null;
+    onFrame();
+  };
+  return {
+    schedule() {
+      if (pending) {
+        return;
+      }
+      pending = true;
+      handle = scheduler.request(run);
+    },
+    cancel() {
+      if (!pending) {
+        return;
+      }
+      pending = false;
+      if (handle !== null) {
+        scheduler.cancel(handle);
+      }
+      handle = null;
+    },
+  };
+}
