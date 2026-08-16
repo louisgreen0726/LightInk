@@ -133,16 +133,16 @@ describe('exportActiveTabHtml', () => {
     expect(deps.writeFile).not.toHaveBeenCalled();
   });
 
-  it('图片读取失败不阻断导出：保留原 src 并上报警告', async () => {
+  it('图片读取失败则中止导出并上报', async () => {
     const deps = makeDeps({
       readImageBase64: vi.fn(async () => {
         throw new Error('io');
       }),
     });
-    await expect(exportActiveTabHtml(deps)).resolves.toBe(true);
-    const [, html] = vi.mocked(deps.writeFile).mock.calls[0];
-    expect(html).toContain('src="assets/a.png"');
+    await expect(exportActiveTabHtml(deps)).resolves.toBe(false);
+    expect(deps.writeFile).not.toHaveBeenCalled();
     expect(deps.reportError).toHaveBeenCalledOnce();
+    expect(String(vi.mocked(deps.reportError).mock.calls[0][1])).toMatch(/图片读取失败/);
   });
 });
 

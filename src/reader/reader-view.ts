@@ -119,20 +119,6 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
 }
 
-function normalizePlainText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-/** 正文已有同名标题时不再包一层导出 h1，避免 PDF 章节名重复。 */
-export function exportChapterMarkup(title: string, html: string): string {
-  const heading = title.trim();
-  const leading = html.match(/^\s*<(h[1-3])\b[^>]*>([\s\S]*?)<\/\1>/i);
-  const leadingText = leading?.[2] === undefined ? '' : normalizePlainText(leading[2].replace(/<[^>]+>/g, ''));
-  const headingMarkup =
-    heading === '' || leadingText === normalizePlainText(heading) ? '' : `<h1>${heading}</h1>`;
-  return `<section class="lightink-export-chapter">${headingMarkup}${html}</section>`;
-}
-
 /** 文本层相关变更：层容器插入，或层内部 childList 变更（pdfjs TextLayer.render 异步追加 span）。 */
 function isEndOfContent(node: Node): boolean {
   return node.nodeType === 1 && (node as Element).classList.contains('endOfContent');
@@ -261,8 +247,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let readerOutline: OutlineItem[] = [];
   let exportChapters: ReaderChapter[] = [];
   let exportStylesheet = '';
-  let exportEmbedImages: ((html: string) => Promise<{ html: string; missing: readonly string[] }>) | null =
-    null;
+  let exportEmbedImages:
+    | ((
+        html: string,
+        mode?: 'inline' | 'blob',
+      ) => Promise<{ html: string; missing: readonly string[] }>)
+    | null = null;
   let loadGeneration = 0;
   let activeLoadController: AbortController | null = null;
   let destroyed = false;
@@ -2395,30 +2385,39 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     getOutline: () => readerOutline,
     jumpToOutlineItem,
     isAnnotationEnabled: () => annotationsEnabled,
-    getExportHtml: async () => {
+    getExportHtml: async (mode = 'blob') => {
       if (exportChapters.length === 0) {
         return null;
       }
-      const escape = (value: string): string =>
-        value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const publisher = sanitizeReaderCss(exportStylesheet);
       const style =
         (publisher === '' ? '' : `<style>${publisher}</style>`) +
         '<style>.lightink-export-chapter{break-before:page;page-break-before:always}' +
-        '.lightink-export-chapter:first-of-type{break-before:auto;page-break-before:auto}</style>';
-      const raw =
-        style +
-        exportChapters
-          .map((chapter, index) => {
-            const title = chapter.title.trim() || t('reader.chapter', { n: String(index + 1) });
-            return exportChapterMarkup(escape(title), chapter.html);
-          })
-          .join('');
-      if (exportEmbedImages === null) {
-        return raw;
+        '.lightink-export-chapter:first-of-type{break-before:auto;page-break-before:auto}' +
+        '.lightink-export-bookmark{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;font-size:1px;line-height:1;color:transparent}</style>';
+      const missing: string[] = [];
+      const sections: string[] = [];
+      for (const [index, chapter] of exportChapters.entries()) {
+        // 阅读器 chrome 标题不能做成正文 h1（会和书里标题叠成两行）。
+        // 封面/插图等无 heading 的章仍需一个隐藏 h1，否则 PDF 书签/目录会丢这些条目。
+        const title = chapter.title.trim() || t('reader.chapter', { n: String(index + 1) });
+        const bookmark = /<h[1-6]\b/i.test(chapter.html)
+          ? ''
+          : `<h1 class="lightink-export-bookmark">${title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h1>`;
+        let markup = `<section class="lightink-export-chapter">${bookmark}${chapter.html}</section>`;
+        if (exportEmbedImages !== null) {
+          const embedded = await exportEmbedImages(markup, mode);
+          markup = embedded.html;
+          missing.push(...embedded.missing);
+        }
+        sections.push(markup);
       }
-      const embedded = await exportEmbedImages(raw);
-      return embedded.html;
+      if (missing.length > 0) {
+        throw new Error(
+          `有 ${new Set(missing).size} 张图片无法内嵌: ${[...new Set(missing)].join(', ')}`,
+        );
+      }
+      return style + sections.join('');
     },
   };
 }

@@ -535,13 +535,17 @@ describe('parseEpub', () => {
       // 再次进入视口可重新物化；dispose 兜底 revoke。
       await content.chapters[0]!.resolveResources?.(frameDoc);
       expect(frameDoc.querySelector('img')?.getAttribute('src')).toBe('blob:epub-cover');
-      const exported = await content.embedExportImages?.(
+      const inlined = await content.embedExportImages?.(
         `<img src="OEBPS/images/pic.png"><img src="blob:epub-cover">`,
+        'inline',
       );
-      expect(exported?.missing).toEqual([]);
-      expect(exported?.html).toContain('data:image/png;base64,');
-      expect(exported?.html).not.toContain('OEBPS/images/pic.png');
-      expect(exported?.html).not.toContain('blob:epub-cover');
+      expect(inlined?.missing).toEqual([]);
+      expect(inlined?.html).toContain('data:image/png;base64,');
+      expect(inlined?.html).not.toContain('OEBPS/images/pic.png');
+      const asBlob = await content.embedExportImages?.('<img src="OEBPS/images/pic.png">', 'blob');
+      expect(asBlob?.missing).toEqual([]);
+      expect(asBlob?.html).toContain('blob:epub-cover');
+      expect(asBlob?.html).not.toContain('OEBPS/images/pic.png');
       content.dispose?.();
       content.dispose?.();
       expect(revoked).toEqual(['blob:epub-cover', 'blob:epub-cover']);

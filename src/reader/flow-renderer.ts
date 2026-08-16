@@ -99,7 +99,8 @@ html[data-reading-layout='paginated'] body {
   margin: 0;
   overflow: visible;
 }
-img, figure, table, pre, h1, h2, h3, h4, h5, h6 { break-inside: avoid; }
+/* 只锁单张图/标题不被拦腰切断。figure 整块 avoid 会把「图+后面文字」一起推到下一栏，左栏变空。 */
+img, table, pre, h1, h2, h3, h4, h5, h6 { break-inside: avoid; }
 img, svg {
   max-width: 100% !important;
   width: auto !important;
@@ -110,12 +111,19 @@ img, svg {
 }
 html[data-reading-layout='paginated'] img,
 html[data-reading-layout='paginated'] svg {
-  max-height: var(--lightink-reader-page-height, 100%);
+  /* 一图一栏：双栏时一页两张。不给 figure 写 avoid，避免整块内容被推走。 */
+  max-width: var(--lightink-reader-column-width, 100%) !important;
+  max-height: var(--lightink-reader-page-height, 100%) !important;
+  width: auto !important;
+  height: auto !important;
+  box-sizing: border-box;
+  break-inside: avoid;
+  column-span: none;
 }
 html[data-reading-layout='paginated'] figure {
-  max-width: 100%;
-  max-height: var(--lightink-reader-page-height, 100%);
+  max-width: var(--lightink-reader-column-width, 100%);
   margin: 1.1rem auto;
+  break-inside: auto;
 }
 table { max-width: 100%; border-collapse: collapse; }
 th, td { padding: 0.35rem 0.5rem; border: 1px solid currentColor; }
@@ -485,6 +493,24 @@ export function createFlowRenderer(
     html.style.columnFill = 'auto';
     applyPagedSpreadVars(html, { columnWidth, columns, gap });
     html.style.setProperty('--lightink-reader-page-height', `${height}px`);
+    html.style.removeProperty('--lightink-reader-image-max-height');
+    // 一图一栏：只钳制 img/svg。figure 保持可拆，避免「图+后文」整块被推到右栏。
+    for (const media of frameDocument.querySelectorAll<HTMLElement>('img, svg')) {
+      media.style.maxWidth = `${columnWidth}px`;
+      media.style.maxHeight = `${height}px`;
+      media.style.width = 'auto';
+      media.style.height = 'auto';
+      media.style.breakInside = 'avoid';
+      media.style.removeProperty('break-before');
+      media.style.columnSpan = 'none';
+    }
+    for (const figure of frameDocument.querySelectorAll<HTMLElement>('figure')) {
+      figure.style.maxWidth = `${columnWidth}px`;
+      figure.style.breakInside = 'auto';
+      figure.style.removeProperty('max-height');
+      figure.style.removeProperty('break-before');
+      figure.style.removeProperty('column-span');
+    }
     html.style.removeProperty('--lightink-reader-measure');
     frameDocument.body.style.boxSizing = 'border-box';
     frameDocument.body.style.height = 'auto';

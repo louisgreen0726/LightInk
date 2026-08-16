@@ -455,6 +455,7 @@ export async function parseEpub(
     const stylesheet = sanitizeReaderCss(stylesheetParts.join('\n'));
     const embedExportImages = async (
       html: string,
+      mode: 'inline' | 'blob' = 'inline',
     ): Promise<{ html: string; missing: readonly string[] }> => {
       const srcs = [...html.matchAll(/(<img\b[^>]*?\bsrc=")([^"]*)(")/gi)].map((m) => m[2]!);
       const unique = [...new Set(srcs)].filter((src) => {
@@ -462,11 +463,11 @@ export async function parseEpub(
           return false;
         }
         if (src.startsWith('blob:')) {
-          return pathByUrl.has(src);
+          return mode === 'inline' && pathByUrl.has(src);
         }
         return !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(src);
       });
-      const cache = new Map<string, { mime: string; base64: string } | null>();
+      const cache = new Map<string, string | null>();
       for (const src of unique) {
         const path = src.startsWith('blob:') ? pathByUrl.get(src) : src;
         if (path === undefined) {
@@ -475,19 +476,32 @@ export async function parseEpub(
         }
         const ready = materialized.get(path);
         if (ready !== undefined) {
-          cache.set(src, { mime: ready.mime, base64: bytesToBase64(ready.bytes) });
+          cache.set(
+            src,
+            mode === 'blob' ? ready.url : `data:${ready.mime};base64,${bytesToBase64(ready.bytes)}`,
+          );
+          continue;
+        }
+        if (mode === 'blob') {
+          const manifestItem = manifestByPath.get(path);
+          if (manifestItem === undefined) {
+            cache.set(src, null);
+            continue;
+          }
+          const entry = await materializeOne(path, manifestItem.mediaType);
+          cache.set(src, entry?.url ?? null);
           continue;
         }
         const cached = exportBytes.get(path);
         if (cached !== undefined) {
-          cache.set(src, { mime: cached.mime, base64: bytesToBase64(cached.bytes) });
+          cache.set(src, `data:${cached.mime};base64,${bytesToBase64(cached.bytes)}`);
           continue;
         }
         const pending = materializing.get(path);
         if (pending !== undefined) {
           const entry = await pending;
           if (entry !== null) {
-            cache.set(src, { mime: entry.mime, base64: bytesToBase64(entry.bytes) });
+            cache.set(src, `data:${entry.mime};base64,${bytesToBase64(entry.bytes)}`);
             continue;
           }
         }
@@ -500,10 +514,7 @@ export async function parseEpub(
         try {
           const data = Uint8Array.from(await file.readBytes());
           exportBytes.set(path, { mime: manifestItem.mediaType, bytes: data });
-          cache.set(src, {
-            mime: manifestItem.mediaType,
-            base64: bytesToBase64(data),
-          });
+          cache.set(src, `data:${manifestItem.mediaType};base64,${bytesToBase64(data)}`);
         } catch {
           cache.set(src, null);
         }
@@ -512,11 +523,11 @@ export async function parseEpub(
       const htmlOut = html.replace(
         /(<img\b[^>]*?\bsrc=")([^"]*)(")/gi,
         (whole, pre: string, src: string, post: string) => {
-          const entry = cache.get(src);
-          if (entry === undefined || entry === null) {
+          const next = cache.get(src);
+          if (next === undefined || next === null) {
             return whole;
           }
-          return `${pre}data:${entry.mime};base64,${entry.base64}${post}`;
+          return `${pre}${next}${post}`;
         },
       );
       return { html: htmlOut, missing };

@@ -135,7 +135,10 @@ function createResources(xml: XMLDocument): Fb2Resources {
       urls.clear();
       exportByUrl.clear();
     },
-    async embedExportImages(html) {
+    async embedExportImages(html, mode = 'inline') {
+      if (mode === 'blob') {
+        return { html, missing: [] };
+      }
       const srcs = [...html.matchAll(/(<img\b[^>]*?\bsrc=")([^"]*)(")/gi)].map((m) => m[2]!);
       const unique = [...new Set(srcs)].filter((src) => src.startsWith('blob:'));
       const missing = unique.filter((src) => !exportByUrl.has(src));

@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createReaderView, exportChapterMarkup } from '../reader-view.js';
+import { createReaderView } from '../reader-view.js';
 import {
   createFlowRenderer,
   flowFrameContentHeight,
@@ -447,7 +447,36 @@ describe('共享翻页布局应用器（T5：markdown 与流式同源）', () =>
       String(metrics.columns),
     );
     expect(html.style.columnWidth).toBe(`${metrics.columnWidth}px`);
+    const image = doc.createElement('img');
+    const figure = doc.createElement('figure');
+    figure.appendChild(image);
+    doc.body.appendChild(figure);
+    renderer.applyPaginatedDocument(iframe, doc);
+    expect(image.style.maxWidth).toBe(`${metrics.columnWidth}px`);
+    expect(image.style.maxHeight).toBe(html.style.height);
+    expect(image.style.columnSpan).toBe('none');
+    expect(image.style.breakBefore).toBe('');
+    expect(figure.style.breakInside).toBe('auto');
     iframe.remove();
+  });
+});
+
+describe('翻页模式插图约束', () => {
+  it('paginated chrome clamps images to column width, not the full page', () => {
+    const root = document.createElement('div');
+    const scrollHost = document.createElement('div');
+    root.appendChild(scrollHost);
+    document.body.appendChild(root);
+    const renderer = createFlowRenderer(scrollHost, root, flowRendererHooks());
+    renderer.render([{ title: '插图', html: '<img src="cover.jpg">' }]);
+    const frame = scrollHost.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')!;
+    expect(frame.srcdoc).toContain('column-span: none');
+    expect(frame.srcdoc).toContain(
+      'max-width: var(--lightink-reader-column-width, 100%) !important',
+    );
+    expect(frame.srcdoc).not.toMatch(
+      /html\[data-reading-layout='paginated'\] img[\s\S]*?break-before:\s*column/,
+    );
   });
 });
 
@@ -821,24 +850,27 @@ describe('窗口级翻页（R1：不限中间章节容器）', () => {
     expect(view.advanceReading(1)).toBe(false);
     const exported = await view.getExportHtml?.();
     expect(exported).toContain('page-break-before:always');
-    expect(exported).toContain('<h1>Chapter 1</h1><p>body</p>');
-    expect(exported?.match(/<h1>Chapter 1<\/h1>/g)).toHaveLength(1);
+    expect(exported).toContain('lightink-export-bookmark');
+    expect(exported).toContain('<h1 class="lightink-export-bookmark">Chapter 1</h1><p>body</p>');
+    expect(exported).not.toMatch(/<h1>Chapter 1<\/h1>/);
+    await view.destroy();
+  });
+
+  it('does not add a hidden bookmark when the chapter already has a heading', async () => {
+    vi.useFakeTimers();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => new Uint8Array(),
+      parseContent: async () => ({
+        chapters: [{ title: '第一章', html: '<h1>第一章</h1><p>正文</p>' }],
+      }),
+    });
+    await view.load('book2.epub');
+    const headed = await view.getExportHtml?.();
+    expect(headed).toContain('<h1>第一章</h1>');
+    expect(headed).not.toContain('<h1 class="lightink-export-bookmark">');
     await view.destroy();
   });
 });
 
-describe('exportChapterMarkup', () => {
-  it('omits a duplicate heading when the chapter body already starts with the same title', () => {
-    expect(
-      exportChapterMarkup('第一章 转生异世界变农奴', '<h1>第一章 转生异世界变农奴</h1><p>正文</p>'),
-    ).toBe(
-      '<section class="lightink-export-chapter"><h1>第一章 转生异世界变农奴</h1><p>正文</p></section>',
-    );
-  });
-
-  it('keeps a wrapper heading when the body has no matching title', () => {
-    expect(exportChapterMarkup('附录', '<p>only body</p>')).toBe(
-      '<section class="lightink-export-chapter"><h1>附录</h1><p>only body</p></section>',
-    );
-  });
-});

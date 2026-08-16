@@ -29,6 +29,16 @@ export const PRINT_CSS = `/* LightInk 打印微调 */
   pre { white-space: pre-wrap; word-break: break-word; }
   .lightink-export-chapter { break-before: page; page-break-before: always; }
   .lightink-export-chapter:first-of-type { break-before: auto; page-break-before: auto; }
+  img, svg, figure {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    max-width: 100% !important;
+    max-height: calc(100vh - 32mm);
+    width: auto !important;
+    height: auto !important;
+    display: block;
+    object-fit: contain;
+  }
 }
 `;
 

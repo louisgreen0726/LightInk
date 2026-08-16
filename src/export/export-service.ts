@@ -111,7 +111,7 @@ function reportDocumentBuildError(
 
 /**
  * 装配当前活动标签的导出选项（内容内嵌图片 + 主题 + CSS）。
- * 无活动标签返回 null；图片读取失败不阻断（记入 missingImages）。
+ * 无活动标签返回 null；图片读取失败中止导出并上报。
  */
 async function assembleActiveTab(
   deps: ExportServiceDeps,
@@ -128,9 +128,8 @@ async function assembleActiveTab(
     ),
   );
   if (embedded.missing.length > 0) {
-    deps.reportError(
-      `有 ${embedded.missing.length} 张图片读取失败，导出文档中保留原始引用: ${embedded.missing.join(', ')}`,
-      null,
+    throw new Error(
+      `有 ${embedded.missing.length} 张图片读取失败: ${embedded.missing.join(', ')}`,
     );
   }
   const outlined = outlineFromHeadingHtml(embedded.html);
@@ -151,7 +150,13 @@ async function assembleActiveTab(
  * （失败经 reportError 上报）；成功返回 true。
  */
 export async function exportActiveTabHtml(deps: ExportServiceDeps): Promise<boolean> {
-  const assembled = await assembleActiveTab(deps);
+  let assembled: AssembledExport | null;
+  try {
+    assembled = await assembleActiveTab(deps);
+  } catch (error) {
+    deps.reportError('导出 HTML 失败', error);
+    return false;
+  }
   if (assembled === null) {
     deps.reportError('没有可导出的活动标签', null);
     return false;
@@ -183,7 +188,13 @@ export async function exportActiveTabHtml(deps: ExportServiceDeps): Promise<bool
  * （WKWebView 打印 bug + 系统打印对话框）。无活动标签返回 false。
  */
 export async function exportActiveTabPdf(deps: ExportServiceDeps): Promise<boolean> {
-  const assembled = await assembleActiveTab(deps);
+  let assembled: AssembledExport | null;
+  try {
+    assembled = await assembleActiveTab(deps);
+  } catch (error) {
+    deps.reportError('导出 PDF 失败', error);
+    return false;
+  }
   if (assembled === null) {
     deps.reportError('没有可导出的活动标签', null);
     return false;

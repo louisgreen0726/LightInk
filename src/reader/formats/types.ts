@@ -41,10 +41,13 @@ export interface ReaderContent {
   /** Release parser-owned blob/object URLs. Idempotent when provided. */
   dispose?: () => void;
   /**
-   * 导出用图片内嵌：把章节 HTML 中的包内路径 / blob: src 换成 data URI。
-   * EPUB 从 zip 解压，FB2 从已物化 blob 读回；失败的 src 列入 missing。
+   * 导出用图片解析：把章节 HTML 中的包内路径换成可打印 src。
+   * `inline` 写 data URI（独立 HTML）；`blob` 复用/补物化 blob URL（PDF 打印，避免整本 base64 撑爆 WebView）。
    */
-  embedExportImages?: (html: string) => Promise<{ html: string; missing: readonly string[] }>;
+  embedExportImages?: (
+    html: string,
+    mode?: 'inline' | 'blob',
+  ) => Promise<{ html: string; missing: readonly string[] }>;
 }
 
 export type ReaderWarningKind = 'epubStylesIgnored';

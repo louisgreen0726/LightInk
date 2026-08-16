@@ -85,8 +85,11 @@ export interface ReaderInstance {
   jumpToOutlineItem(item: OutlineItem): void;
   /** 当前文档是否启用了标注（取决于 content_hash / 标注存储是否可用）。 */
   isAnnotationEnabled(): boolean;
-  /** 流式阅读内容的导出 HTML（章节标题 + 正文，包内图已内嵌）；页式格式返回 null。 */
-  getExportHtml?(): Promise<string | null>;
+  /**
+   * 流式阅读内容的导出 HTML（章节标题 + 正文）。
+   * PDF 默认复用 blob URL，避免整本 data URI 撑爆打印；独立 HTML 传 `inline`。
+   */
+  getExportHtml?(mode?: 'inline' | 'blob'): Promise<string | null>;
 }
 
 export interface ReaderLoadOptions {

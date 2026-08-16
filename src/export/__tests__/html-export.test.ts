@@ -95,6 +95,14 @@ describe('outlineFromHeadingHtml', () => {
     expect(outline.map((item) => item.id)).toEqual(['keep', 'same', 'same-2']);
     expect(bodyHtml).toContain('<h1 id="keep">A</h1>');
   });
+
+  it('includes hidden export bookmarks so cover/illustration chapters stay in the PDF outline', () => {
+    const { outline } = outlineFromHeadingHtml(
+      '<section><h1 class="lightink-export-bookmark">封面</h1><img src="cover.jpg"></section>' +
+        '<section><h1>第一章</h1><p>正文</p></section>',
+    );
+    expect(outline.map((item) => item.text)).toEqual(['封面', '第一章']);
+  });
 });
 
 describe('buildHtmlDocument outline', () => {

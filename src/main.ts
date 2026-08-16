@@ -798,13 +798,15 @@ function loadExportPipeline(): Promise<ExportPipeline> {
 
 // T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
 // src/export/ 下（可 headless 测试）。
-async function activeExportSnapshot(): Promise<ExportTabSnapshot | null> {
+async function activeExportSnapshot(
+  kind: 'html' | 'pdf' = 'html',
+): Promise<ExportTabSnapshot | null> {
   const tab = manager.activeTab;
   if (tab === null) {
     return null;
   }
   if (tab.kind === 'reader') {
-    const contentHtml = (await tab.reader.getExportHtml?.()) ?? null;
+    const contentHtml = (await tab.reader.getExportHtml?.(kind === 'pdf' ? 'blob' : 'inline')) ?? null;
     if (contentHtml === null) {
       return null;
     }
@@ -916,7 +918,7 @@ function createExportDeps(
 
 async function runActiveExport(kind: 'html' | 'pdf'): Promise<void> {
   try {
-    const snapshot = await activeExportSnapshot();
+    const snapshot = await activeExportSnapshot(kind);
     const pipeline = await loadExportPipeline();
     const deps = createExportDeps(pipeline, snapshot);
     if (kind === 'html') {
