@@ -69,7 +69,13 @@ describe('parser', () => {
   });
 
   it('classifies every relevant MDAST type into a known SyntaxKind', () => {
-    expect(mdastTypeToSyntaxKind('heading', { headingDepth: 3 })).toBe('heading-3');
+    for (let depth = 1; depth <= 6; depth++) {
+      expect(mdastTypeToSyntaxKind('heading', { headingDepth: depth })).toBe(`heading-${depth}`);
+    }
+    // clamp 边界：depth 0/undefined → heading-1，depth >6 → heading-6。
+    expect(mdastTypeToSyntaxKind('heading', { headingDepth: 0 })).toBe('heading-1');
+    expect(mdastTypeToSyntaxKind('heading', { headingDepth: 7 })).toBe('heading-6');
+    expect(mdastTypeToSyntaxKind('heading', {})).toBe('heading-1');
     expect(mdastTypeToSyntaxKind('list', { ordered: false })).toBe('bullet-list');
     expect(mdastTypeToSyntaxKind('list', { ordered: true })).toBe('ordered-list');
     expect(mdastTypeToSyntaxKind('blockquote')).toBe('blockquote');
