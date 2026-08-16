@@ -28,6 +28,7 @@ import {
   readingNavDirection,
   snapPagedScroller,
 } from '../ui/reading-layout.js';
+import { DEFAULT_SHORTCUTS, matchEvent } from '../ui/shortcuts.js';
 
 const FLOW_FRAME_CSP = [
   "default-src 'none'",
@@ -65,7 +66,14 @@ html[data-reading-layout='scroll'] body {
   max-width: 100%;
   height: auto;
   min-height: 0;
-  overflow: visible;
+  /* hidden：避免 Windows 经典滚动条槽把栏宽挤窄，末行折出 iframe 后再被裁掉。 */
+  overflow: hidden;
+  scrollbar-width: none;
+}
+html[data-reading-layout='scroll']::-webkit-scrollbar,
+html[data-reading-layout='scroll'] body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 html[data-reading-layout='paginated'] {
   box-sizing: border-box;
@@ -142,13 +150,109 @@ function flowFrameSource(html: string, stylesheet = ''): string {
  * Never use html.scrollHeight after stretching the iframe — the root
  * viewport is at least as tall as the frame, so a 100000px probe would
  * lock the chapter to a blank page.
+ *
+ * The last block child's margin-bottom collapses with the (margin-less) body
+ * and therefore never shows up in `body.scrollHeight`. Without adding it back
+ * the chapter's trailing spacing (paragraph/image bottom margin) gets clipped
+ * by the frame's `overflow: hidden`, visually hiding the tail of every chapter.
+ *
+ * `scrollHeight` can also miss a last wrapped line when the iframe later
+ * reserves a classic scrollbar gutter and the line box sits past the
+ * previously measured content height. Prefer the last painted box bottom.
  */
 export function flowFrameContentHeight(frameDocument: Document): number {
   const body = frameDocument.body;
   if (body === null) {
     return 1;
   }
-  return Math.ceil(Math.max(body.scrollHeight, 1));
+  const html = frameDocument.documentElement;
+  const view = frameDocument.defaultView;
+  // 显示态用 overflow:hidden 防滚动条槽；量高时必须暂时 visible，否则
+  // 短 iframe 会先裁掉末行，scrollHeight / 绘制底边都会偏短。
+  const previousHtmlOverflow = html.style.overflow;
+  const previousBodyOverflow = body.style.overflow;
+  html.style.overflow = 'visible';
+  body.style.overflow = 'visible';
+  try {
+    const htmlRect = html.getBoundingClientRect();
+    let height = Math.max(body.scrollHeight, 1);
+    // 沿最后一个子元素向下穿透无 margin 的容器，取第一个非零 margin-bottom
+    // （其会与 body 塌陷，故 scrollHeight 未计入）。同时用绘制底边兜住
+    // scrollHeight 漏计的末行折行。
+    let current: Element | null = body;
+    while (current !== null) {
+      const last: Element | null = current.lastElementChild;
+      if (last === null) {
+        break;
+      }
+      const style = view?.getComputedStyle(last);
+      if (style === undefined) {
+        break;
+      }
+      const paintedBottom =
+        last.getBoundingClientRect().bottom - htmlRect.top + html.scrollTop;
+      if (Number.isFinite(paintedBottom) && paintedBottom > height) {
+        height = paintedBottom;
+      }
+      const marginBottom = Number.parseFloat(style.marginBottom);
+      if (Number.isFinite(marginBottom) && marginBottom > 0) {
+        height += marginBottom;
+        break;
+      }
+      // last 无 margin：若它自带底部 padding/border，其内部子元素的 margin 已被
+      // 容纳进 scrollHeight，不会再塌陷穿透到 body，停止向下。
+      const padBottom = Number.parseFloat(style.paddingBottom);
+      const borderBottom = Number.parseFloat(style.borderBottomWidth);
+      if (
+        (Number.isFinite(padBottom) && padBottom > 0) ||
+        (Number.isFinite(borderBottom) && borderBottom > 0)
+      ) {
+        break;
+      }
+      current = last;
+    }
+    // 底部安全余量：末行 descender（标题 line-height 1.35 时尤其紧贴 line box 底）
+    // 加上字号缩放后的亚像素舍入，会裁掉末行下伸 1–2px，补 0.2em 兜底。
+    const bodyStyle = view?.getComputedStyle(body);
+    const fontSize = bodyStyle === undefined ? Number.NaN : Number.parseFloat(bodyStyle.fontSize);
+    if (Number.isFinite(fontSize) && fontSize > 0) {
+      height += fontSize * 0.2;
+    }
+    return Math.ceil(height);
+  } finally {
+    html.style.overflow = previousHtmlOverflow;
+    body.style.overflow = previousBodyOverflow;
+  }
+}
+
+/** iframe 内焦点不冒泡到宿主：只转发应用快捷键，不抢复制/全选。 */
+export function shouldForwardFrameShortcut(event: KeyboardEvent): boolean {
+  if (event.defaultPrevented) {
+    return false;
+  }
+  for (const combo of Object.values(DEFAULT_SHORTCUTS)) {
+    if (matchEvent(event, combo)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 反解 CSS columns 渲染出的总列数 K：scrollWidth = K*columnWidth + (K-1)*gap，
+ * 即 K = (scrollWidth + gap) / (columnWidth + gap)。取整容差 scrollWidth 的
+ * 亚像素舍入。供分栏末屏补齐（padFinalSpread）与单测共用。
+ */
+export function totalColumnCount(
+  scrollWidth: number,
+  columnWidth: number,
+  gap: number,
+): number {
+  if (!Number.isFinite(scrollWidth) || scrollWidth <= 0) {
+    return 0;
+  }
+  const denom = Math.max(1, columnWidth + gap);
+  return Math.round((scrollWidth + gap) / denom);
 }
 
 /** 编排壳注入的回调：状态机/进度/标注/搜索与工具栏均留在 reader-view。 */
@@ -322,6 +426,41 @@ export function createFlowRenderer(
     return { width, height, fontPx };
   };
 
+  /**
+   * 双栏末屏单栏收尾时，CSS columns 的 scrollWidth 只到「上一屏右栏 + 单栏」，
+   * 滚动到底会把上一屏右栏错位成左栏（重复）。追加一个 break-before:column 的
+   * 空列占位，把 scrollWidth 补齐到整页步进的整数倍，使末屏单栏能对齐到左栏。
+   */
+  const padFinalSpread = (
+    html: HTMLElement,
+    frameDocument: Document,
+    columnWidth: number,
+    columns: number,
+    gap: number,
+  ): void => {
+    for (const existing of frameDocument.querySelectorAll('.lightink-reader-column-pad')) {
+      existing.remove();
+    }
+    if (columns <= 1) {
+      return;
+    }
+    // scrollWidth = K*columnWidth + (K-1)*gap，反解总列数 K。
+    const totalColumns = totalColumnCount(html.scrollWidth, columnWidth, gap);
+    if (totalColumns % columns === 0) {
+      return;
+    }
+    const pad = frameDocument.createElement('div');
+    pad.className = 'lightink-reader-column-pad';
+    pad.style.width = `${columnWidth}px`;
+    pad.style.height = '1px';
+    pad.style.fontSize = '0';
+    pad.style.lineHeight = '0';
+    pad.style.overflow = 'hidden';
+    pad.style.breakBefore = 'column';
+    pad.style.breakInside = 'avoid';
+    frameDocument.body.appendChild(pad);
+  };
+
   const applyPaginatedDocument = (
     frame: HTMLIFrameElement,
     frameDocument: Document,
@@ -357,6 +496,7 @@ export function createFlowRenderer(
     frameDocument.body.style.padding = '0';
     frame.style.width = `${width}px`;
     frame.style.height = `${height}px`;
+    padFinalSpread(html, frameDocument, columnWidth, columns, gap);
     if (options?.restoreRatio !== undefined) {
       applyPagedProgress(html, options.restoreRatio, step);
     } else if (options?.snap !== false) {
@@ -447,6 +587,9 @@ export function createFlowRenderer(
           frameDocument.body.style.fontSize = fontSize;
           if (!paginated) {
             const html = frameDocument.documentElement;
+            for (const pad of frameDocument.querySelectorAll('.lightink-reader-column-pad')) {
+              pad.remove();
+            }
             clearPagedSpreadVars(html);
             html.style.removeProperty('--lightink-reader-page-height');
             html.style.removeProperty('--lightink-reader-measure');
@@ -459,13 +602,13 @@ export function createFlowRenderer(
             html.style.minHeight = '0';
             html.style.width = '100%';
             html.style.maxWidth = '100%';
-            html.style.overflow = 'visible';
+            html.style.overflow = 'hidden';
             html.scrollLeft = 0;
             frameDocument.body.style.height = 'auto';
             frameDocument.body.style.minHeight = '0';
             frameDocument.body.style.width = '100%';
             frameDocument.body.style.maxWidth = '100%';
-            frameDocument.body.style.overflow = 'visible';
+            frameDocument.body.style.overflow = 'hidden';
             frame.style.width = '100%';
             frame.style.removeProperty('min-height');
             return;
@@ -577,6 +720,22 @@ export function createFlowRenderer(
             if (direction !== null && hooks.advanceReading(direction)) {
               event.preventDefault();
             }
+            return;
+          }
+          if (shouldForwardFrameShortcut(event)) {
+            event.preventDefault();
+            frameWindow.parent.document.dispatchEvent(
+              new KeyboardEvent('keydown', {
+                key: event.key,
+                code: event.code,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                altKey: event.altKey,
+                shiftKey: event.shiftKey,
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
           }
         };
         const onWheel = (event: WheelEvent): void => {
@@ -690,6 +849,9 @@ export function createFlowRenderer(
       const html = frameDocument.documentElement;
       const body = frameDocument.body;
       html.dataset.readingLayout = 'scroll';
+      for (const pad of frameDocument.querySelectorAll('.lightink-reader-column-pad')) {
+        pad.remove();
+      }
       clearPagedSpreadVars(html);
       html.style.removeProperty('--lightink-reader-page-height');
       html.style.removeProperty('--lightink-reader-measure');
@@ -702,13 +864,13 @@ export function createFlowRenderer(
       html.style.minHeight = '0';
       html.style.width = '100%';
       html.style.maxWidth = '100%';
-      html.style.overflow = 'visible';
+      html.style.overflow = 'hidden';
       html.scrollLeft = 0;
       body.style.height = 'auto';
       body.style.minHeight = '0';
       body.style.width = '100%';
       body.style.maxWidth = '100%';
-      body.style.overflow = 'visible';
+      body.style.overflow = 'hidden';
       frame.style.width = '100%';
       frame.style.removeProperty('min-height');
       const nextHeight = `${flowFrameContentHeight(frameDocument)}px`;

@@ -74,14 +74,19 @@ export interface ReaderInstance {
   openSearch?(query?: string): void;
   /** 窗口拉伸结束后重算栏宽/高度并刷新可见页，避免文字糊掉。 */
   refreshViewport?(): void;
+  /**
+   * 窗口级翻页（方向键/空格/滚轮）：翻页模式走分栏步进，滚动模式走视口高度。
+   * 与 Markdown 的 R1 对齐——悬停大纲/chrome/空白区也应翻正文，不限中间章节容器。
+   */
+  advanceReading(direction: 1 | -1): boolean;
   /** 当前文档大纲（PDF 书签 / 流式章节 / CBZ 页）；未就绪为空。 */
   getOutline(): readonly OutlineItem[];
   /** 跳转到大纲条目（PDF 按页，流式按章节）。 */
   jumpToOutlineItem(item: OutlineItem): void;
   /** 当前文档是否启用了标注（取决于 content_hash / 标注存储是否可用）。 */
   isAnnotationEnabled(): boolean;
-  /** 流式阅读内容的导出 HTML（章节标题 + 正文）；页式格式返回 null。 */
-  getExportHtml?(): string | null;
+  /** 流式阅读内容的导出 HTML（章节标题 + 正文，包内图已内嵌）；页式格式返回 null。 */
+  getExportHtml?(): Promise<string | null>;
 }
 
 export interface ReaderLoadOptions {

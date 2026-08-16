@@ -798,13 +798,13 @@ function loadExportPipeline(): Promise<ExportPipeline> {
 
 // T10（R5）：导出依赖装配。DOM/IPC 薄接线集中在此，编排与纯逻辑在
 // src/export/ 下（可 headless 测试）。
-function activeExportSnapshot(): ExportTabSnapshot | null {
+async function activeExportSnapshot(): Promise<ExportTabSnapshot | null> {
   const tab = manager.activeTab;
   if (tab === null) {
     return null;
   }
   if (tab.kind === 'reader') {
-    const contentHtml = tab.reader.getExportHtml?.() ?? null;
+    const contentHtml = (await tab.reader.getExportHtml?.()) ?? null;
     if (contentHtml === null) {
       return null;
     }
@@ -2224,15 +2224,19 @@ document.addEventListener(
     if (pagingShouldIgnoreTarget(event.target)) {
       return;
     }
-    if (activeReaderTab() !== null) {
+    const direction = readingNavDirection(event.key, event.shiftKey);
+    if (direction === null) {
+      return;
+    }
+    const readerTab = activeReaderTab();
+    if (readerTab !== null) {
+      if (readerTab.reader.advanceReading(direction)) {
+        event.preventDefault();
+      }
       return;
     }
     const tab = activeMarkdownTab();
     if (tab === null) {
-      return;
-    }
-    const direction = readingNavDirection(event.key, event.shiftKey);
-    if (direction === null) {
       return;
     }
     if (advanceMarkdownReading(direction)) {
@@ -2252,15 +2256,31 @@ window.addEventListener(
     if (event.ctrlKey || event.metaKey || readingLayout !== 'paginated') {
       return;
     }
-    if (activeReaderTab() !== null || activeMarkdownTab() === null) {
-      return;
-    }
     if (wheelPagingShouldIgnoreTarget(event.target)) {
       return;
     }
     const delta =
       Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     if (delta === 0) {
+      return;
+    }
+    const readerTab = activeReaderTab();
+    if (readerTab !== null) {
+      // PDF/CBZ 连续滚动仍走页宿主自身；只对流式分页劫持窗口滚轮。
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest('.lightink-reader-pages') !== null
+      ) {
+        return;
+      }
+      event.preventDefault();
+      gateMarkdownPagedWheel(delta > 0 ? 1 : -1, (dir) =>
+        readerTab.reader.advanceReading(dir),
+      );
+      return;
+    }
+    if (activeMarkdownTab() === null) {
       return;
     }
     event.preventDefault();

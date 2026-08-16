@@ -6,8 +6,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createReaderView } from '../reader-view.js';
-import { createFlowRenderer, flowFrameContentHeight } from '../flow-renderer.js';
+import { createReaderView, exportChapterMarkup } from '../reader-view.js';
+import {
+  createFlowRenderer,
+  flowFrameContentHeight,
+  shouldForwardFrameShortcut,
+  totalColumnCount,
+} from '../flow-renderer.js';
 import type { FlowRendererHooks } from '../flow-renderer.js';
 import { sessionRemoteImagePolicy } from '../../media/remote-image-policy.js';
 import { createSelectionToolbar, toolbarPosition } from '../selection-toolbar.js';
@@ -262,8 +267,124 @@ describe('flowFrameContentHeight', () => {
     doc.body.innerHTML = '<p>chapter</p>';
     Object.defineProperty(doc.body, 'scrollHeight', { configurable: true, value: 420 });
     Object.defineProperty(doc.documentElement, 'scrollHeight', { configurable: true, value: 100000 });
-    expect(flowFrameContentHeight(doc)).toBe(420);
+    doc.documentElement.style.overflow = 'hidden';
+    doc.body.style.overflow = 'hidden';
+    // jsdom body fontSize 16px → 0.2em 底部安全余量 = 3.2px。
+    expect(flowFrameContentHeight(doc)).toBe(Math.ceil(420 + 16 * 0.2));
+    expect(doc.documentElement.style.overflow).toBe('hidden');
+    expect(doc.body.style.overflow).toBe('hidden');
     iframe.remove();
+  });
+
+  it('adds the trailing child margin-bottom that collapses out of scrollHeight', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<div><p>chapter tail</p></div>';
+    Object.defineProperty(doc.body, 'scrollHeight', { configurable: true, value: 420 });
+    const view = doc.defaultView!;
+    const original = view.getComputedStyle.bind(view);
+    vi.spyOn(view, 'getComputedStyle').mockImplementation((el) => {
+      const style = original(el);
+      // jsdom 对无 border 元素也返回 borderBottomWidth='16px'，与真实浏览器
+      // （border-style:none → 0）不符；归一化后仅对末尾 <p> 注入底部边距。
+      Object.defineProperty(style, 'borderBottomWidth', { configurable: true, value: '0px' });
+      Object.defineProperty(style, 'paddingBottom', { configurable: true, value: '0px' });
+      if (el.tagName === 'P') {
+        Object.defineProperty(style, 'marginBottom', { configurable: true, value: '17.6px' });
+      }
+      return style;
+    });
+    expect(flowFrameContentHeight(doc)).toBe(Math.ceil(420 + 17.6 + 16 * 0.2));
+    iframe.remove();
+  });
+
+  it('uses the last painted box when scrollHeight misses a wrapped last line', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<p>chapter tail that wrapped one extra line</p>';
+    Object.defineProperty(doc.body, 'scrollHeight', { configurable: true, value: 420 });
+    const last = doc.body.lastElementChild as HTMLElement;
+    vi.spyOn(doc.documentElement, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 420,
+      left: 0,
+      right: 400,
+      width: 400,
+      height: 420,
+    } as DOMRect);
+    vi.spyOn(last, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 452,
+      left: 0,
+      right: 400,
+      width: 400,
+      height: 452,
+    } as DOMRect);
+    const view = doc.defaultView!;
+    const original = view.getComputedStyle.bind(view);
+    vi.spyOn(view, 'getComputedStyle').mockImplementation((el) => {
+      const style = original(el);
+      Object.defineProperty(style, 'borderBottomWidth', { configurable: true, value: '0px' });
+      Object.defineProperty(style, 'paddingBottom', { configurable: true, value: '0px' });
+      if (el.tagName === 'P') {
+        Object.defineProperty(style, 'marginBottom', { configurable: true, value: '17.6px' });
+      }
+      return style;
+    });
+    // 末行折到 scrollHeight 之外（Windows 滚动条槽把栏宽挤窄）：取绘制底边 + 塌陷边距。
+    expect(flowFrameContentHeight(doc)).toBe(Math.ceil(452 + 17.6 + 16 * 0.2));
+    iframe.remove();
+  });
+});
+
+describe('shouldForwardFrameShortcut', () => {
+  it('forwards reading zoom and fullscreen chords', () => {
+    expect(
+      shouldForwardFrameShortcut(
+        new KeyboardEvent('keydown', { key: '=', ctrlKey: true }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldForwardFrameShortcut(
+        new KeyboardEvent('keydown', { key: '-', ctrlKey: true }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldForwardFrameShortcut(new KeyboardEvent('keydown', { key: 'F11' })),
+    ).toBe(true);
+    expect(
+      shouldForwardFrameShortcut(
+        new KeyboardEvent('keydown', { key: 'm', ctrlKey: true }),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not steal in-frame copy or select-all', () => {
+    expect(
+      shouldForwardFrameShortcut(
+        new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldForwardFrameShortcut(
+        new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('totalColumnCount', () => {
+  it('reverse-computes rendered column count from scrollWidth', () => {
+    const columnWidth = 370;
+    const gap = 24;
+    expect(totalColumnCount(3 * columnWidth + 2 * gap, columnWidth, gap)).toBe(3);
+    expect(totalColumnCount(4 * columnWidth + 3 * gap, columnWidth, gap)).toBe(4);
+  });
+
+  it('returns 0 for empty/unknown scrollWidth (jsdom, no layout)', () => {
+    expect(totalColumnCount(0, 370, 24)).toBe(0);
   });
 });
 
@@ -327,6 +448,117 @@ describe('共享翻页布局应用器（T5：markdown 与流式同源）', () =>
     );
     expect(html.style.columnWidth).toBe(`${metrics.columnWidth}px`);
     iframe.remove();
+  });
+});
+
+const flowRendererHooks = (
+  overrides: Partial<FlowRendererHooks> = {},
+): FlowRendererHooks => ({
+  t: (key) => key,
+  remoteImagePolicy: sessionRemoteImagePolicy,
+  syncState: () => undefined,
+  applyPendingRestore: () => undefined,
+  renderHighlights: () => undefined,
+  handleNoteMarkClick: () => false,
+  onSelectionMouseUp: () => undefined,
+  openSearch: () => undefined,
+  advanceReading: () => false,
+  advancePagedWheel: () => false,
+  dismissSelectionToolbar: () => false,
+  isLayoutSwitching: () => false,
+  scrollContainer: () => document.body,
+  ...overrides,
+});
+
+describe('滚动模式章节帧高度（末行裁切）', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+  });
+
+  it('scroll chrome uses overflow:hidden so Windows does not reserve a scrollbar gutter', () => {
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const root = document.createElement('div');
+    const scrollHost = document.createElement('div');
+    root.appendChild(scrollHost);
+    document.body.appendChild(root);
+    const renderer = createFlowRenderer(scrollHost, root, flowRendererHooks());
+    renderer.render([{ title: 'Chapter 1', html: '<p>tail line</p>' }]);
+    const frame = scrollHost.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')!;
+    expect(frame.srcdoc).toMatch(
+      /html\[data-reading-layout='scroll'\][\s\S]*?overflow:\s*hidden/,
+    );
+    frame.dispatchEvent(new Event('load'));
+    const frameDocument = frame.contentDocument!;
+    expect(frameDocument.documentElement.style.overflow).toBe('hidden');
+    expect(frameDocument.body.style.overflow).toBe('hidden');
+  });
+});
+
+describe('章节 iframe 快捷键转发', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+  });
+
+  it('re-dispatches zoom and fullscreen keys onto the parent document', () => {
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const root = document.createElement('div');
+    const scrollHost = document.createElement('div');
+    root.appendChild(scrollHost);
+    document.body.appendChild(root);
+    const renderer = createFlowRenderer(scrollHost, root, flowRendererHooks());
+    renderer.render([{ title: 'Chapter 1', html: '<p>body</p>' }]);
+    const frame = scrollHost.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')!;
+    frame.dispatchEvent(new Event('load'));
+
+    const received: string[] = [];
+    const onHostKey = (event: KeyboardEvent): void => {
+      received.push(`${event.ctrlKey ? 'Ctrl+' : ''}${event.key}`);
+    };
+    document.addEventListener('keydown', onHostKey);
+    try {
+      frame.contentDocument!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: '=', ctrlKey: true, bubbles: true, cancelable: true }),
+      );
+      frame.contentDocument!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'F11', bubbles: true, cancelable: true }),
+      );
+      expect(received).toContain('Ctrl+=');
+      expect(received).toContain('F11');
+    } finally {
+      document.removeEventListener('keydown', onHostKey);
+    }
+  });
+
+  it('does not re-dispatch Ctrl+F after opening in-frame search', () => {
+    const openSearch = vi.fn();
+    document.documentElement.dataset.readingLayout = 'scroll';
+    const root = document.createElement('div');
+    const scrollHost = document.createElement('div');
+    root.appendChild(scrollHost);
+    document.body.appendChild(root);
+    const renderer = createFlowRenderer(scrollHost, root, flowRendererHooks({ openSearch }));
+    renderer.render([{ title: 'Chapter 1', html: '<p>body</p>' }]);
+    const frame = scrollHost.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')!;
+    frame.dispatchEvent(new Event('load'));
+
+    const received: string[] = [];
+    const onHostKey = (event: KeyboardEvent): void => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'f') {
+        received.push('Ctrl+F');
+      }
+    };
+    document.addEventListener('keydown', onHostKey);
+    try {
+      frame.contentDocument!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true, cancelable: true }),
+      );
+      expect(openSearch).toHaveBeenCalledTimes(1);
+      expect(received).toEqual([]);
+    } finally {
+      document.removeEventListener('keydown', onHostKey);
+    }
   });
 });
 
@@ -564,5 +796,49 @@ describe('主题切换刷新（R4）', () => {
     expect(frameBody.style.color).toBe('rgb(1, 2, 3)');
     expect(frameBody.style.color).not.toBe(original);
     await view.destroy();
+  });
+});
+
+describe('窗口级翻页（R1：不限中间章节容器）', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+  });
+
+  it('exposes advanceReading on the reader instance', async () => {
+    vi.useFakeTimers();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => new Uint8Array(),
+      parseContent: async () => ({
+        chapters: [{ title: 'Chapter 1', html: '<p>body</p>' }],
+      }),
+    });
+    await view.load('book.epub');
+    expect(typeof view.advanceReading).toBe('function');
+    expect(view.advanceReading(1)).toBe(false);
+    const exported = await view.getExportHtml?.();
+    expect(exported).toContain('page-break-before:always');
+    expect(exported).toContain('<h1>Chapter 1</h1><p>body</p>');
+    expect(exported?.match(/<h1>Chapter 1<\/h1>/g)).toHaveLength(1);
+    await view.destroy();
+  });
+});
+
+describe('exportChapterMarkup', () => {
+  it('omits a duplicate heading when the chapter body already starts with the same title', () => {
+    expect(
+      exportChapterMarkup('第一章 转生异世界变农奴', '<h1>第一章 转生异世界变农奴</h1><p>正文</p>'),
+    ).toBe(
+      '<section class="lightink-export-chapter"><h1>第一章 转生异世界变农奴</h1><p>正文</p></section>',
+    );
+  });
+
+  it('keeps a wrapper heading when the body has no matching title', () => {
+    expect(exportChapterMarkup('附录', '<p>only body</p>')).toBe(
+      '<section class="lightink-export-chapter"><h1>附录</h1><p>only body</p></section>',
+    );
   });
 });

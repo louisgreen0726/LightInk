@@ -1076,7 +1076,8 @@ describe('reader 标签（只读，豁免可写路径）', () => {
         getOutline: vi.fn(() => []),
         jumpToOutlineItem: vi.fn(() => undefined),
         isAnnotationEnabled: vi.fn(() => false),
-        getExportHtml: vi.fn(() => null),
+        getExportHtml: vi.fn(async () => null),
+        advanceReading: vi.fn(() => false),
       })),
     };
   }
@@ -1218,7 +1219,8 @@ describe('T3 每标签独立滚动位置', () => {
       getOutline: vi.fn(() => []),
       jumpToOutlineItem: vi.fn(() => undefined),
       isAnnotationEnabled: vi.fn(() => false),
-      getExportHtml: vi.fn(() => null),
+      getExportHtml: vi.fn(async () => null),
+      advanceReading: vi.fn(() => false),
     }));
   }
 

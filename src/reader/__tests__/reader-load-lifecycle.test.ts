@@ -581,6 +581,36 @@ describe('Reader R7 memory regressions', () => {
     await view.destroy();
   });
 
+  it('window-level scroll paging uses the editor pane, not the inner chapter host', async () => {
+    const pane = document.createElement('div');
+    pane.id = 'lightink-editor-area';
+    document.body.appendChild(pane);
+    const host = document.createElement('div');
+    pane.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => bytes('unused'),
+      parseContent: async () => ({
+        chapters: [{ title: 'One', html: '<p>one</p>' }],
+      }),
+    });
+    await view.load('book.epub');
+    document.documentElement.dataset.readingLayout = 'scroll';
+
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(pane, 'clientHeight', { configurable: true, value: 400 });
+    pane.scrollTop = 0;
+    const inner = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
+    Object.defineProperty(inner, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(inner, 'clientHeight', { configurable: true, value: 400 });
+    inner.scrollTop = 0;
+
+    expect(view.advanceReading(1)).toBe(true);
+    expect(pane.scrollTop).toBe(400);
+    expect(inner.scrollTop).toBe(0);
+    await view.destroy();
+    delete document.documentElement.dataset.readingLayout;
+  });
+
   it('evicts least-recently-used reading progress beyond the entry cap', () => {
     const map = new Map<string, string>();
     const storage: ProgressStorage = {

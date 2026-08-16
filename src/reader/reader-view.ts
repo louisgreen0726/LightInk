@@ -93,12 +93,10 @@ import {
   createCoalescedScrollHandler,
   createPagedWheelGate,
   createResizeSettle,
-  isReadingNavKey,
   nearestVisibleSlot,
   pagedColumnStep,
   pagedProgressRatio,
   rafFrameScheduler,
-  readingNavDirection,
   scrollToKeepViewportAnchor,
   snapPagedScroller,
   viewportAnchor,
@@ -119,6 +117,20 @@ function newAnnotationId(): string {
 /** CSS 标识符转义（标注 id 用于属性选择器时）。 */
 function cssEscape(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
+}
+
+function normalizePlainText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** 正文已有同名标题时不再包一层导出 h1，避免 PDF 章节名重复。 */
+export function exportChapterMarkup(title: string, html: string): string {
+  const heading = title.trim();
+  const leading = html.match(/^\s*<(h[1-3])\b[^>]*>([\s\S]*?)<\/\1>/i);
+  const leadingText = leading?.[2] === undefined ? '' : normalizePlainText(leading[2].replace(/<[^>]+>/g, ''));
+  const headingMarkup =
+    heading === '' || leadingText === normalizePlainText(heading) ? '' : `<h1>${heading}</h1>`;
+  return `<section class="lightink-export-chapter">${headingMarkup}${html}</section>`;
 }
 
 /** 文本层相关变更：层容器插入，或层内部 childList 变更（pdfjs TextLayer.render 异步追加 span）。 */
@@ -249,6 +261,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let readerOutline: OutlineItem[] = [];
   let exportChapters: ReaderChapter[] = [];
   let exportStylesheet = '';
+  let exportEmbedImages: ((html: string) => Promise<{ html: string; missing: readonly string[] }>) | null =
+    null;
   let loadGeneration = 0;
   let activeLoadController: AbortController | null = null;
   let destroyed = false;
@@ -870,30 +884,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   scrollHost.addEventListener('scroll', scheduleFlowScroll, { passive: true });
   const paneScroller = closestPane();
   paneScroller?.addEventListener('scroll', scheduleFlowScroll, { passive: true });
-  scrollHost.addEventListener(
-    'wheel',
-    (event) => {
-      if (event.ctrlKey || event.metaKey) {
-        return;
-      }
-      if (document.documentElement.dataset.readingLayout !== 'paginated') {
-        return;
-      }
-      if (pdfHandle !== null || cbzHandle !== null || PAGE_EXTS.has(loadedExt)) {
-        return;
-      }
-      const delta =
-        Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-      if (delta === 0) {
-        return;
-      }
-      event.preventDefault();
-      if (gatePagedWheel(delta > 0 ? 1 : -1, advanceReading)) {
-        hideSelectionToolbar();
-      }
-    },
-    { passive: false },
-  );
+  // 分页滚轮提到窗口级（main.ts，与 Markdown R1 同源）：大纲/chrome/空白区
+  // 悬停也翻正文。章节 iframe 内事件到不了宿主，仍由 flow-renderer 转发。
 
   /** 追加标注并同步正文高亮/侧栏/持久化。 */
   const appendAnnotation = (
@@ -1794,6 +1786,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       schedulePersistReadingProgress();
       return true;
     }
+    const moved = advanceReadingContent(direction);
+    if (moved) {
+      hideSelectionToolbar();
+    }
+    return moved;
+  };
+
+  const advanceReadingContent = (direction: 1 | -1): boolean => {
     const paginated = document.documentElement.dataset.readingLayout === 'paginated';
     if (paginated) {
       const frame = visibleFlowFrame();
@@ -1841,7 +1841,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       schedulePersistReadingProgress();
       return true;
     }
-    if (advanceScrolledScroller(scrollHost, direction)) {
+    if (advanceScrolledScroller(flowScrollContainer(), direction)) {
       schedulePersistReadingProgress();
       return true;
     }
@@ -2101,13 +2101,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         return;
       }
     }
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && isReadingNavKey(event.key)) {
-      const direction = readingNavDirection(event.key, event.shiftKey);
-      if (direction !== null && advanceReading(direction)) {
-        event.preventDefault();
-        return;
-      }
-    }
+    // 方向键/空格/PageUp/Down 由窗口级 main.ts 统一翻页（R1：大纲/chrome/空白区
+    // 同样生效）。这里只保留 PDF 缩放键；流式章节 iframe 内翻页仍由 flow-renderer 转发。
     const handle = pdfHandle;
     if (handle === null) {
       return;
@@ -2169,6 +2164,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       readerOutline = [];
       exportChapters = [];
       exportStylesheet = '';
+      exportEmbedImages = null;
       closeOpenNoteDialog(); // 打开中的笔记弹层经 Escape 正规 release（续体守卫丢弃迟到保存）
       closePdfSearch(); // 切换文档清掉搜索状态与命中 overlay
       const controller = new AbortController();
@@ -2262,6 +2258,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
             renderChapters(content.chapters, content.stylesheet);
             exportChapters = content.chapters;
             exportStylesheet = content.stylesheet ?? '';
+            exportEmbedImages = content.embedExportImages ?? null;
             readerOutline = outlineFromEntries(
               content.chapters.map((chapter, index) => ({
                 title: chapter.title.trim() || t('reader.chapter', { n: String(index + 1) }),
@@ -2346,6 +2343,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       readerOutline = [];
       exportChapters = [];
       exportStylesheet = '';
+      exportEmbedImages = null;
       searchGeneration += 1;
       if (searchDebounce !== null) {
         clearTimeout(searchDebounce);
@@ -2393,26 +2391,34 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     isSidebarVisible: () => sidebarVisible,
     openSearch,
     refreshViewport,
+    advanceReading,
     getOutline: () => readerOutline,
     jumpToOutlineItem,
     isAnnotationEnabled: () => annotationsEnabled,
-    getExportHtml: () => {
+    getExportHtml: async () => {
       if (exportChapters.length === 0) {
         return null;
       }
       const escape = (value: string): string =>
         value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const publisher = sanitizeReaderCss(exportStylesheet);
-      const style = publisher === '' ? '' : `<style>${publisher}</style>`;
-      return (
+      const style =
+        (publisher === '' ? '' : `<style>${publisher}</style>`) +
+        '<style>.lightink-export-chapter{break-before:page;page-break-before:always}' +
+        '.lightink-export-chapter:first-of-type{break-before:auto;page-break-before:auto}</style>';
+      const raw =
         style +
         exportChapters
           .map((chapter, index) => {
             const title = chapter.title.trim() || t('reader.chapter', { n: String(index + 1) });
-            return `<section class="lightink-export-chapter"><h1>${escape(title)}</h1>${chapter.html}</section>`;
+            return exportChapterMarkup(escape(title), chapter.html);
           })
-          .join('')
-      );
+          .join('');
+      if (exportEmbedImages === null) {
+        return raw;
+      }
+      const embedded = await exportEmbedImages(raw);
+      return embedded.html;
     },
   };
 }
