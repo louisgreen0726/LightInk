@@ -6,6 +6,7 @@ mod cli;
 mod export;
 mod file;
 mod identifiers;
+mod library;
 mod recents;
 mod snapshot;
 
@@ -57,6 +58,14 @@ pub fn run() {
             recents::add_recent,
             recents::remove_recent,
             recents::clear_recents,
+            library::library_list_sources,
+            library::library_upsert_source,
+            library::library_remove_source,
+            library::library_list_items,
+            library::library_upsert_item,
+            library::library_remove_item,
+            library::library_clear_cache,
+            library::library_set_cache_limit,
             annotations::read_annotations,
             annotations::write_annotations,
             annotations::content_hash,
