@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "lightink"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "block2",
  "objc2",
