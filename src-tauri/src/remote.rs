@@ -95,6 +95,7 @@ pub struct ParsedContentRange {
 struct RemoteHandle {
     url: Url,
     client: Client,
+    identity: String,
     size: u64,
     object_id: String,
     cache_path: PathBuf,
@@ -102,6 +103,7 @@ struct RemoteHandle {
     last_modified: Option<String>,
     credential: Option<RemoteCredential>,
     supports_ranges: bool,
+    mime_type: Option<String>,
 }
 
 struct ActiveRequest {
@@ -806,6 +808,7 @@ pub async fn remote_open(
             Arc::new(RemoteHandle {
                 url,
                 client,
+                identity: identity.clone(),
                 size: 0,
                 object_id,
                 cache_path,
@@ -813,6 +816,7 @@ pub async fn remote_open(
                 last_modified: last_modified.clone(),
                 credential,
                 supports_ranges: false,
+                mime_type: mime_type.clone(),
             }),
         );
         return Ok(RemoteOpenResult {
@@ -948,6 +952,7 @@ pub async fn remote_open(
         Arc::new(RemoteHandle {
             url,
             client,
+            identity: identity.clone(),
             size,
             object_id,
             cache_path,
@@ -955,6 +960,7 @@ pub async fn remote_open(
             last_modified: last_modified.clone(),
             credential,
             supports_ranges,
+            mime_type: mime_type.clone(),
         }),
     );
     Ok(RemoteOpenResult {
@@ -965,6 +971,43 @@ pub async fn remote_open(
         last_modified,
         mime_type,
         supports_ranges,
+        cache_complete,
+    })
+}
+
+/// Return metadata for an already opened backend handle. The frontend keeps
+/// only the opaque resource id; URL and credentials never cross this boundary.
+#[tauri::command]
+pub fn remote_info(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+    resource_id: String,
+) -> Result<RemoteOpenResult, RemoteError> {
+    let handle = state
+        .handles
+        .lock()
+        .map_err(|_| lock_error())?
+        .get(&resource_id)
+        .cloned()
+        .ok_or_else(|| RemoteError::new("REMOTE_HANDLE_NOT_FOUND", "远程资源句柄不存在"))?;
+    let cache_complete = if handle.size == 0 {
+        true
+    } else {
+        let ranges = ranges_for(&app, &handle.object_id)?;
+        library::range_is_covered(
+            &ranges,
+            ByteRange::new(0, handle.size)
+                .map_err(|message| RemoteError::new("REMOTE_RANGE_INVALID", message))?,
+        )
+    };
+    Ok(RemoteOpenResult {
+        resource_id,
+        size: handle.size,
+        identity: handle.identity.clone(),
+        etag: handle.etag.clone(),
+        last_modified: handle.last_modified.clone(),
+        mime_type: handle.mime_type.clone(),
+        supports_ranges: handle.supports_ranges,
         cache_complete,
     })
 }

@@ -11,9 +11,15 @@
 
 import './reader.css';
 import type { MessageKey } from '../i18n/messages.js';
-import { parseReaderContent } from './formats/index.js';
-import { normalizeReaderTarget, type ReaderTarget } from './sources/types.js';
-import type { ReaderByteSource, ReaderChapter, ReaderContent } from './formats/types.js';
+import { parseReaderContent, type ReaderInputSource } from './formats/index.js';
+import {
+  normalizeReaderTarget,
+  readerIdentityKey,
+  type RandomAccessSource,
+  type ReaderTarget,
+  type RemoteReaderTarget,
+} from './sources/types.js';
+import type { ReaderChapter, ReaderContent } from './formats/types.js';
 import { ParseError } from './formats/types.js';
 import { sanitizeReaderCss } from './sanitize-css.js';
 import { renderCbzInto, type CbzRenderHandle } from './formats/cbz.js';
@@ -103,6 +109,8 @@ import {
   viewportAnchor,
 } from '../ui/reading-layout.js';
 import { createFlowRenderer } from './flow-renderer.js';
+import { attachRemoteSource } from './sources/remote-source.js';
+import { fnv1a64Hex } from './document-hash.js';
 
 const PAGE_EXTS = new Set(['pdf', 'cbz']);
 
@@ -177,9 +185,14 @@ export interface ReaderViewDeps {
   /** Injectable flow parser for lifecycle tests. */
   parseContent?: (
     filePath: string,
-    bytes: Uint8Array | ReaderByteSource,
+    source: ReaderInputSource,
     signal?: AbortSignal,
   ) => Promise<ReaderContent>;
+  /** Bind an opaque backend handle to a random-access source. */
+  openRemoteSource?: (
+    target: RemoteReaderTarget,
+    signal?: AbortSignal,
+  ) => Promise<RandomAccessSource>;
   /** Injectable progress storage; production uses localStorage. */
   progressStorage?: ProgressStorage | null;
 }
@@ -222,8 +235,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   root.append(scrollHost, pageHost, status);
   host.appendChild(root);
 
-  const annotationsEnabled =
-    deps.getContentHash !== undefined && deps.readAnnotations !== undefined;
+  const annotationsEnabled = deps.readAnnotations !== undefined;
 
   let pdfHandle: PdfRenderHandle | null = null;
   let cbzHandle: CbzRenderHandle | null = null;
@@ -1666,7 +1678,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const stagePages = async (
     filePath: string,
-    bytes: Uint8Array,
+    source: Uint8Array | RandomAccessSource,
     signal: AbortSignal,
   ): Promise<{
     host: HTMLDivElement;
@@ -1682,11 +1694,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     stagedHost.dataset.readerActive = 'true';
     if (ext === 'pdf') {
       stagedHost.dataset.readerFormat = 'pdf';
-      const pdf = await renderPdfInto(bytes, stagedHost, signal);
+      const pdf = await renderPdfInto(source, stagedHost, signal);
       return { host: stagedHost, pdf, cbz: null };
     }
     stagedHost.dataset.readerFormat = 'cbz';
-    const cbz = await renderCbzInto(bytes, stagedHost, signal);
+    const cbz = await renderCbzInto(source, stagedHost, signal);
     return { host: stagedHost, pdf: null, cbz };
   };
 
@@ -1729,15 +1741,21 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const loadAnnotations = async (
-    filePath: string,
+    target: ReaderTarget,
     generation: number,
     signal: AbortSignal,
   ): Promise<void> => {
-    if (!annotationsEnabled) {
+    if (
+      !annotationsEnabled ||
+      (target.kind === 'local' && deps.getContentHash === undefined)
+    ) {
       return;
     }
     try {
-      const nextContentHash = await deps.getContentHash!(filePath);
+      const nextContentHash =
+        target.kind === 'local'
+          ? await deps.getContentHash!(target.path)
+          : fnv1a64Hex(`remote:${readerIdentityKey(target.identity)}`);
       if (destroyed || signal.aborted || generation !== loadGeneration) {
         return;
       }
@@ -2138,12 +2156,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     },
     async load(targetOrPath: string | ReaderTarget, options: ReaderLoadOptions = {}): Promise<void> {
       const target = normalizeReaderTarget(targetOrPath);
-      if (target.kind !== 'local') {
-        throw new ParseError('远程阅读源尚未接入当前阅读视图');
-      }
-      const filePath = target.path;
+      const filePath = target.kind === 'local' ? target.path : target.displayName;
       const readBytes = deps.readBytes;
-      if (readBytes === undefined) {
+      if (target.kind === 'local' && readBytes === undefined) {
         throw new Error('reader-view load requires the readBytes dependency');
       }
       if (destroyed) {
@@ -2166,7 +2181,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
-      const nextExt = extOfPath(filePath);
+      const nextExt = (target.extension || extOfPath(filePath)).toLowerCase();
+      const formatPath = extOfPath(filePath) === nextExt ? filePath : `${filePath}.${nextExt}`;
       const cancelFromCaller = (): void => controller.abort();
       if (options.signal?.aborted === true) {
         controller.abort();
@@ -2176,16 +2192,31 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const isCurrent = (): boolean =>
         !destroyed && !controller.signal.aborted && generation === loadGeneration;
       let completed = false;
+      let pendingRemoteSource: RandomAccessSource | null = null;
 
       setReaderPhase('loading', true);
       try {
+        if (target.kind === 'remote') {
+          pendingRemoteSource =
+            deps.openRemoteSource !== undefined
+              ? await deps.openRemoteSource(target, controller.signal)
+              : (await attachRemoteSource(target, { signal: controller.signal })).source;
+          throwIfReaderLoadCancelled(controller.signal);
+        }
         if (PAGE_EXTS.has(nextExt)) {
-          const bytes = await readBytes(filePath, controller.signal);
+          const pageSource =
+            target.kind === 'remote'
+              ? pendingRemoteSource!
+              : await readBytes!(filePath, controller.signal);
           throwIfReaderLoadCancelled(controller.signal);
           if (!isCurrent()) {
             return;
           }
-          const staged = await stagePages(filePath, bytes, controller.signal);
+          const staged = await stagePages(formatPath, pageSource, controller.signal);
+          if (target.kind === 'remote') {
+            // The page renderer now owns the source and closes it with its handle.
+            pendingRemoteSource = null;
+          }
           if (controller.signal.aborted) {
             await staged.pdf?.destroy().catch(() => undefined);
             await staged.cbz?.destroy().catch(() => undefined);
@@ -2215,23 +2246,34 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
         } else {
           // T8：txt 经分块字节源懒读（不整文件驻留）；无 readChunk 依赖时回退整读。
-          const readChunk = nextExt === 'txt' ? deps.readChunk : undefined;
-          const source: Uint8Array | ReaderByteSource =
-            readChunk === undefined
-              ? await readBytes(filePath, controller.signal)
-              : {
-                  read: (offset, length, readSignal) =>
-                    readChunk(filePath, offset, length, readSignal ?? controller.signal),
-                };
+          const readChunk = target.kind === 'local' && nextExt === 'txt' ? deps.readChunk : undefined;
+          const source: ReaderInputSource =
+            target.kind === 'remote'
+              ? pendingRemoteSource!
+              : readChunk === undefined
+                ? await readBytes!(filePath, controller.signal)
+                : {
+                    read: (offset, length, readSignal) =>
+                      readChunk(filePath, offset, length, readSignal ?? controller.signal),
+                  };
           throwIfReaderLoadCancelled(controller.signal);
           if (!isCurrent()) {
             return;
           }
           const content = await (deps.parseContent ?? parseReaderContent)(
-            filePath,
+            formatPath,
             source,
             controller.signal,
           );
+          if (pendingRemoteSource !== null) {
+            const ownedSource = pendingRemoteSource;
+            const disposeContent = content.dispose;
+            content.dispose = () => {
+              disposeContent?.();
+              void ownedSource.close().catch(() => undefined);
+            };
+            pendingRemoteSource = null;
+          }
           if (controller.signal.aborted) {
             content.dispose?.();
             throwIfReaderLoadCancelled(controller.signal);
@@ -2274,10 +2316,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
         }
 
-        await loadAnnotations(filePath, generation, controller.signal);
+        await loadAnnotations(target, generation, controller.signal);
         throwIfReaderLoadCancelled(controller.signal);
         if (isCurrent()) {
-          progressId = contentHash ?? filePath;
+          progressId =
+            contentHash ??
+            (target.kind === 'remote' ? readerIdentityKey(target.identity) : filePath);
           pendingRestore = loadReadingProgress(progressStorage, progressId);
           restoreAttempts = 0;
           setReaderPhase('ready');
@@ -2303,6 +2347,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         throw error;
       } finally {
         options.signal?.removeEventListener('abort', cancelFromCaller);
+        await pendingRemoteSource?.close().catch(() => undefined);
         if (activeLoadController === controller && !completed) {
           activeLoadController = null;
         }

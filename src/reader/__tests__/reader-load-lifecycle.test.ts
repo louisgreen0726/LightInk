@@ -73,6 +73,51 @@ afterEach(() => {
 });
 
 describe('Reader load lifecycle', () => {
+  it('loads a remote target through its existing range source and keys progress by validator', async () => {
+    const close = vi.fn(async () => undefined);
+    const source = {
+      size: 1024,
+      identity: { id: 'item-1', validator: 'etag-1' },
+      readRange: vi.fn(async () => new Uint8Array()),
+      close,
+    };
+    const openRemoteSource = vi.fn(async () => source);
+    const readBytes = vi.fn(async () => bytes('must not be read'));
+    const progressStorage = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const host = document.createElement('div');
+    const view = createReaderView(host, {
+      readBytes,
+      openRemoteSource,
+      parseContent: async (_path, input) => {
+        expect(input).toBe(source);
+        return { chapters: [{ title: 'Remote', html: '<p>remote</p>' }] };
+      },
+      progressStorage,
+    });
+    const target = {
+      kind: 'remote' as const,
+      itemId: 'item-1',
+      resourceId: 'remote-7',
+      identity: { id: 'item-1', validator: 'etag-1' },
+      displayName: 'Remote Book',
+      extension: 'epub',
+      mimeType: 'application/epub+zip',
+    };
+
+    await view.load(target);
+    expect(openRemoteSource).toHaveBeenCalledWith(target, expect.any(AbortSignal));
+    expect(readBytes).not.toHaveBeenCalled();
+    await view.destroy();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(progressStorage.setItem).toHaveBeenCalledWith(
+      `${READING_PROGRESS_KEY_PREFIX}item-1@etag-1`,
+      expect.any(String),
+    );
+  });
+
   it('publishes immutable phase, chapter, progress, and scale snapshots', async () => {
     const host = document.createElement('div');
     document.body.appendChild(host);

@@ -72,6 +72,7 @@ pub fn run() {
             library::library_set_cache_limit,
             library::library_cache_stats,
             remote::remote_open,
+            remote::remote_info,
             remote::remote_read_range,
             remote::remote_close,
             remote::remote_cancel,

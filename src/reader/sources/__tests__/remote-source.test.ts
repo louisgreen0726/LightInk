@@ -1,8 +1,48 @@
 import { describe, expect, it } from 'vitest';
 
-import { openRemoteSource, type RemoteSourceInvoker } from '../remote-source.js';
+import {
+  attachRemoteSource,
+  openRemoteSource,
+  type RemoteSourceInvoker,
+} from '../remote-source.js';
 
 describe('openRemoteSource', () => {
+  it('attaches to an existing backend handle without opening the URL again', async () => {
+    const commands: string[] = [];
+    const invoke = (async <T>(command: string) => {
+      commands.push(command);
+      if (command === 'remote_info') {
+        return {
+          resourceId: 'remote-existing',
+          size: 3,
+          identity: 'item@v1',
+          etag: 'v1',
+          supportsRanges: true,
+          cacheComplete: false,
+        } as T;
+      }
+      if (command === 'remote_read_range') {
+        return new Uint8Array([1, 2, 3]) as T;
+      }
+      return undefined as T;
+    }) as RemoteSourceInvoker['invoke'];
+    const target = {
+      kind: 'remote' as const,
+      itemId: 'item',
+      resourceId: 'remote-existing',
+      identity: { id: 'item', validator: 'v1' },
+      displayName: 'book.cbz',
+      extension: 'cbz',
+      mimeType: 'application/zip',
+    };
+
+    const { source } = await attachRemoteSource(target, { invoker: { invoke } });
+    expect(await source.readRange(0, 3)).toEqual(new Uint8Array([1, 2, 3]));
+    await source.close();
+    expect(commands).toEqual(['remote_info', 'remote_read_range', 'remote_close']);
+    expect(commands).not.toContain('remote_open');
+  });
+
   it('keeps a backend handle and forwards bounded range reads', async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const invoke = (async <T>(command: string, args?: Record<string, unknown>) => {

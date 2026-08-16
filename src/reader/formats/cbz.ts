@@ -6,7 +6,7 @@
  */
 
 import { ParseError } from './types.js';
-import { openSafeArchive } from './safe-archive.js';
+import { openSafeArchive, type ArchiveInput } from './safe-archive.js';
 import { enforcePageCount } from './page-limits.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { extOfPath } from '../../file/path-ext.js';
@@ -75,11 +75,11 @@ export interface CbzRenderHandle {
 
 /** Build stable page slots and materialize only a small window of image data. */
 export async function renderCbzInto(
-  bytes: Uint8Array,
+  source: ArchiveInput,
   container: HTMLElement,
   signal?: AbortSignal,
 ): Promise<CbzRenderHandle> {
-  const archive = await openSafeArchive(bytes, 'CBZ', signal);
+  const archive = await openSafeArchive(source, 'CBZ', signal);
   let initialized = false;
   try {
     const images = listImageEntries(archive.entries.map((entry) => entry.filename));

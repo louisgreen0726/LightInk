@@ -11,7 +11,9 @@ import { ParseError, ReaderLimitError } from './types.js';
 import type {
   ArchiveEntryMetadata as CommonArchiveEntryMetadata,
   ArchiveProvider,
+  RandomAccessSource,
 } from '../sources/types.js';
+import { createMemorySource } from '../sources/memory-source.js';
 import {
   isReaderLoadCancelled,
   ReaderLoadCancelledError,
@@ -111,16 +113,42 @@ export interface SafeArchive extends ArchiveProvider {
   file(filename: string): SafeArchiveEntry | null;
 }
 
+export type ArchiveInput = Uint8Array | RandomAccessSource;
+
+function isRandomAccessSource(input: ArchiveInput): input is RandomAccessSource {
+  return typeof (input as RandomAccessSource).readRange === 'function';
+}
+
 /** Open and validate an archive without decompressing its entries. */
 export async function openSafeArchive(
-  bytes: Uint8Array,
+  input: ArchiveInput,
   formatName: 'EPUB' | 'CBZ',
   signal?: AbortSignal,
 ): Promise<SafeArchive> {
   throwIfReaderLoadCancelled(signal);
   const zip = await import('@zip.js/zip.js');
   throwIfReaderLoadCancelled(signal);
-  const reader = new zip.ZipReader(new zip.Uint8ArrayReader(bytes));
+  const source = isRandomAccessSource(input) ? input : createMemorySource(input);
+  /**
+   * zip.js asks its Reader for central-directory slices and entry headers. The
+   * adapter keeps those reads on the backend-owned sparse cache instead of
+   * materializing the complete archive in the WebView.
+   */
+  class SourceReader extends zip.Reader<RandomAccessSource> {
+    constructor(private readonly randomSource: RandomAccessSource) {
+      super(randomSource);
+      this.size = randomSource.size;
+    }
+
+    override async init(): Promise<void> {
+      await super.init?.();
+    }
+
+    override readUint8Array(index: number, length: number): Promise<Uint8Array> {
+      return this.randomSource.readRange(index, length, signal);
+    }
+  }
+  const reader = new zip.ZipReader(new SourceReader(source));
   const files: FileEntry[] = [];
   const budget = new ArchiveBudgetTracker(READER_ARCHIVE_LIMITS);
   try {
@@ -133,6 +161,7 @@ export async function openSafeArchive(
     }
   } catch (error) {
     await reader.close().catch(() => undefined);
+    await source.close().catch(() => undefined);
     if (isReaderLoadCancelled(error, signal)) {
       throw new ReaderLoadCancelledError();
     }
@@ -165,6 +194,9 @@ export async function openSafeArchive(
       }
       return entry.readBytes(entrySignal);
     },
-    close: () => reader.close(),
+    close: async () => {
+      await reader.close();
+      await source.close();
+    },
   };
 }
