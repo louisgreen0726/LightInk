@@ -8,6 +8,10 @@
 import type { FileEntry } from '@zip.js/zip.js';
 
 import { ParseError, ReaderLimitError } from './types.js';
+import type {
+  ArchiveEntryMetadata as CommonArchiveEntryMetadata,
+  ArchiveProvider,
+} from '../sources/types.js';
 import {
   isReaderLoadCancelled,
   ReaderLoadCancelledError,
@@ -28,7 +32,7 @@ export const READER_ARCHIVE_LIMITS: Readonly<ArchiveLimits> = {
   maxCompressionRatio: 200,
 };
 
-export interface ArchiveEntryMetadata {
+export interface ArchiveEntryMetadata extends CommonArchiveEntryMetadata {
   directory: boolean;
   compressedSize: number;
   uncompressedSize: number;
@@ -95,18 +99,16 @@ export function validateArchiveMetadata(
   }
 }
 
-export interface SafeArchiveEntry {
+export interface SafeArchiveEntry extends ArchiveEntryMetadata {
+  readonly id: string;
   readonly filename: string;
-  readonly compressedSize: number;
-  readonly uncompressedSize: number;
   readText(signal?: AbortSignal): Promise<string>;
   readBytes(signal?: AbortSignal): Promise<Uint8Array>;
 }
 
-export interface SafeArchive {
+export interface SafeArchive extends ArchiveProvider {
   readonly entries: readonly SafeArchiveEntry[];
   file(filename: string): SafeArchiveEntry | null;
-  close(): Promise<void>;
 }
 
 /** Open and validate an archive without decompressing its entries. */
@@ -141,7 +143,9 @@ export async function openSafeArchive(
   }
 
   const entries: SafeArchiveEntry[] = files.map((entry) => ({
+    id: entry.filename,
     filename: entry.filename,
+    directory: false,
     compressedSize: entry.compressedSize,
     uncompressedSize: entry.uncompressedSize,
     readText: (entrySignal) => entry.getData(new zip.TextWriter(), { signal: entrySignal }),
@@ -152,7 +156,15 @@ export async function openSafeArchive(
 
   return {
     entries,
+    accessMode: 'random',
     file: (filename) => byName.get(filename) ?? null,
+    readEntry: async (entryId, entrySignal) => {
+      const entry = byName.get(entryId);
+      if (entry === undefined) {
+        throw new ParseError(`归档条目不存在：${entryId}`);
+      }
+      return entry.readBytes(entrySignal);
+    },
     close: () => reader.close(),
   };
 }

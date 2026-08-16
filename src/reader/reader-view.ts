@@ -12,6 +12,7 @@
 import './reader.css';
 import type { MessageKey } from '../i18n/messages.js';
 import { parseReaderContent } from './formats/index.js';
+import { normalizeReaderTarget, type ReaderTarget } from './sources/types.js';
 import type { ReaderByteSource, ReaderChapter, ReaderContent } from './formats/types.js';
 import { ParseError } from './formats/types.js';
 import { sanitizeReaderCss } from './sanitize-css.js';
@@ -2135,7 +2136,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         stateListeners.delete(listener);
       };
     },
-    async load(filePath: string, options: ReaderLoadOptions = {}): Promise<void> {
+    async load(targetOrPath: string | ReaderTarget, options: ReaderLoadOptions = {}): Promise<void> {
+      const target = normalizeReaderTarget(targetOrPath);
+      if (target.kind !== 'local') {
+        throw new ParseError('远程阅读源尚未接入当前阅读视图');
+      }
+      const filePath = target.path;
       const readBytes = deps.readBytes;
       if (readBytes === undefined) {
         throw new Error('reader-view load requires the readBytes dependency');
