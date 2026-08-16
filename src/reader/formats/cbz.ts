@@ -7,6 +7,7 @@
 
 import { ParseError } from './types.js';
 import { openSafeArchive, type ArchiveInput } from './safe-archive.js';
+import type { ArchiveProvider } from '../sources/types.js';
 import { enforcePageCount } from './page-limits.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { extOfPath } from '../../file/path-ext.js';
@@ -73,16 +74,39 @@ export interface CbzRenderHandle {
   destroy(): Promise<void>;
 }
 
+export type ComicArchiveInput = ArchiveInput | ArchiveProvider;
+
+function isArchiveProvider(source: ComicArchiveInput): source is ArchiveProvider {
+  return typeof (source as ArchiveProvider).readEntry === 'function';
+}
+
 /** Build stable page slots and materialize only a small window of image data. */
 export async function renderCbzInto(
-  source: ArchiveInput,
+  source: ComicArchiveInput,
   container: HTMLElement,
   signal?: AbortSignal,
 ): Promise<CbzRenderHandle> {
-  const archive = await openSafeArchive(source, 'CBZ', signal);
+  const archive = isArchiveProvider(source)
+    ? source
+    : await openSafeArchive(source, 'CBZ', signal);
   let initialized = false;
   try {
-    const images = listImageEntries(archive.entries.map((entry) => entry.filename));
+    const imageNames = new Set(
+      listImageEntries(
+        archive.entries.flatMap((entry) =>
+          entry.filename === undefined || entry.directory ? [] : [entry.filename],
+        ),
+      ),
+    );
+    const images = archive.entries
+      .filter(
+        (entry): entry is typeof entry & { readonly id: string; readonly filename: string } =>
+          !entry.directory &&
+          entry.id !== undefined &&
+          entry.filename !== undefined &&
+          imageNames.has(entry.filename),
+      )
+      .sort((left, right) => naturalCompare(left.filename, right.filename));
     if (images.length === 0) {
       throw new ParseError('CBZ 未找到图片页');
     }
@@ -131,12 +155,9 @@ export async function renderCbzInto(
       }
       const operation = (async () => {
         throwIfReaderLoadCancelled(signal);
-        const name = images[index]!;
-        const file = archive.file(name);
-        if (file === null) {
-          return;
-        }
-        const data = await file.readBytes(signal);
+        const page = images[index]!;
+        const name = page.filename;
+        const data = await archive.readEntry(page.id, signal);
         throwIfReaderLoadCancelled(signal);
         if (destroyed || !wantedPages.has(index)) {
           return;

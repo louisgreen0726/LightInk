@@ -31,6 +31,9 @@ tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "sync"] }
 tokio-util = "0.7"
 url = "2"
+rars = "0.6"
+sevenz-rust2 = "0.21"
+zeroize = "1"
 
 # 仅 Windows：原生矢量文字 PDF 导出（WebView2 PrintToPdf）。
 # webview2-com 提供 ICoreWebView2_7 / PrintToPdf 与异步回调（wait_with_pump）；

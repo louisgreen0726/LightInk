@@ -162,6 +162,10 @@ const en = {
     'HUFF/CDIC-compressed MOBI is not supported. LightInk currently supports unencrypted PalmDOC/MOBI6 only.',
   'reader.warning.epubStylesIgnored':
     'Some publisher styles were ignored to keep this book safe to read.',
+  'reader.archivePassword.title': 'Archive password',
+  'reader.archivePassword.message': '“{name}” is encrypted. Enter its password to continue.',
+  'reader.archivePassword.incorrect': 'The password for “{name}” was incorrect. Try again.',
+  'reader.archivePassword.label': 'Password',
   'reader.remoteImageLoad': 'Load remote image',
   'reader.search.title': 'Search in document',
   'reader.search.placeholder': 'Search…',
@@ -466,6 +470,10 @@ const zhCN = {
   'reader.capability.mobiHuff':
     '暂不支持使用 HUFF/CDIC 压缩的 MOBI；LightInk 当前仅支持未加密的 PalmDOC/MOBI6。',
   'reader.warning.epubStylesIgnored': '为保证阅读安全，已忽略书籍中的部分出版样式。',
+  'reader.archivePassword.title': '压缩包密码',
+  'reader.archivePassword.message': '「{name}」已加密，请输入密码后继续。',
+  'reader.archivePassword.incorrect': '「{name}」的密码不正确，请重试。',
+  'reader.archivePassword.label': '密码',
   'reader.remoteImageLoad': '加载远程图片',
   'reader.search.title': '在文档中搜索',
   'reader.search.placeholder': '搜索…',

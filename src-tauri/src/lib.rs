@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 mod annotations;
+mod archive;
 mod asset;
 mod cli;
 mod export;
@@ -42,6 +43,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(cli::PendingFile(std::sync::Mutex::new(first_file)))
         .manage(remote::RemoteState::default())
+        .manage(archive::ArchiveState::default())
         .invoke_handler(tauri::generate_handler![
             file::read_file,
             file::read_file_bytes,
@@ -78,6 +80,9 @@ pub fn run() {
             remote::remote_cancel,
             remote::remote_store_credential,
             remote::remote_forget_credential,
+            archive::archive_open,
+            archive::archive_read_entry,
+            archive::archive_close,
             opds::opds_add_source,
             opds::opds_list_sources,
             opds::opds_browse,

@@ -44,6 +44,7 @@ import {
   createContextMenu,
 } from './ui/context-menu.js';
 import { showLinkDialog, showOpenLinkConfirm } from './ui/link-dialog.js';
+import { showArchivePasswordDialog } from './ui/archive-password-dialog.js';
 import {
   formatLinkMarkdown,
   getInsertElement,
@@ -1475,6 +1476,12 @@ manager = new TabManager({
       notify: (message) => {
         void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
       },
+      requestArchivePassword: ({ displayName, retry }) =>
+        showArchivePasswordDialog(document, {
+          displayName,
+          retry,
+          t: (key, vars) => i18n.t(key, vars),
+        }),
     });
     reader.subscribeState(() => {
       const active = manager?.activeTab;

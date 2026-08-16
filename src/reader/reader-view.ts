@@ -15,6 +15,7 @@ import { parseReaderContent, type ReaderInputSource } from './formats/index.js';
 import {
   normalizeReaderTarget,
   readerIdentityKey,
+  type ArchiveProvider,
   type RandomAccessSource,
   type ReaderTarget,
   type RemoteReaderTarget,
@@ -110,9 +111,14 @@ import {
 } from '../ui/reading-layout.js';
 import { createFlowRenderer } from './flow-renderer.js';
 import { attachRemoteSource } from './sources/remote-source.js';
+import {
+  NATIVE_ARCHIVE_EXTENSIONS,
+  openNativeArchive,
+  type ArchivePasswordProvider,
+} from './sources/native-archive.js';
 import { fnv1a64Hex } from './document-hash.js';
 
-const PAGE_EXTS = new Set(['pdf', 'cbz']);
+const PAGE_EXTS = new Set(['pdf', 'cbz', ...NATIVE_ARCHIVE_EXTENSIONS]);
 
 /** 仅用于稳定标注 id（无加密强度需求）。 */
 function newAnnotationId(): string {
@@ -193,6 +199,13 @@ export interface ReaderViewDeps {
     target: RemoteReaderTarget,
     signal?: AbortSignal,
   ) => Promise<RandomAccessSource>;
+  /** Open a native RAR/7z provider; injectable for focused tests. */
+  openArchiveProvider?: (
+    target: ReaderTarget,
+    signal?: AbortSignal,
+  ) => Promise<ArchiveProvider>;
+  /** Session-only password prompt used by encrypted native archives. */
+  requestArchivePassword?: ArchivePasswordProvider;
   /** Injectable progress storage; production uses localStorage. */
   progressStorage?: ProgressStorage | null;
 }
@@ -1678,27 +1691,37 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const stagePages = async (
     filePath: string,
-    source: Uint8Array | RandomAccessSource,
+    source: Uint8Array | RandomAccessSource | null,
     signal: AbortSignal,
+    target: ReaderTarget,
   ): Promise<{
     host: HTMLDivElement;
     pdf: PdfRenderHandle | null;
     cbz: CbzRenderHandle | null;
   }> => {
     const ext = extOfPath(filePath);
-    if (ext !== 'pdf' && ext !== 'cbz') {
+    if (ext !== 'pdf' && ext !== 'cbz' && !NATIVE_ARCHIVE_EXTENSIONS.has(ext)) {
       throw new ParseError(`暂不支持的页格式：.${ext || '?'}`);
     }
     const stagedHost = createPageHost();
     stagedHost.hidden = false;
     stagedHost.dataset.readerActive = 'true';
     if (ext === 'pdf') {
+      if (source === null) throw new ParseError('PDF 字节源不可用');
       stagedHost.dataset.readerFormat = 'pdf';
       const pdf = await renderPdfInto(source, stagedHost, signal);
       return { host: stagedHost, pdf, cbz: null };
     }
-    stagedHost.dataset.readerFormat = 'cbz';
-    const cbz = await renderCbzInto(source, stagedHost, signal);
+    stagedHost.dataset.readerFormat = ext;
+    const archiveSource = NATIVE_ARCHIVE_EXTENSIONS.has(ext)
+      ? await (deps.openArchiveProvider?.(target, signal) ??
+        openNativeArchive(target, {
+          signal,
+          requestPassword: deps.requestArchivePassword,
+        }))
+      : source;
+    if (archiveSource === null) throw new ParseError('漫画归档字节源不可用');
+    const cbz = await renderCbzInto(archiveSource, stagedHost, signal);
     return { host: stagedHost, pdf: null, cbz };
   };
 
@@ -2157,8 +2180,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     async load(targetOrPath: string | ReaderTarget, options: ReaderLoadOptions = {}): Promise<void> {
       const target = normalizeReaderTarget(targetOrPath);
       const filePath = target.kind === 'local' ? target.path : target.displayName;
+      const nextExt = (target.extension || extOfPath(filePath)).toLowerCase();
+      const nativeArchive = NATIVE_ARCHIVE_EXTENSIONS.has(nextExt);
       const readBytes = deps.readBytes;
-      if (target.kind === 'local' && readBytes === undefined) {
+      if (target.kind === 'local' && readBytes === undefined && !nativeArchive) {
         throw new Error('reader-view load requires the readBytes dependency');
       }
       if (destroyed) {
@@ -2181,7 +2206,6 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
-      const nextExt = (target.extension || extOfPath(filePath)).toLowerCase();
       const formatPath = extOfPath(filePath) === nextExt ? filePath : `${filePath}.${nextExt}`;
       const cancelFromCaller = (): void => controller.abort();
       if (options.signal?.aborted === true) {
@@ -2196,7 +2220,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
       setReaderPhase('loading', true);
       try {
-        if (target.kind === 'remote') {
+        if (target.kind === 'remote' && !nativeArchive) {
           pendingRemoteSource =
             deps.openRemoteSource !== undefined
               ? await deps.openRemoteSource(target, controller.signal)
@@ -2205,15 +2229,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }
         if (PAGE_EXTS.has(nextExt)) {
           const pageSource =
-            target.kind === 'remote'
+            nativeArchive
+              ? null
+              : target.kind === 'remote'
               ? pendingRemoteSource!
               : await readBytes!(filePath, controller.signal);
           throwIfReaderLoadCancelled(controller.signal);
           if (!isCurrent()) {
             return;
           }
-          const staged = await stagePages(formatPath, pageSource, controller.signal);
-          if (target.kind === 'remote') {
+          const staged = await stagePages(formatPath, pageSource, controller.signal, target);
+          if (target.kind === 'remote' && !nativeArchive) {
             // The page renderer now owns the source and closes it with its handle.
             pendingRemoteSource = null;
           }

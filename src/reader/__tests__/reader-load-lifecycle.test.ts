@@ -73,6 +73,46 @@ afterEach(() => {
 });
 
 describe('Reader load lifecycle', () => {
+  it('opens a local native comic provider without reading the whole archive', async () => {
+    const readEntry = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const close = vi.fn(async () => undefined);
+    const openArchiveProvider = vi.fn(async () => ({
+      entries: [
+        {
+          id: 'entry-0',
+          filename: 'page1.png',
+          directory: false,
+          compressedSize: 3,
+          uncompressedSize: 3,
+        },
+      ],
+      accessMode: 'random' as const,
+      readEntry,
+      close,
+    }));
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:native-comic'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const host = document.createElement('div');
+    const view = createReaderView(host, { openArchiveProvider });
+
+    await view.load('/books/comic.cbr');
+
+    expect(openArchiveProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'local', path: '/books/comic.cbr' }),
+      expect.any(AbortSignal),
+    );
+    expect(readEntry).toHaveBeenCalledWith('entry-0', expect.any(AbortSignal));
+    expect(view.state).toMatchObject({ phase: 'ready', current: 1, total: 1 });
+    await view.destroy();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('loads a remote target through its existing range source and keys progress by validator', async () => {
     const close = vi.fn(async () => undefined);
     const source = {

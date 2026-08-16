@@ -732,6 +732,34 @@ fn ranges_for(app: &AppHandle, object_id: &str) -> Result<Vec<ByteRange>, Remote
     Ok(ranges)
 }
 
+/// Resolve a remote handle to its cache file only after every byte is present.
+/// Native archive libraries use seekable files; exposing an incomplete sparse
+/// file would make holes look like valid zero bytes and corrupt decoder state.
+pub(crate) fn complete_cached_path(
+    app: &AppHandle,
+    state: &RemoteState,
+    resource_id: &str,
+) -> Result<PathBuf, RemoteError> {
+    let handle = state
+        .handles
+        .lock()
+        .map_err(|_| lock_error())?
+        .get(resource_id)
+        .cloned()
+        .ok_or_else(|| RemoteError::new("REMOTE_HANDLE_NOT_FOUND", "远程资源句柄不存在"))?;
+    if handle.size > 0 {
+        let requested = ByteRange::new(0, handle.size)
+            .map_err(|message| RemoteError::new("REMOTE_RANGE_INVALID", message))?;
+        if !library::range_is_covered(&ranges_for(app, &handle.object_id)?, requested) {
+            return Err(RemoteError::new(
+                "ARCHIVE_REMOTE_CACHE_INCOMPLETE",
+                "远程 RAR/7z 需要先完成磁盘缓存",
+            ));
+        }
+    }
+    Ok(handle.cache_path.clone())
+}
+
 #[tauri::command]
 pub async fn remote_open(
     app: AppHandle,
