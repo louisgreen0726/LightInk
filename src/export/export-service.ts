@@ -30,8 +30,8 @@ export interface ExportTabSnapshot {
 }
 
 export interface ExportServiceDeps {
-  /** 现取活动标签快照；无活动标签返回 null。 */
-  readonly getActiveSnapshot: () => ExportTabSnapshot | null;
+  /** 现取活动标签快照；无活动标签返回 null。阅读器导出可能需先内嵌包内图。 */
+  readonly getActiveSnapshot: () => ExportTabSnapshot | Promise<ExportTabSnapshot | null> | null;
   /** 当前主题 id（<html> 的 data-theme 值）。 */
   readonly getTheme: () => string;
   /** 导出 CSS 全文（生产为 buildExportCss(+自定义主题)）。 */
@@ -116,7 +116,7 @@ function reportDocumentBuildError(
 async function assembleActiveTab(
   deps: ExportServiceDeps,
 ): Promise<AssembledExport | null> {
-  const snap = deps.getActiveSnapshot();
+  const snap = await deps.getActiveSnapshot();
   if (snap === null) {
     return null;
   }

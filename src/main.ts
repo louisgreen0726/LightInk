@@ -915,8 +915,8 @@ function createExportDeps(
 }
 
 async function runActiveExport(kind: 'html' | 'pdf'): Promise<void> {
-  const snapshot = activeExportSnapshot();
   try {
+    const snapshot = await activeExportSnapshot();
     const pipeline = await loadExportPipeline();
     const deps = createExportDeps(pipeline, snapshot);
     if (kind === 'html') {

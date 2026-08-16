@@ -1,5 +1,6 @@
 /** Structured FictionBook 2 parser with bounded embedded-image support. */
 
+import { bytesToBase64 } from '../../asset/asset-service.js';
 import { sanitizeHtml } from '../sanitize.js';
 import {
   MAX_READER_IMAGE_BYTES,
@@ -90,6 +91,7 @@ function decodeEmbeddedImage(base64: string): Uint8Array | null {
 interface Fb2Resources {
   imageUrl(id: string): string | null;
   dispose(): void;
+  embedExportImages(html: string): Promise<{ html: string; missing: readonly string[] }>;
 }
 
 function createResources(xml: XMLDocument): Fb2Resources {
@@ -101,6 +103,7 @@ function createResources(xml: XMLDocument): Fb2Resources {
     }
   }
   const urls = new Map<string, string>();
+  const exportByUrl = new Map<string, { mime: string; base64: string }>();
   return {
     imageUrl(id) {
       const existing = urls.get(id);
@@ -122,6 +125,7 @@ function createResources(xml: XMLDocument): Fb2Resources {
       const imageBytes = Uint8Array.from(data);
       const url = URL.createObjectURL(new Blob([imageBytes.buffer], { type: mediaType }));
       urls.set(id, url);
+      exportByUrl.set(url, { mime: mediaType, base64: bytesToBase64(imageBytes) });
       return url;
     },
     dispose() {
@@ -129,6 +133,23 @@ function createResources(xml: XMLDocument): Fb2Resources {
         URL.revokeObjectURL(url);
       }
       urls.clear();
+      exportByUrl.clear();
+    },
+    async embedExportImages(html) {
+      const srcs = [...html.matchAll(/(<img\b[^>]*?\bsrc=")([^"]*)(")/gi)].map((m) => m[2]!);
+      const unique = [...new Set(srcs)].filter((src) => src.startsWith('blob:'));
+      const missing = unique.filter((src) => !exportByUrl.has(src));
+      const htmlOut = html.replace(
+        /(<img\b[^>]*?\bsrc=")([^"]*)(")/gi,
+        (whole, pre: string, src: string, post: string) => {
+          const entry = exportByUrl.get(src);
+          if (entry === undefined) {
+            return whole;
+          }
+          return `${pre}data:${entry.mime};base64,${entry.base64}${post}`;
+        },
+      );
+      return { html: htmlOut, missing };
     },
   };
 }
@@ -234,7 +255,11 @@ export function parseFb2(bytes: Uint8Array): ReaderContent {
       return { title, html: chapterHtml(section, resources) };
     });
     returnedContent = true;
-    return { chapters, dispose: resources.dispose };
+    return {
+      chapters,
+      dispose: resources.dispose,
+      embedExportImages: (html) => resources.embedExportImages(html),
+    };
   } finally {
     if (!returnedContent) {
       resources.dispose();

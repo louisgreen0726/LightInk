@@ -40,6 +40,11 @@ export interface ReaderContent {
   warnings?: readonly ReaderWarningKind[];
   /** Release parser-owned blob/object URLs. Idempotent when provided. */
   dispose?: () => void;
+  /**
+   * 导出用图片内嵌：把章节 HTML 中的包内路径 / blob: src 换成 data URI。
+   * EPUB 从 zip 解压，FB2 从已物化 blob 读回；失败的 src 列入 missing。
+   */
+  embedExportImages?: (html: string) => Promise<{ html: string; missing: readonly string[] }>;
 }
 
 export type ReaderWarningKind = 'epubStylesIgnored';

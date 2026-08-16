@@ -11,6 +11,7 @@
  * revokeObjectURL；archive 随 ReaderContent.dispose 关闭。
  */
 
+import { bytesToBase64 } from '../../asset/asset-service.js';
 import { sanitizeHtml } from '../sanitize.js';
 import { sanitizeReaderCss } from '../sanitize-css.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
@@ -99,11 +100,12 @@ export async function parseEpub(
   // T8：包内图片不再 parse 期物化。materialized/pathByUrl 记录按章节窗口懒物化
   // 的 blob URL（path → { url, refs } 引用计数）；archive 存活至内容 dispose，
   // dispose 兜底 revoke 全部并关闭 archive。
-  const materialized = new Map<string, { url: string; refs: number }>();
+  const materialized = new Map<string, { url: string; refs: number; bytes: Uint8Array; mime: string }>();
   const pathByUrl = new Map<string, string>();
+  const exportBytes = new Map<string, { mime: string; bytes: Uint8Array }>();
   // 首个 await 前的 in-flight 占位：跨章并发 resolve 同一图片共享同一次物化，
   // 避免双重解压、无主 blob URL 泄漏与 refs 记账错配。
-  const materializing = new Map<string, Promise<{ url: string; refs: number } | null>>();
+  const materializing = new Map<string, Promise<{ url: string; refs: number; bytes: Uint8Array; mime: string } | null>>();
   let archiveClosed = false;
   const dispose = (): void => {
     for (const entry of materialized.values()) {
@@ -111,6 +113,7 @@ export async function parseEpub(
     }
     materialized.clear();
     pathByUrl.clear();
+    exportBytes.clear();
     if (!archiveClosed) {
       archiveClosed = true;
       void archive.close().catch(() => undefined);
@@ -243,7 +246,7 @@ export async function parseEpub(
     const materializeOne = (
       source: string,
       mediaType: string,
-    ): Promise<{ url: string; refs: number } | null> => {
+    ): Promise<{ url: string; refs: number; bytes: Uint8Array; mime: string } | null> => {
       const existing = materialized.get(source);
       if (existing !== undefined) {
         return Promise.resolve(existing);
@@ -267,7 +270,7 @@ export async function parseEpub(
           URL.revokeObjectURL(url);
           return null;
         }
-        const entry = { url, refs: 0 };
+        const entry = { url, refs: 0, bytes: imageBytes, mime: mediaType };
         materialized.set(source, entry);
         pathByUrl.set(url, source);
         return entry;
@@ -450,8 +453,78 @@ export async function parseEpub(
       stylesheetParts.push(cssText);
     }
     const stylesheet = sanitizeReaderCss(stylesheetParts.join('\n'));
+    const embedExportImages = async (
+      html: string,
+    ): Promise<{ html: string; missing: readonly string[] }> => {
+      const srcs = [...html.matchAll(/(<img\b[^>]*?\bsrc=")([^"]*)(")/gi)].map((m) => m[2]!);
+      const unique = [...new Set(srcs)].filter((src) => {
+        if (src === '' || src.startsWith('data:')) {
+          return false;
+        }
+        if (src.startsWith('blob:')) {
+          return pathByUrl.has(src);
+        }
+        return !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(src);
+      });
+      const cache = new Map<string, { mime: string; base64: string } | null>();
+      for (const src of unique) {
+        const path = src.startsWith('blob:') ? pathByUrl.get(src) : src;
+        if (path === undefined) {
+          cache.set(src, null);
+          continue;
+        }
+        const ready = materialized.get(path);
+        if (ready !== undefined) {
+          cache.set(src, { mime: ready.mime, base64: bytesToBase64(ready.bytes) });
+          continue;
+        }
+        const cached = exportBytes.get(path);
+        if (cached !== undefined) {
+          cache.set(src, { mime: cached.mime, base64: bytesToBase64(cached.bytes) });
+          continue;
+        }
+        const pending = materializing.get(path);
+        if (pending !== undefined) {
+          const entry = await pending;
+          if (entry !== null) {
+            cache.set(src, { mime: entry.mime, base64: bytesToBase64(entry.bytes) });
+            continue;
+          }
+        }
+        const manifestItem = manifestByPath.get(path);
+        const file = archiveClosed ? null : archive.file(path);
+        if (manifestItem === undefined || file === null) {
+          cache.set(src, null);
+          continue;
+        }
+        try {
+          const data = Uint8Array.from(await file.readBytes());
+          exportBytes.set(path, { mime: manifestItem.mediaType, bytes: data });
+          cache.set(src, {
+            mime: manifestItem.mediaType,
+            base64: bytesToBase64(data),
+          });
+        } catch {
+          cache.set(src, null);
+        }
+      }
+      const missing = unique.filter((src) => cache.get(src) === null);
+      const htmlOut = html.replace(
+        /(<img\b[^>]*?\bsrc=")([^"]*)(")/gi,
+        (whole, pre: string, src: string, post: string) => {
+          const entry = cache.get(src);
+          if (entry === undefined || entry === null) {
+            return whole;
+          }
+          return `${pre}data:${entry.mime};base64,${entry.base64}${post}`;
+        },
+      );
+      return { html: htmlOut, missing };
+    };
     returnedContent = true;
-    return stylesheet === '' ? { chapters, dispose } : { chapters, stylesheet, dispose };
+    return stylesheet === ''
+      ? { chapters, dispose, embedExportImages }
+      : { chapters, stylesheet, dispose, embedExportImages };
   } finally {
     if (!returnedContent) {
       dispose();

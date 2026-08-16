@@ -27,6 +27,8 @@ export const PRINT_CSS = `/* LightInk 打印微调 */
 @media print {
   body { max-width: none; padding: 0; }
   pre { white-space: pre-wrap; word-break: break-word; }
+  .lightink-export-chapter { break-before: page; page-break-before: always; }
+  .lightink-export-chapter:first-of-type { break-before: auto; page-break-before: auto; }
 }
 `;
 

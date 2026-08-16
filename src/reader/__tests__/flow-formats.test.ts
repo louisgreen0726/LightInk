@@ -228,7 +228,7 @@ describe('parseFb2', () => {
     expect(content.chapters[1]!.html).toContain('<strong>加粗</strong>');
   });
 
-  it('恢复允许的 embedded image，并在 dispose 时释放 URL', () => {
+  it('恢复允许的 embedded image，并在 dispose 时释放 URL', async () => {
     const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
     const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
     const revoked: string[] = [];
@@ -251,6 +251,11 @@ describe('parseFb2', () => {
       const body = document.createElement('div');
       body.innerHTML = content.chapters[0]!.html;
       expect(body.querySelector('img')?.getAttribute('src')).toBe('blob:fb2-cover');
+      const exported = await content.embedExportImages?.(
+        `<img src="blob:fb2-cover">`,
+      );
+      expect(exported?.missing).toEqual([]);
+      expect(exported?.html).toContain('data:image/png;base64,aGVsbG8=');
       content.dispose?.();
       content.dispose?.();
       expect(revoked).toEqual(['blob:fb2-cover']);
@@ -530,6 +535,13 @@ describe('parseEpub', () => {
       // 再次进入视口可重新物化；dispose 兜底 revoke。
       await content.chapters[0]!.resolveResources?.(frameDoc);
       expect(frameDoc.querySelector('img')?.getAttribute('src')).toBe('blob:epub-cover');
+      const exported = await content.embedExportImages?.(
+        `<img src="OEBPS/images/pic.png"><img src="blob:epub-cover">`,
+      );
+      expect(exported?.missing).toEqual([]);
+      expect(exported?.html).toContain('data:image/png;base64,');
+      expect(exported?.html).not.toContain('OEBPS/images/pic.png');
+      expect(exported?.html).not.toContain('blob:epub-cover');
       content.dispose?.();
       content.dispose?.();
       expect(revoked).toEqual(['blob:epub-cover', 'blob:epub-cover']);
