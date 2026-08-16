@@ -44,7 +44,7 @@ pub struct RemoteError {
 }
 
 impl RemoteError {
-    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -52,7 +52,11 @@ impl RemoteError {
         }
     }
 
-    fn status(code: impl Into<String>, message: impl Into<String>, status: StatusCode) -> Self {
+    pub(crate) fn status(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        status: StatusCode,
+    ) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -384,9 +388,8 @@ fn load_credential(state: &RemoteState, credential_ref: &str) -> Option<RemoteCr
         .and_then(|credentials| credentials.get(credential_ref).cloned())
 }
 
-#[tauri::command]
-pub fn remote_store_credential(
-    state: State<'_, RemoteState>,
+pub(crate) fn store_credential_value(
+    state: &RemoteState,
     credential_ref: String,
     credential: RemoteCredential,
 ) -> Result<CredentialStoreResult, RemoteError> {
@@ -414,6 +417,15 @@ pub fn remote_store_credential(
 }
 
 #[tauri::command]
+pub fn remote_store_credential(
+    state: State<'_, RemoteState>,
+    credential_ref: String,
+    credential: RemoteCredential,
+) -> Result<CredentialStoreResult, RemoteError> {
+    store_credential_value(&state, credential_ref, credential)
+}
+
+#[tauri::command]
 pub fn remote_forget_credential(
     state: State<'_, RemoteState>,
     credential_ref: String,
@@ -434,6 +446,61 @@ pub(crate) fn forget_credential_value(
         let _ = entry.delete_credential();
     }
     Ok(())
+}
+
+pub(crate) async fn fetch_remote_text(
+    state: &RemoteState,
+    raw_url: &str,
+    allow_http: bool,
+    credential_ref: Option<&str>,
+    max_bytes: usize,
+) -> Result<(Url, String), RemoteError> {
+    let url = validate_remote_url(raw_url, allow_http)?;
+    let credential = credential_ref.and_then(|reference| load_credential(state, reference));
+    let client = build_client(&url, credential.is_some())?;
+    let response = apply_credential(client.get(url), credential.as_ref())
+        .send()
+        .await
+        .map_err(|error| {
+            RemoteError::new("REMOTE_NETWORK_ERROR", format!("无法连接远程目录: {error}"))
+        })?;
+    if let Some(error) = response_error(&response) {
+        return Err(error);
+    }
+    if !response.status().is_success() {
+        return Err(RemoteError::status(
+            "REMOTE_HTTP_ERROR",
+            format!("远程服务器返回 HTTP {}", response.status().as_u16()),
+            response.status(),
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(RemoteError::new(
+            "REMOTE_DOCUMENT_TOO_LARGE",
+            "远程目录响应超过大小限制",
+        ));
+    }
+    let final_url = response.url().clone();
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            RemoteError::new("REMOTE_NETWORK_ERROR", format!("远程目录传输中断: {error}"))
+        })?;
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(RemoteError::new(
+                "REMOTE_DOCUMENT_TOO_LARGE",
+                "远程目录响应超过大小限制",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| RemoteError::new("REMOTE_TEXT_ENCODING", "远程目录不是有效的 UTF-8 XML"))?;
+    Ok((final_url, text))
 }
 
 async fn open_cache_file(path: &Path, size: u64) -> Result<tokio::fs::File, RemoteError> {

@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager};
 pub const DATABASE_FILE: &str = "library.sqlite3";
 pub const CACHE_DIRECTORY: &str = "remote-cache";
 pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const CACHE_LIMIT_KEY: &str = "cache_limit_bytes";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +25,7 @@ pub struct OpdsSource {
     pub title: String,
     pub url: String,
     pub credential_ref: Option<String>,
+    pub allow_http: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -172,6 +173,7 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
               title TEXT NOT NULL,
               url TEXT NOT NULL,
               credential_ref TEXT,
+              allow_http INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL
             );
@@ -222,7 +224,7 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
             );
             CREATE INDEX IF NOT EXISTS cache_ranges_lookup_idx
               ON cache_ranges(object_id, start, end);
-            INSERT INTO schema_meta(key, value) VALUES ('version', '2')
+            INSERT INTO schema_meta(key, value) VALUES ('version', '3')
               ON CONFLICT(key) DO NOTHING;
             INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', '2147483648')
               ON CONFLICT(key) DO NOTHING;
@@ -237,6 +239,21 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
         )
         .unwrap_or(1);
     if version < SCHEMA_VERSION {
+        let has_allow_http: bool = connection
+            .prepare("PRAGMA table_info(opds_sources)")
+            .and_then(|mut statement| {
+                let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+                Ok(rows.flatten().any(|name| name == "allow_http"))
+            })
+            .unwrap_or(false);
+        if !has_allow_http {
+            connection
+                .execute(
+                    "ALTER TABLE opds_sources ADD COLUMN allow_http INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .map_err(|error| format!("无法迁移 OPDS 源协议设置: {error}"))?;
+        }
         connection
             .execute(
                 "INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', ?1)
@@ -280,7 +297,7 @@ pub fn library_list_sources(app: AppHandle) -> Result<Vec<OpdsSource>, String> {
     let connection = open_database_at(&app_data_dir(&app)?)?;
     let mut statement = connection
         .prepare(
-            "SELECT id, title, url, credential_ref, created_at, updated_at
+            "SELECT id, title, url, credential_ref, allow_http, created_at, updated_at
              FROM opds_sources ORDER BY title COLLATE NOCASE, id",
         )
         .map_err(|error| format!("无法读取 OPDS 源: {error}"))?;
@@ -291,8 +308,9 @@ pub fn library_list_sources(app: AppHandle) -> Result<Vec<OpdsSource>, String> {
                 title: row.get(1)?,
                 url: row.get(2)?,
                 credential_ref: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
+                allow_http: row.get::<_, i64>(4)? != 0,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })
         .map_err(|error| format!("无法读取 OPDS 源: {error}"))?;
@@ -309,15 +327,18 @@ pub fn library_upsert_source(app: AppHandle, source: OpdsSource) -> Result<(), S
     let connection = open_database_at(&app_data_dir(&app)?)?;
     connection
         .execute(
-            "INSERT INTO opds_sources(id, title, url, credential_ref, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-             ON CONFLICT(id) DO UPDATE SET title=?2, url=?3, credential_ref=?4, updated_at=?5",
+            "INSERT INTO opds_sources(id, title, url, credential_ref, allow_http, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET title=?2, url=?3, credential_ref=?4,
+               allow_http=?5, updated_at=?7",
             params![
                 source.id,
                 source.title,
                 source.url,
                 source.credential_ref,
-                now_ms()
+                i64::from(source.allow_http),
+                source.created_at,
+                source.updated_at,
             ],
         )
         .map_err(|error| format!("无法保存 OPDS 源: {error}"))?;

@@ -7,6 +7,7 @@ mod export;
 mod file;
 mod identifiers;
 mod library;
+mod opds;
 mod recents;
 mod remote;
 mod snapshot;
@@ -74,6 +75,11 @@ pub fn run() {
             remote::remote_cancel,
             remote::remote_store_credential,
             remote::remote_forget_credential,
+            opds::opds_add_source,
+            opds::opds_list_sources,
+            opds::opds_browse,
+            opds::opds_search,
+            opds::opds_remove_source,
             annotations::read_annotations,
             annotations::write_annotations,
             annotations::content_hash,
