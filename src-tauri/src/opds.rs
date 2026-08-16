@@ -31,6 +31,7 @@ pub struct OpdsLink {
 #[serde(rename_all = "camelCase")]
 pub struct OpdsEntry {
     pub id: String,
+    pub item_id: Option<String>,
     pub title: String,
     pub authors: Vec<String>,
     pub updated: Option<String>,
@@ -404,6 +405,7 @@ pub fn parse_opds_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, RemoteErro
                     }
                     feed.entries.push(OpdsEntry {
                         id: current.id,
+                        item_id: None,
                         title: current.title,
                         authors: current.authors,
                         updated: current.updated,
@@ -675,7 +677,10 @@ async fn browse_url(
         MAX_OPDS_FEED_BYTES,
     )
     .await?;
-    let feed = parse_opds_feed(&xml, &final_url)?;
+    let mut feed = parse_opds_feed(&xml, &final_url)?;
+    for entry in &mut feed.entries {
+        entry.item_id = Some(item_id(&source.id, &entry.id));
+    }
     persist_feed(app, &source.id, &feed)?;
     Ok(feed)
 }

@@ -1,0 +1,278 @@
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { createLibraryView, type LibraryViewDependencies } from '../library-view.js';
+import type { LibraryItem } from '../library-client.js';
+import type { OpdsEntry, OpdsFeed, OpdsSource } from '../opds-client.js';
+
+const source: OpdsSource = {
+  id: 'source-1',
+  title: '测试书库',
+  url: 'https://books.example/opds',
+  allowHttp: false,
+  createdAt: 1,
+  updatedAt: 1,
+};
+
+const entry: OpdsEntry = {
+  id: 'entry-1',
+  itemId: 'item-1',
+  title: '远程漫画',
+  authors: ['作者'],
+  links: [
+    {
+      href: 'https://books.example/book.cbz',
+      rel: 'http://opds-spec.org/acquisition',
+      mediaType: 'application/vnd.comicbook+zip',
+      extension: 'cbz',
+      acquisition: true,
+    },
+  ],
+};
+
+function feed(overrides: Partial<OpdsFeed> = {}): OpdsFeed {
+  return {
+    title: '目录',
+    entries: [entry],
+    links: [],
+    sourceUrl: 'https://books.example/opds',
+    ...overrides,
+  };
+}
+
+function localItem(): LibraryItem {
+  return {
+    id: 'local:/books/a.epub',
+    sourceKind: 'local',
+    title: '本地小说',
+    authors: [],
+    localPath: '/books/a.epub',
+    extension: 'epub',
+    updatedAt: 1,
+  };
+}
+
+function dependencies(overrides: Partial<LibraryViewDependencies> = {}): LibraryViewDependencies {
+  return {
+    opds: {
+      addSource: vi.fn(async () => source),
+      listSources: vi.fn(async () => [source]),
+      removeSource: vi.fn(async () => undefined),
+      browse: vi.fn(async () => feed({ nextUrl: 'https://books.example/opds?page=2' })),
+      search: vi.fn(async () => feed({ title: '搜索结果' })),
+    },
+    library: {
+      listItems: vi.fn(async () => [localItem()]),
+      listAcquisitionLinks: vi.fn(async () => []),
+      removeItem: vi.fn(async () => undefined),
+      clearCache: vi.fn(async () => undefined),
+      setCacheLimit: vi.fn(async () => undefined),
+      cacheStats: vi.fn(async () => ({ bytesCached: 0, limitBytes: 2 * 1024 ** 3 })),
+    },
+    getLocale: () => 'zh-CN',
+    onOpen: vi.fn(async () => undefined),
+    onCache: vi.fn(async () => undefined),
+    onImportLocal: vi.fn(async () => null),
+    notify: vi.fn(),
+    ...overrides,
+  };
+}
+
+async function settle(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function buttonWithText(root: ParentNode, text: string): HTMLButtonElement {
+  const candidate = Array.from(root.querySelectorAll('button')).find(
+    (button) => button.textContent === text,
+  );
+  if (!(candidate instanceof HTMLButtonElement)) throw new Error(`button not found: ${text}`);
+  return candidate;
+}
+
+afterEach(() => {
+  document.body.replaceChildren();
+});
+
+describe('LibraryView', () => {
+  it('switches source, pages, searches, opens an item, and supports keyboard navigation', async () => {
+    const deps = dependencies();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(host.textContent).toContain('本地小说');
+    buttonWithText(host, '测试书库').click();
+    await settle();
+    expect(deps.opds.browse).toHaveBeenCalledWith('source-1', undefined);
+    expect(host.textContent).toContain('远程漫画');
+
+    buttonWithText(host, '下一页').click();
+    await settle();
+    expect(deps.opds.browse).toHaveBeenCalledWith(
+      'source-1',
+      'https://books.example/opds?page=2',
+    );
+
+    const input = host.querySelector<HTMLInputElement>('.lightink-library-search input')!;
+    input.value = '漫画';
+    host.querySelector<HTMLFormElement>('.lightink-library-search')!.dispatchEvent(
+      new SubmitEvent('submit', { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(deps.opds.search).toHaveBeenCalledWith('source-1', '漫画');
+
+    const list = host.querySelector<HTMLElement>('.lightink-library-items')!;
+    list.focus();
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await settle();
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await settle();
+    expect(deps.onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({
+        item: expect.objectContaining({ id: 'item-1' }),
+        acquisition: expect.objectContaining({ href: 'https://books.example/book.cbz' }),
+        source,
+      }),
+      expect.anything(),
+    );
+    expect(view.visible).toBe(false);
+  });
+
+  it('exposes a retry action after an offline browse failure', async () => {
+    const browse = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(feed());
+    const deps = dependencies({ opds: { ...dependencies().opds, browse } });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    buttonWithText(host, '测试书库').click();
+    await settle();
+    expect(host.textContent).toContain('offline');
+    buttonWithText(host, '重试').click();
+    await settle();
+    expect(browse).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain('远程漫画');
+  });
+  it('preserves an existing OPDS credential unless the user changes authentication', async () => {
+    const authenticated = { ...source, credentialRef: 'credential-1' };
+    const addSource = vi.fn(async () => authenticated);
+    const listSources = vi.fn(async () => [authenticated]);
+    const base = dependencies();
+    const deps = dependencies({
+      opds: { ...base.opds, addSource, listSources },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    host.querySelector<HTMLButtonElement>('[aria-label^="编辑 OPDS 源"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
+    expect((form.elements.namedItem('auth') as HTMLSelectElement).value).toBe('keep');
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(addSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'source-1',
+        credentialRef: 'credential-1',
+        clearCredential: undefined,
+        credential: undefined,
+      }),
+    );
+    view.destroy();
+  });
+
+  it('edits an OPDS source and explicitly clears its stored credential', async () => {
+    const authenticated = { ...source, credentialRef: 'credential-1' };
+    const addSource = vi.fn(async (input) => ({
+      ...authenticated,
+      title: input.title,
+      url: input.url,
+      credentialRef: undefined,
+    }));
+    const listSources = vi
+      .fn()
+      .mockResolvedValueOnce([authenticated])
+      .mockResolvedValueOnce([{ ...authenticated, title: '更新后的书库', credentialRef: undefined }]);
+    const base = dependencies();
+    const deps = dependencies({
+      opds: { ...base.opds, addSource, listSources },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    host.querySelector<HTMLButtonElement>('[aria-label^="编辑 OPDS 源"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
+    (form.elements.namedItem('title') as HTMLInputElement).value = '更新后的书库';
+    (form.elements.namedItem('auth') as HTMLSelectElement).value = 'none';
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(addSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'source-1',
+        title: '更新后的书库',
+        credentialRef: undefined,
+        clearCredential: true,
+      }),
+    );
+    expect(form.hidden).toBe(true);
+    view.destroy();
+  });
+
+  it('lets the user change the bounded cache limit', async () => {
+    const deps = dependencies();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    host.querySelector<HTMLButtonElement>('[aria-label="调整缓存上限"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-cache-limit-form')!;
+    const input = form.elements.namedItem('cacheLimitGiB') as HTMLInputElement;
+    input.value = '3.5';
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(deps.library.setCacheLimit).toHaveBeenCalledWith(3.5 * 1024 ** 3);
+    expect(form.hidden).toBe(true);
+    view.destroy();
+  });
+
+  it('cancels an active open when the library is closed', async () => {
+    let operationSignal: AbortSignal | undefined;
+    const onOpen = vi.fn(
+      async (_request: unknown, signal?: AbortSignal): Promise<void> =>
+        new Promise<void>((resolve) => {
+          operationSignal = signal;
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        }),
+    );
+    const deps = dependencies({ onOpen });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    host.querySelector<HTMLButtonElement>('.lightink-library-item')!.click();
+    await settle();
+    buttonWithText(host, '打开阅读').click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[aria-label="关闭书库"]')!.click();
+    await settle();
+
+    expect(operationSignal?.aborted).toBe(true);
+    expect(deps.notify).not.toHaveBeenCalled();
+    view.destroy();
+  });
+});

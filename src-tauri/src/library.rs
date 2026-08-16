@@ -51,6 +51,24 @@ pub struct LibraryItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AcquisitionLink {
+    pub item_id: String,
+    pub href: String,
+    pub rel: String,
+    pub media_type: Option<String>,
+    pub extension: Option<String>,
+    pub size: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryCacheStats {
+    pub bytes_cached: u64,
+    pub limit_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CacheObject {
     pub id: String,
     pub source_key: String,
@@ -397,6 +415,35 @@ pub fn library_list_items(
 }
 
 #[tauri::command]
+pub fn library_list_acquisition_links(
+    app: AppHandle,
+    item_id: String,
+) -> Result<Vec<AcquisitionLink>, String> {
+    let connection = open_database_at(&app_data_dir(&app)?)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT item_id, href, rel, media_type, extension, size
+             FROM acquisition_links WHERE item_id=?1
+             ORDER BY CASE WHEN rel LIKE '%/acquisition' THEN 0 ELSE 1 END, href",
+        )
+        .map_err(|error| format!("无法读取获取链接: {error}"))?;
+    let rows = statement
+        .query_map(params![item_id], |row| {
+            Ok(AcquisitionLink {
+                item_id: row.get(0)?,
+                href: row.get(1)?,
+                rel: row.get(2)?,
+                media_type: row.get(3)?,
+                extension: row.get(4)?,
+                size: row.get(5)?,
+            })
+        })
+        .map_err(|error| format!("无法读取获取链接: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("无法解析获取链接: {error}"))
+}
+
+#[tauri::command]
 pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), String> {
     if item.id.trim().is_empty() || item.title.trim().is_empty() {
         return Err("书库条目缺少必要字段".to_string());
@@ -488,6 +535,22 @@ pub fn library_set_cache_limit(app: AppHandle, limit_bytes: u64) -> Result<(), S
         .map_err(|error| format!("无法保存缓存上限: {error}"))?;
     let _ = evict_cache(&mut connection, &cache_dir(&app)?, limit_bytes)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn library_cache_stats(app: AppHandle) -> Result<LibraryCacheStats, String> {
+    let connection = open_database_at(&app_data_dir(&app)?)?;
+    let bytes_cached: i64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(bytes_cached), 0) FROM cache_objects",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计缓存大小: {error}"))?;
+    Ok(LibraryCacheStats {
+        bytes_cached: u64::try_from(bytes_cached).unwrap_or(0),
+        limit_bytes: cache_limit(&connection)?,
+    })
 }
 
 pub fn cache_limit(connection: &Connection) -> Result<u64, String> {

@@ -12,6 +12,7 @@
 import type { EditorInstance } from '../editor/types.js';
 import type { FileStat } from '../file/file-service.js';
 import type { ReaderInstance } from '../reader/types.js';
+import type { ReaderTarget } from '../reader/sources/types.js';
 
 /** markdown 与 reader 标签共享的基础会话状态。 */
 interface TabBase {
@@ -61,6 +62,8 @@ export interface MarkdownTabState extends TabBase {
  */
 export interface ReaderTabState extends TabBase {
   readonly kind: 'reader';
+  /** Local or remote source descriptor used to load and deduplicate the tab. */
+  readonly target: ReaderTarget;
   /** 该标签独占的阅读视图实例。 */
   readonly reader: ReaderInstance;
 }

@@ -13,6 +13,7 @@ export interface OpdsLink {
 
 export interface OpdsEntry {
   readonly id: string;
+  readonly itemId?: string;
   readonly title: string;
   readonly authors: readonly string[];
   readonly updated?: string;
