@@ -11,6 +11,7 @@
  */
 
 import type { OutlineItem } from '../outline/outline-model.js';
+import type { ComicMetadata } from './comic-model.js';
 import type { ReaderTarget } from './sources/types.js';
 
 export type ReaderPhase =
@@ -34,6 +35,8 @@ export interface ReaderState {
   /** Renderer-owned scale. Application-wide reading scale is applied separately. */
   readonly scale: number;
   readonly locationKind: ReaderLocationKind;
+  /** Present while a comic archive is active. */
+  readonly comicMetadata?: ComicMetadata;
 }
 
 export type ReaderStateListener = (state: ReaderState) => void;

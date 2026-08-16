@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager};
 pub const DATABASE_FILE: &str = "library.sqlite3";
 pub const CACHE_DIRECTORY: &str = "remote-cache";
 pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const CACHE_LIMIT_KEY: &str = "cache_limit_bytes";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,7 +46,24 @@ pub struct LibraryItem {
     pub size: Option<i64>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    pub series: Option<String>,
+    pub number: Option<String>,
+    pub volume: Option<String>,
+    pub page_count: Option<i64>,
+    pub reading_direction: Option<String>,
+    pub cover_page: Option<i64>,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryComicMetadata {
+    pub series: Option<String>,
+    pub number: Option<String>,
+    pub volume: Option<String>,
+    pub page_count: Option<i64>,
+    pub reading_direction: Option<String>,
+    pub cover_page: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,10 +152,20 @@ pub(crate) fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> bool {
+    connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .and_then(|mut statement| {
+            let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+            Ok(rows.flatten().any(|name| name == column))
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String> {
     fs::create_dir_all(app_data_dir).map_err(|error| format!("无法创建书库数据目录: {error}"))?;
     let path = app_data_dir.join(DATABASE_FILE);
-    let connection = match Connection::open(&path) {
+    let mut connection = match Connection::open(&path) {
         Ok(connection) => connection,
         Err(error) => {
             if !matches!(
@@ -209,6 +236,12 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
               size INTEGER,
               etag TEXT,
               last_modified TEXT,
+              series TEXT,
+              number TEXT,
+              volume TEXT,
+              page_count INTEGER,
+              reading_direction TEXT,
+              cover_page INTEGER,
               updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS library_items_source_idx
@@ -242,7 +275,7 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
             );
             CREATE INDEX IF NOT EXISTS cache_ranges_lookup_idx
               ON cache_ranges(object_id, start, end);
-            INSERT INTO schema_meta(key, value) VALUES ('version', '3')
+            INSERT INTO schema_meta(key, value) VALUES ('version', '4')
               ON CONFLICT(key) DO NOTHING;
             INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', '2147483648')
               ON CONFLICT(key) DO NOTHING;
@@ -257,34 +290,50 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
         )
         .unwrap_or(1);
     if version < SCHEMA_VERSION {
-        let has_allow_http: bool = connection
-            .prepare("PRAGMA table_info(opds_sources)")
-            .and_then(|mut statement| {
-                let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-                Ok(rows.flatten().any(|name| name == "allow_http"))
-            })
-            .unwrap_or(false);
-        if !has_allow_http {
-            connection
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("无法开启书库迁移事务: {error}"))?;
+        if !table_has_column(&transaction, "opds_sources", "allow_http") {
+            transaction
                 .execute(
                     "ALTER TABLE opds_sources ADD COLUMN allow_http INTEGER NOT NULL DEFAULT 0",
                     [],
                 )
                 .map_err(|error| format!("无法迁移 OPDS 源协议设置: {error}"))?;
         }
-        connection
+        for (column, definition) in [
+            ("series", "series TEXT"),
+            ("number", "number TEXT"),
+            ("volume", "volume TEXT"),
+            ("page_count", "page_count INTEGER"),
+            ("reading_direction", "reading_direction TEXT"),
+            ("cover_page", "cover_page INTEGER"),
+        ] {
+            if !table_has_column(&transaction, "library_items", column) {
+                transaction
+                    .execute(
+                        &format!("ALTER TABLE library_items ADD COLUMN {definition}"),
+                        [],
+                    )
+                    .map_err(|error| format!("无法迁移漫画元数据列 {column}: {error}"))?;
+            }
+        }
+        transaction
             .execute(
                 "INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', ?1)
                  ON CONFLICT(key) DO NOTHING",
                 params![DEFAULT_CACHE_LIMIT_BYTES as i64],
             )
             .map_err(|error| format!("无法迁移书库数据库: {error}"))?;
-        connection
+        transaction
             .execute(
                 "UPDATE schema_meta SET value=?1 WHERE key='version'",
                 params![SCHEMA_VERSION.to_string()],
             )
             .map_err(|error| format!("无法更新书库数据库版本: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交书库迁移事务: {error}"))?;
     }
     Ok(connection)
 }
@@ -382,7 +431,8 @@ pub fn library_list_items(
         .prepare(
             "SELECT id, source_id, source_kind, title, authors_json, cover_url,
                     local_path, acquisition_url, media_type, extension, size,
-                    etag, last_modified, updated_at
+                    etag, last_modified, series, number, volume, page_count,
+                    reading_direction, cover_page, updated_at
              FROM library_items
              WHERE (?1 IS NULL OR source_id = ?1)
              ORDER BY updated_at DESC, title COLLATE NOCASE, id",
@@ -406,7 +456,13 @@ pub fn library_list_items(
                 size: row.get(10)?,
                 etag: row.get(11)?,
                 last_modified: row.get(12)?,
-                updated_at: row.get(13)?,
+                series: row.get(13)?,
+                number: row.get(14)?,
+                volume: row.get(15)?,
+                page_count: row.get(16)?,
+                reading_direction: row.get(17)?,
+                cover_page: row.get(18)?,
+                updated_at: row.get(19)?,
             })
         })
         .map_err(|error| format!("无法读取书库条目: {error}"))?;
@@ -459,12 +515,18 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
             "INSERT INTO library_items(
                id, source_id, source_kind, title, authors_json, cover_url,
                local_path, acquisition_url, media_type, extension, size,
-               etag, last_modified, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+               etag, last_modified, series, number, volume, page_count,
+               reading_direction, cover_page, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                       ?14, ?15, ?16, ?17, ?18, ?19, ?20)
              ON CONFLICT(id) DO UPDATE SET
                source_id=?2, source_kind=?3, title=?4, authors_json=?5,
                cover_url=?6, local_path=?7, acquisition_url=?8, media_type=?9,
-               extension=?10, size=?11, etag=?12, last_modified=?13, updated_at=?14",
+               extension=?10, size=?11, etag=?12, last_modified=?13,
+               series=COALESCE(?14, series), number=COALESCE(?15, number),
+               volume=COALESCE(?16, volume), page_count=COALESCE(?17, page_count),
+               reading_direction=COALESCE(?18, reading_direction),
+               cover_page=COALESCE(?19, cover_page), updated_at=?20",
             params![
                 item.id,
                 item.source_id,
@@ -479,6 +541,12 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
                 item.size,
                 item.etag,
                 item.last_modified,
+                item.series,
+                item.number,
+                item.volume,
+                item.page_count,
+                item.reading_direction,
+                item.cover_page,
                 item.updated_at,
             ],
         )
@@ -486,6 +554,49 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
     transaction
         .commit()
         .map_err(|error| format!("无法提交书库事务: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn library_update_comic_metadata(
+    app: AppHandle,
+    item_id: String,
+    metadata: LibraryComicMetadata,
+) -> Result<(), String> {
+    if item_id.trim().is_empty() {
+        return Err("书库条目 ID 不能为空".to_string());
+    }
+    if metadata.page_count.is_some_and(|value| value <= 0)
+        || metadata.cover_page.is_some_and(|value| value < 0)
+    {
+        return Err("漫画页数元数据无效".to_string());
+    }
+    if metadata
+        .reading_direction
+        .as_deref()
+        .is_some_and(|value| value != "ltr" && value != "rtl")
+    {
+        return Err("漫画阅读方向无效".to_string());
+    }
+    let connection = open_database_at(&app_data_dir(&app)?)?;
+    connection
+        .execute(
+            "UPDATE library_items SET
+               series=?2, number=?3, volume=?4, page_count=?5,
+               reading_direction=?6, cover_page=?7, updated_at=?8
+             WHERE id=?1",
+            params![
+                item_id,
+                metadata.series,
+                metadata.number,
+                metadata.volume,
+                metadata.page_count,
+                metadata.reading_direction,
+                metadata.cover_page,
+                now_ms(),
+            ],
+        )
+        .map_err(|error| format!("无法更新漫画元数据: {error}"))?;
     Ok(())
 }
 
@@ -803,6 +914,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(title, "测试");
+    }
+
+    #[test]
+    fn migrates_v3_library_items_to_comic_metadata_without_data_loss() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = Connection::open(directory.path().join(DATABASE_FILE)).unwrap();
+        legacy
+            .execute_batch(
+                "
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                INSERT INTO schema_meta(key, value) VALUES ('version', '3');
+                CREATE TABLE opds_sources (
+                  id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+                  credential_ref TEXT, allow_http INTEGER NOT NULL DEFAULT 0,
+                  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE library_items (
+                  id TEXT PRIMARY KEY NOT NULL,
+                  source_id TEXT REFERENCES opds_sources(id) ON DELETE CASCADE,
+                  source_kind TEXT NOT NULL, title TEXT NOT NULL, authors_json TEXT NOT NULL,
+                  cover_url TEXT, local_path TEXT, acquisition_url TEXT, media_type TEXT,
+                  extension TEXT, size INTEGER, etag TEXT, last_modified TEXT,
+                  updated_at INTEGER NOT NULL
+                );
+                INSERT INTO library_items(
+                  id, source_kind, title, authors_json, local_path, extension, updated_at
+                ) VALUES ('local:/comic.cbz', 'local', '旧漫画', '[]', '/comic.cbz', 'cbz', 1);
+                ",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let migrated = database_for_tests(directory.path()).unwrap();
+        for column in [
+            "series",
+            "number",
+            "volume",
+            "page_count",
+            "reading_direction",
+            "cover_page",
+        ] {
+            assert!(table_has_column(&migrated, "library_items", column));
+        }
+        let (version, title): (i64, String) = (
+            migrated
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+            migrated
+                .query_row(
+                    "SELECT title FROM library_items WHERE id='local:/comic.cbz'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+        );
+        assert_eq!(version, 4);
+        assert_eq!(title, "旧漫画");
     }
 
     #[test]

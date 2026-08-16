@@ -1482,6 +1482,18 @@ manager = new TabManager({
           retry,
           t: (key, vars) => i18n.t(key, vars),
         }),
+      onComicMetadata: (target, metadata) =>
+        libraryClient.updateComicMetadata(
+          target.kind === 'remote' ? target.itemId : target.identity.id,
+          {
+            series: metadata.series,
+            number: metadata.number,
+            volume: metadata.volume,
+            pageCount: metadata.pageCount,
+            readingDirection: metadata.readingDirection,
+            coverPage: metadata.coverPage,
+          },
+        ),
     });
     reader.subscribeState(() => {
       const active = manager?.activeTab;

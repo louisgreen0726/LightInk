@@ -69,6 +69,7 @@ pub fn run() {
             library::library_list_items,
             library::library_list_acquisition_links,
             library::library_upsert_item,
+            library::library_update_comic_metadata,
             library::library_remove_item,
             library::library_clear_cache,
             library::library_set_cache_limit,

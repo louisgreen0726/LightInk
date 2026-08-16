@@ -117,6 +117,7 @@ import {
   type ArchivePasswordProvider,
 } from './sources/native-archive.js';
 import { fnv1a64Hex } from './document-hash.js';
+import type { ComicMetadata } from './comic-model.js';
 
 const PAGE_EXTS = new Set(['pdf', 'cbz', ...NATIVE_ARCHIVE_EXTENSIONS]);
 
@@ -208,6 +209,8 @@ export interface ReaderViewDeps {
   requestArchivePassword?: ArchivePasswordProvider;
   /** Injectable progress storage; production uses localStorage. */
   progressStorage?: ProgressStorage | null;
+  /** Persist normalized ComicInfo metadata for an existing library item. */
+  onComicMetadata?: (target: ReaderTarget, metadata: ComicMetadata) => void | Promise<void>;
 }
 
 /**
@@ -589,7 +592,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       readerState.total !== next.total ||
       readerState.progress !== next.progress ||
       readerState.scale !== next.scale ||
-      readerState.locationKind !== next.locationKind;
+      readerState.locationKind !== next.locationKind ||
+      readerState.comicMetadata !== next.comicMetadata;
     if (changed) {
       readerState = Object.freeze({ ...next });
     }
@@ -857,6 +861,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       progress: total === 0 ? 0 : Math.min(1, Math.max(0, current / total)),
       scale,
       locationKind: total === 0 ? null : 'page',
+      comicMetadata: cbzHandle?.metadata,
     });
   };
 
@@ -1723,6 +1728,35 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (archiveSource === null) throw new ParseError('漫画归档字节源不可用');
     const cbz = await renderCbzInto(archiveSource, stagedHost, signal, {
       requestPassword: deps.requestArchivePassword,
+      labels: {
+        previous: t('reader.comic.previous'),
+        next: t('reader.comic.next'),
+        vertical: t('reader.comic.vertical'),
+        paged: t('reader.comic.paged'),
+        leftToRight: t('reader.comic.ltr'),
+        rightToLeft: t('reader.comic.rtl'),
+        singlePage: t('reader.comic.single'),
+        doublePage: t('reader.comic.double'),
+        fitWidth: t('reader.comic.fitWidth'),
+        imageDecodeFailed: t('reader.comic.imageDecodeFailed'),
+        retry: t('reader.comic.retry'),
+      },
+      onPageChange: () => {
+        if (cbzHandle !== null) {
+          syncPageState();
+          schedulePersistReadingProgress();
+        }
+      },
+      onPageListChange: (totalPages, metadata) => {
+        readerOutline = outlineFromEntries(
+          Array.from({ length: totalPages }, (_, index) => ({
+            title: t('annotation.location.page', { page: String(index + 1) }),
+          })),
+          'page',
+        );
+        if (cbzHandle !== null) syncPageState();
+        void Promise.resolve(deps.onComicMetadata?.(target, metadata)).catch(() => undefined);
+      },
       onArchiveProgress: (progress) => {
         if (progress.phase === 'sequential' && progress.currentEntry < progress.targetEntry) {
           status.hidden = false;
@@ -1732,6 +1766,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }
       },
     });
+    void Promise.resolve(deps.onComicMetadata?.(target, cbz.metadata)).catch(() => undefined);
     return { host: stagedHost, pdf: null, cbz };
   };
 
@@ -1823,7 +1858,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       return true;
     }
     if (cbzHandle !== null) {
-      cbzHandle.scrollToPage(cbzHandle.currentPage + direction);
+      if (direction > 0) cbzHandle.nextPage();
+      else cbzHandle.previousPage();
       syncPageState();
       schedulePersistReadingProgress();
       return true;

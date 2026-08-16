@@ -74,10 +74,22 @@ afterEach(() => {
 
 describe('Reader load lifecycle', () => {
   it('opens a local native comic provider without reading the whole archive', async () => {
-    const readEntry = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const readEntry = vi.fn(async (entryId: string) =>
+      entryId === 'comic-info'
+        ? bytes('<ComicInfo><Series>本地系列</Series><Volume>3</Volume></ComicInfo>')
+        : new Uint8Array([1, 2, 3]),
+    );
     const close = vi.fn(async () => undefined);
+    const onComicMetadata = vi.fn(async () => undefined);
     const openArchiveProvider = vi.fn(async () => ({
       entries: [
+        {
+          id: 'comic-info',
+          filename: 'ComicInfo.xml',
+          directory: false,
+          compressedSize: 40,
+          uncompressedSize: 70,
+        },
         {
           id: 'entry-0',
           filename: 'page1.png',
@@ -99,7 +111,7 @@ describe('Reader load lifecycle', () => {
       value: vi.fn(),
     });
     const host = document.createElement('div');
-    const view = createReaderView(host, { openArchiveProvider });
+    const view = createReaderView(host, { openArchiveProvider, onComicMetadata });
 
     await view.load('/books/comic.cbr');
 
@@ -108,7 +120,16 @@ describe('Reader load lifecycle', () => {
       expect.any(AbortSignal),
     );
     expect(readEntry).toHaveBeenCalledWith('entry-0', expect.any(AbortSignal));
-    expect(view.state).toMatchObject({ phase: 'ready', current: 1, total: 1 });
+    expect(view.state).toMatchObject({
+      phase: 'ready',
+      current: 1,
+      total: 1,
+      comicMetadata: { series: '本地系列', volume: '3', pageCount: 1 },
+    });
+    expect(onComicMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'local', identity: { id: 'local:/books/comic.cbr' } }),
+      expect.objectContaining({ series: '本地系列', pageCount: 1 }),
+    );
     await view.destroy();
     expect(close).toHaveBeenCalledTimes(1);
   });

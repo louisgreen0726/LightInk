@@ -275,4 +275,38 @@ describe('LibraryView', () => {
     expect(deps.notify).not.toHaveBeenCalled();
     view.destroy();
   });
+
+  it('shows persisted comic series, volume, page count, direction, and cover page', async () => {
+    const comic: LibraryItem = {
+      ...localItem(),
+      title: '本地漫画',
+      series: '墨色档案',
+      number: '12',
+      volume: '3',
+      pageCount: 128,
+      readingDirection: 'rtl',
+      coverPage: 0,
+    };
+    const base = dependencies();
+    const deps = dependencies({
+      library: {
+        ...base.library,
+        listItems: vi.fn(async () => [comic]),
+      },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    host.querySelector<HTMLButtonElement>('.lightink-library-item')!.click();
+    await settle();
+    const metadata = host.querySelector<HTMLElement>('.lightink-library-comic-metadata')!;
+    expect(metadata.textContent).toContain('系列墨色档案');
+    expect(metadata.textContent).toContain('卷3');
+    expect(metadata.textContent).toContain('页数128');
+    expect(metadata.textContent).toContain('阅读方向从右到左');
+    expect(metadata.textContent).toContain('封面页1');
+    view.destroy();
+  });
 });

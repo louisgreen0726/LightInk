@@ -385,6 +385,24 @@
   line-height: 1.55;
 }
 
+.lightink-library-comic-metadata {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 12px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+
+.lightink-library-comic-metadata dt {
+  color: var(--lightink-muted);
+}
+
+.lightink-library-comic-metadata dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .lightink-library-detail-actions {
   display: flex;
   flex-wrap: wrap;

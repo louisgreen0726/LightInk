@@ -14,7 +14,22 @@ export interface LibraryItem {
   readonly size?: number;
   readonly etag?: string;
   readonly lastModified?: string;
+  readonly series?: string;
+  readonly number?: string;
+  readonly volume?: string;
+  readonly pageCount?: number;
+  readonly readingDirection?: 'ltr' | 'rtl';
+  readonly coverPage?: number;
   readonly updatedAt: number;
+}
+
+export interface LibraryComicMetadata {
+  readonly series?: string;
+  readonly number?: string;
+  readonly volume?: string;
+  readonly pageCount?: number;
+  readonly readingDirection?: 'ltr' | 'rtl';
+  readonly coverPage?: number;
 }
 
 export interface AcquisitionLink {
@@ -55,6 +70,10 @@ export class LibraryClient {
 
   upsertItem(item: LibraryItem): Promise<void> {
     return this.invoker.invoke<void>('library_upsert_item', { item });
+  }
+
+  updateComicMetadata(itemId: string, metadata: LibraryComicMetadata): Promise<void> {
+    return this.invoker.invoke<void>('library_update_comic_metadata', { itemId, metadata });
   }
 
   removeItem(itemId: string): Promise<void> {

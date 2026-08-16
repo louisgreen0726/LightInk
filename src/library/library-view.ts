@@ -53,6 +53,14 @@ interface Labels {
   offline: string;
   details: string;
   local: string;
+  series: string;
+  number: string;
+  volume: string;
+  pages: string;
+  direction: string;
+  directionLtr: string;
+  directionRtl: string;
+  coverPage: string;
 }
 
 const LABELS: Record<Locale, Labels> = {
@@ -99,6 +107,14 @@ const LABELS: Record<Locale, Labels> = {
     offline: 'Could not reach this source.',
     details: 'Book details',
     local: 'Local',
+    series: 'Series',
+    number: 'Number',
+    volume: 'Volume',
+    pages: 'Pages',
+    direction: 'Reading direction',
+    directionLtr: 'Left to right',
+    directionRtl: 'Right to left',
+    coverPage: 'Cover page',
   },
   'zh-CN': {
     library: '书库',
@@ -143,6 +159,14 @@ const LABELS: Record<Locale, Labels> = {
     offline: '无法连接此书库源。',
     details: '作品详情',
     local: '本地',
+    series: '系列',
+    number: '序号',
+    volume: '卷',
+    pages: '页数',
+    direction: '阅读方向',
+    directionLtr: '从左到右',
+    directionRtl: '从右到左',
+    coverPage: '封面页',
   },
 };
 
@@ -499,6 +523,7 @@ export function createLibraryView(
       const meta = doc.createElement('span');
       meta.textContent = [
         display.item.authors.join(', '),
+        display.item.series,
         display.item.extension?.toUpperCase(),
         display.item.size === undefined ? undefined : bytesLabel(display.item.size),
       ]
@@ -587,6 +612,41 @@ export function createLibraryView(
     authors.className = 'lightink-library-detail-authors';
     authors.textContent = selected.item.authors.join(', ');
     detail.append(detailHeading, title, authors);
+    const facts: Array<[string, string | undefined]> = [
+      [labels().series, selected.item.series],
+      [labels().number, selected.item.number],
+      [labels().volume, selected.item.volume],
+      [labels().pages, selected.item.pageCount?.toLocaleString()],
+      [
+        labels().direction,
+        selected.item.readingDirection === 'rtl'
+          ? labels().directionRtl
+          : selected.item.readingDirection === 'ltr'
+            ? labels().directionLtr
+            : undefined,
+      ],
+      [
+        labels().coverPage,
+        selected.item.coverPage === undefined
+          ? undefined
+          : String(selected.item.coverPage + 1),
+      ],
+    ];
+    const availableFacts = facts.filter(
+      (fact): fact is [string, string] => fact[1] !== undefined && fact[1] !== '',
+    );
+    if (availableFacts.length > 0) {
+      const metadata = doc.createElement('dl');
+      metadata.className = 'lightink-library-comic-metadata';
+      for (const [label, value] of availableFacts) {
+        const term = doc.createElement('dt');
+        term.textContent = label;
+        const description = doc.createElement('dd');
+        description.textContent = value;
+        metadata.append(term, description);
+      }
+      detail.appendChild(metadata);
+    }
     if (selected.entry?.summary !== undefined && selected.entry.summary !== '') {
       const summary = doc.createElement('p');
       summary.className = 'lightink-library-summary';
