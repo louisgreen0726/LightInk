@@ -109,14 +109,14 @@ pub fn range_is_covered(ranges: &[ByteRange], requested: ByteRange) -> bool {
         .any(|range| range.start <= requested.start && range.end >= requested.end)
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
 }
 
-fn open_database_at(app_data_dir: &Path) -> Result<Connection, String> {
+pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String> {
     fs::create_dir_all(app_data_dir).map_err(|error| format!("无法创建书库数据目录: {error}"))?;
     let path = app_data_dir.join(DATABASE_FILE);
     let connection = match Connection::open(&path) {
@@ -254,13 +254,13 @@ fn open_database_at(app_data_dir: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 
-fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|error| format!("无法定位书库数据目录: {error}"))
 }
 
-fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app
         .path()
         .app_cache_dir()

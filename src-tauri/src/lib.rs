@@ -8,6 +8,7 @@ mod file;
 mod identifiers;
 mod library;
 mod recents;
+mod remote;
 mod snapshot;
 
 use tauri_plugin_opener::OpenerExt;
@@ -39,6 +40,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(cli::PendingFile(std::sync::Mutex::new(first_file)))
+        .manage(remote::RemoteState::default())
         .invoke_handler(tauri::generate_handler![
             file::read_file,
             file::read_file_bytes,
@@ -66,6 +68,12 @@ pub fn run() {
             library::library_remove_item,
             library::library_clear_cache,
             library::library_set_cache_limit,
+            remote::remote_open,
+            remote::remote_read_range,
+            remote::remote_close,
+            remote::remote_cancel,
+            remote::remote_store_credential,
+            remote::remote_forget_credential,
             annotations::read_annotations,
             annotations::write_annotations,
             annotations::content_hash,
