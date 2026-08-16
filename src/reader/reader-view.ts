@@ -1760,7 +1760,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       onArchiveProgress: (progress) => {
         if (progress.phase === 'sequential' && progress.currentEntry < progress.targetEntry) {
           status.hidden = false;
-          status.textContent = `${t('reader.loading')} ${progress.currentEntry + 1} / ${progress.targetEntry + 1}`;
+          status.textContent = t('reader.archive.sequentialProgress', {
+            current: String(progress.currentEntry + 1),
+            target: String(progress.targetEntry + 1),
+          });
         } else if (readerState.phase === 'ready') {
           status.hidden = true;
         }

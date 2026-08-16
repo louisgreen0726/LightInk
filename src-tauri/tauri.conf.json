@@ -52,6 +52,10 @@
           "mobi",
           "fb2",
           "cbz",
+          "cbr",
+          "cb7",
+          "rar",
+          "7z",
           "txt"
         ],
         "name": "eBook",

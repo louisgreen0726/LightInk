@@ -68,6 +68,7 @@ import {
 } from './reader/markdown-annotations.js';
 import type { RemoteOpenResult } from './reader/sources/remote-source.js';
 import type { RemoteReaderTarget } from './reader/sources/types.js';
+import { readerLoadErrorDetail } from './reader/error-message.js';
 import { TabManager, fileNameOf, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
@@ -416,52 +417,11 @@ async function readReaderChunk(
   }
 }
 
-const READER_LIMIT_MESSAGE_KEYS = {
-  archiveEntries: 'reader.limit.archiveEntries',
-  archiveTotalBytes: 'reader.limit.archiveTotalBytes',
-  archiveEntryBytes: 'reader.limit.archiveEntryBytes',
-  archiveCompressionRatio: 'reader.limit.archiveCompressionRatio',
-  readerImageBytes: 'reader.limit.readerImageBytes',
-  pdfPages: 'reader.limit.pdfPages',
-  cbzPages: 'reader.limit.cbzPages',
-} as const;
-
-const READER_CAPABILITY_MESSAGE_KEYS = {
-  mobiDrm: 'reader.capability.mobiDrm',
-  mobiKf8: 'reader.capability.mobiKf8',
-  mobiHuff: 'reader.capability.mobiHuff',
-} as const;
-
-function readerLoadErrorDetail(error: unknown): string {
-  if (error !== null && typeof error === 'object') {
-    const candidate = error as Record<string, unknown>;
-    const kind = typeof candidate['kind'] === 'string' ? candidate['kind'] : '';
-    if (
-      candidate['name'] === 'ReaderLimitError' &&
-      Object.prototype.hasOwnProperty.call(READER_LIMIT_MESSAGE_KEYS, kind) &&
-      typeof candidate['actual'] === 'number' &&
-      typeof candidate['limit'] === 'number'
-    ) {
-      const key = READER_LIMIT_MESSAGE_KEYS[kind as keyof typeof READER_LIMIT_MESSAGE_KEYS];
-      return i18n.t(key, {
-        actual: String(candidate['actual']),
-        limit: String(candidate['limit']),
-      });
-    }
-    if (
-      candidate['name'] === 'ReaderCapabilityError' &&
-      Object.prototype.hasOwnProperty.call(READER_CAPABILITY_MESSAGE_KEYS, kind)
-    ) {
-      const key =
-        READER_CAPABILITY_MESSAGE_KEYS[kind as keyof typeof READER_CAPABILITY_MESSAGE_KEYS];
-      return i18n.t(key);
-    }
-  }
-  return error instanceof Error ? error.message : String(error ?? '');
-}
+const localizedReaderError = (error: unknown): string =>
+  readerLoadErrorDetail(error, (key, vars) => i18n.t(key, vars));
 
 function reportReaderLoadError(error: unknown): void {
-  void dialogMessage(i18n.t('reader.loadFailed', { detail: readerLoadErrorDetail(error) }), {
+  void dialogMessage(i18n.t('reader.loadFailed', { detail: localizedReaderError(error) }), {
     title: i18n.t('app.name'),
     kind: 'error',
   });
@@ -574,13 +534,25 @@ async function openLibraryItem(
   }
   const acquisition = request.acquisition;
   if (acquisition === undefined) throw new Error('没有可用的获取链接');
-  const opened = await openLibraryRemote(request, signal);
+  let opened: RemoteOpenResult;
+  try {
+    opened = await openLibraryRemote(request, signal);
+  } catch (error) {
+    throw new Error(localizedReaderError(error));
+  }
   const cancel = (): void => {
     void invoke<void>('remote_cancel', { resourceId: opened.resourceId }).catch(() => undefined);
     void invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
   };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
+    throwIfOperationAborted(signal);
+    if (!opened.supportsRanges) {
+      await dialogMessage(i18n.t('reader.remote.noRange'), {
+        title: i18n.t('app.name'),
+        kind: 'warning',
+      });
+    }
     throwIfOperationAborted(signal);
     const extension = remoteExtension(item, acquisition);
     const target: RemoteReaderTarget = {
@@ -602,7 +574,7 @@ async function openLibraryItem(
     await tab.reader.load(target);
   } catch (error) {
     await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
-    throw error;
+    throw new Error(localizedReaderError(error));
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
@@ -614,7 +586,12 @@ async function cacheLibraryItem(
 ): Promise<void> {
   const { item, acquisition } = request;
   if (item.sourceKind === 'local' || acquisition === undefined) return;
-  const opened = await openLibraryRemote(request, signal);
+  let opened: RemoteOpenResult;
+  try {
+    opened = await openLibraryRemote(request, signal);
+  } catch (error) {
+    throw new Error(localizedReaderError(error));
+  }
   const cancel = (): void => {
     void invoke<void>('remote_cancel', { resourceId: opened.resourceId }).catch(() => undefined);
   };
@@ -638,6 +615,8 @@ async function cacheLibraryItem(
       size: opened.size,
       updatedAt: Date.now(),
     });
+  } catch (error) {
+    throw new Error(localizedReaderError(error));
   } finally {
     signal?.removeEventListener('abort', cancel);
     await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);

@@ -109,7 +109,9 @@ pub fn first_supported_from_urls(urls: impl IntoIterator<Item = url::Url>) -> Op
 }
 
 /// 以只读 reader 标签打开的电子书扩展名（小写，与前端 file-drop.ts READER_EXTS 一致）。
-const READER_EXTS: &[&str] = &["pdf", "epub", "mobi", "fb2", "cbz", "txt"];
+const READER_EXTS: &[&str] = &[
+    "pdf", "epub", "mobi", "fb2", "cbz", "cbr", "cb7", "rar", "7z", "txt",
+];
 
 /// 把路径参数规范化为用于扩展名判断的候选字符串：`file://` URL 取 path 段
 /// （避免 query/fragment 干扰），其余原样返回。不访问文件系统。
@@ -202,6 +204,12 @@ mod tests {
             extract_file_arg(&argv(&["lightink", "readme.md.txt"])),
             Some("readme.md.txt".to_string())
         );
+        for archive in ["comic.cbr", "comic.cb7", "archive.rar", "archive.7z"] {
+            assert_eq!(
+                extract_file_arg(&argv(&["lightink", archive])),
+                Some(archive.to_string())
+            );
+        }
         assert!(extract_file_arg(&argv(&["lightink", "unsupported.azw3"])).is_none());
     }
 
@@ -218,6 +226,10 @@ mod tests {
         assert_eq!(
             extract_file_arg(&argv(&["lightink", "BOOK.PDF"])),
             Some("BOOK.PDF".to_string())
+        );
+        assert_eq!(
+            extract_file_arg(&argv(&["lightink", "COMIC.CBR"])),
+            Some("COMIC.CBR".to_string())
         );
     }
 

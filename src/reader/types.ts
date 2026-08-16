@@ -1,7 +1,7 @@
 /**
  * `reader` — 只读阅读标签的实例契约（ebook-reader T1）。
  *
- * reader 标签（PDF/EPUB/MOBI/FB2/CBZ/TXT）在 TabManager 中以
+ * reader 标签（PDF/EPUB/MOBI/FB2/CBZ/CBR/CB7/RAR/7z/TXT）在 TabManager 中以
  * `kind: 'reader'` 与 markdown 编辑标签区分：不挂 Milkdown 编辑器，
  * 永不进入 dirty / autosave / 崩溃快照 / 外部变更检测等可写路径
  * （见 tab-manager 各方法的 kind 守卫）。
