@@ -3,8 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   ArchiveEntryMetadata,
   ArchiveProvider,
+  ArchiveReadProgress,
   ReaderTarget,
 } from './types.js';
+import { readerIdentityKey } from './types.js';
+import { fnv1a64Hex } from '../document-hash.js';
 
 export const NATIVE_ARCHIVE_EXTENSIONS: ReadonlySet<string> = new Set([
   'cbr',
@@ -29,10 +32,16 @@ interface NativeArchiveOpenResult {
   readonly encrypted: boolean;
   readonly multivolume: boolean;
   readonly entries: readonly NativeArchiveEntry[];
+  readonly depth?: number;
+  readonly cumulativeUncompressedBytes?: number;
 }
 
 export interface NativeArchiveInvoker {
-  invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  invoke<T>(
+    command: string,
+    args?: Record<string, unknown> | ArrayBuffer | Uint8Array,
+    options?: { readonly headers: HeadersInit },
+  ): Promise<T>;
 }
 
 export interface ArchivePasswordRequest {
@@ -54,7 +63,9 @@ export class NativeArchiveError extends Error {
   }
 }
 
-const defaultInvoker: NativeArchiveInvoker = { invoke };
+const defaultInvoker: NativeArchiveInvoker = {
+  invoke: (command, args, options) => invoke(command, args, options),
+};
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted === true) {
@@ -108,6 +119,237 @@ async function requestPassword(
   return password;
 }
 
+interface NativeProviderOptions {
+  readonly invoker: NativeArchiveInvoker;
+  readonly requestPassword?: ArchivePasswordProvider;
+  readonly displayName: string;
+  readonly identity: string;
+  readonly closeRemoteResourceId?: string;
+  readonly initialPassword?: string;
+}
+
+interface NativeNestedPayloadContext {
+  readonly parentIdentity: string;
+  readonly entryId: string;
+  readonly displayName: string;
+  readonly depth: number;
+  readonly parentUncompressedBytes: number;
+}
+
+interface ArchiveStageResult {
+  readonly stageId: string;
+}
+
+function providerFromOpened(
+  opened: NativeArchiveOpenResult,
+  options: NativeProviderOptions,
+): ArchiveProvider {
+  const listeners = new Set<(progress: ArchiveReadProgress) => void>();
+  let password = options.initialPassword;
+  let closed = false;
+
+  const cancel = async (): Promise<void> => {
+    if (!closed) {
+      await options.invoker
+        .invoke<void>('archive_cancel', { archiveId: opened.archiveId })
+        .catch(() => undefined);
+    }
+  };
+
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    try {
+      await options.invoker.invoke<void>('archive_close', { archiveId: opened.archiveId });
+    } finally {
+      if (options.closeRemoteResourceId !== undefined) {
+        await options.invoker.invoke<void>('remote_close', {
+          resourceId: options.closeRemoteResourceId,
+        });
+      }
+    }
+  };
+
+  const withCancellation = async <T>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    throwIfAborted(signal);
+    const onAbort = (): void => {
+      void cancel();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const result = await operation();
+      throwIfAborted(signal);
+      return result;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  };
+
+  const startProgressPolling = (): (() => void) => {
+    if (listeners.size === 0) return () => undefined;
+    let active = true;
+    const poll = async (): Promise<void> => {
+      if (!active || listeners.size === 0) return;
+      try {
+        const progress = await options.invoker.invoke<ArchiveReadProgress>('archive_progress', {
+          archiveId: opened.archiveId,
+        });
+        for (const listener of listeners) listener(progress);
+      } catch {
+        // Progress is advisory; the entry read carries the structured failure.
+      }
+    };
+    void poll();
+    const timer = globalThis.setInterval(() => void poll(), 150);
+    return () => {
+      active = false;
+      globalThis.clearInterval(timer);
+    };
+  };
+
+  const readEntry = async (entryId: string, signal?: AbortSignal): Promise<Uint8Array> => {
+    if (closed) {
+      throw new NativeArchiveError('ARCHIVE_SESSION_NOT_FOUND', '归档会话已关闭');
+    }
+    return withCancellation(signal, async () => {
+      const stopProgress = startProgressPolling();
+      try {
+        while (true) {
+          try {
+            const raw = await options.invoker.invoke<ArrayBuffer | Uint8Array | number[]>(
+              'archive_read_entry',
+              { archiveId: opened.archiveId, entryId, password },
+            );
+            throwIfAborted(signal);
+            return bytesFromIpc(raw);
+          } catch (error) {
+            if (signal?.aborted === true) throwIfAborted(signal);
+            const structured = archiveError(error);
+            if (!isPasswordError(structured)) throw structured;
+            password = await requestPassword(
+              options.requestPassword,
+              options.displayName,
+              structured.code === 'ARCHIVE_PASSWORD_INCORRECT',
+            );
+            throwIfAborted(signal);
+          }
+        }
+      } finally {
+        stopProgress();
+      }
+    });
+  };
+
+  return {
+    entries: opened.entries,
+    accessMode: opened.accessMode,
+    identity: options.identity,
+    depth: opened.depth ?? 0,
+    cumulativeUncompressedBytes: opened.cumulativeUncompressedBytes ?? 0,
+    readEntry,
+    async openNested(entryId, signal) {
+      const entry = opened.entries.find((candidate) => candidate.id === entryId);
+      const displayName = entry?.filename ?? options.displayName;
+      let nestedPassword: string | undefined;
+      const nested = await withCancellation(signal, async () => {
+        while (true) {
+          try {
+            return await options.invoker.invoke<NativeArchiveOpenResult>(
+              'archive_open_nested',
+              { parentArchiveId: opened.archiveId, entryId, password: nestedPassword },
+            );
+          } catch (error) {
+            if (signal?.aborted === true) throwIfAborted(signal);
+            const structured = archiveError(error);
+            if (!isPasswordError(structured)) throw structured;
+            nestedPassword = await requestPassword(
+              options.requestPassword,
+              displayName,
+              structured.code === 'ARCHIVE_PASSWORD_INCORRECT',
+            );
+          }
+        }
+      });
+      return providerFromOpened(nested, {
+        ...options,
+        displayName,
+        identity: `${options.identity}!${entryId}`,
+        closeRemoteResourceId: undefined,
+        initialPassword: nestedPassword,
+      });
+    },
+    cancel,
+    subscribeProgress(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    close,
+  };
+}
+
+/** Stage a bounded native archive nested in a ZIP.js parent, then open it by magic. */
+export async function openNativeNestedPayload(
+  bytes: Uint8Array,
+  context: NativeNestedPayloadContext,
+  options: {
+    readonly signal?: AbortSignal;
+    readonly invoker?: NativeArchiveInvoker;
+    readonly requestPassword?: ArchivePasswordProvider;
+  } = {},
+): Promise<ArchiveProvider> {
+  const invoker = options.invoker ?? defaultInvoker;
+  throwIfAborted(options.signal);
+  const headers = {
+    'x-lightink-parent-identity': fnv1a64Hex(context.parentIdentity),
+    'x-lightink-entry-id': fnv1a64Hex(context.entryId),
+    'x-lightink-depth': String(context.depth),
+    'x-lightink-parent-uncompressed-bytes': String(context.parentUncompressedBytes),
+  };
+  const staged = await invoker.invoke<ArchiveStageResult>(
+    'archive_stage_nested',
+    bytes,
+    { headers },
+  );
+  let opened = false;
+  let password: string | undefined;
+  try {
+    while (true) {
+      throwIfAborted(options.signal);
+      try {
+        const result = await invoker.invoke<NativeArchiveOpenResult>('archive_open_staged', {
+          stageId: staged.stageId,
+          password,
+        });
+        opened = true;
+        return providerFromOpened(result, {
+          invoker,
+          requestPassword: options.requestPassword,
+          displayName: context.displayName,
+          identity: `${context.parentIdentity}!${context.entryId}`,
+          initialPassword: password,
+        });
+      } catch (error) {
+        const structured = archiveError(error);
+        if (!isPasswordError(structured)) throw structured;
+        password = await requestPassword(
+          options.requestPassword,
+          context.displayName,
+          structured.code === 'ARCHIVE_PASSWORD_INCORRECT',
+        );
+      }
+    }
+  } finally {
+    if (!opened) {
+      await invoker
+        .invoke<void>('archive_discard_staged', { stageId: staged.stageId })
+        .catch(() => undefined);
+    }
+  }
+}
+
 /** Open a backend-native RAR/7z session without exposing its source bytes to the WebView. */
 export async function openNativeArchive(
   target: ReaderTarget,
@@ -143,51 +385,17 @@ export async function openNativeArchive(
     }
   }
 
-  let closed = false;
-  const close = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
-    try {
-      await invoker.invoke<void>('archive_close', { archiveId: opened.archiveId });
-    } finally {
-      if (target.kind === 'remote') {
-        await invoker.invoke<void>('remote_close', { resourceId: target.resourceId });
-      }
-    }
-  };
+  const provider = providerFromOpened(opened, {
+    invoker,
+    requestPassword: options.requestPassword,
+    displayName: target.displayName,
+    identity: readerIdentityKey(target.identity),
+    closeRemoteResourceId: target.kind === 'remote' ? target.resourceId : undefined,
+    initialPassword: password,
+  });
   if (options.signal?.aborted === true) {
-    await close().catch(() => undefined);
+    await provider.close().catch(() => undefined);
     throwIfAborted(options.signal);
   }
-
-  return {
-    entries: opened.entries,
-    accessMode: opened.accessMode,
-    async readEntry(entryId, signal) {
-      if (closed) {
-        throw new NativeArchiveError('ARCHIVE_SESSION_NOT_FOUND', '归档会话已关闭');
-      }
-      throwIfAborted(signal);
-      while (true) {
-        try {
-          const raw = await invoker.invoke<ArrayBuffer | Uint8Array | number[]>(
-            'archive_read_entry',
-            { archiveId: opened.archiveId, entryId, password },
-          );
-          throwIfAborted(signal);
-          return bytesFromIpc(raw);
-        } catch (error) {
-          const structured = archiveError(error);
-          if (!isPasswordError(structured)) throw structured;
-          password = await requestPassword(
-            options.requestPassword,
-            target.displayName,
-            structured.code === 'ARCHIVE_PASSWORD_INCORRECT',
-          );
-          throwIfAborted(signal);
-        }
-      }
-    },
-    close,
-  };
+  return provider;
 }

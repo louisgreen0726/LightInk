@@ -52,11 +52,24 @@ export interface ArchiveEntryMetadata {
   readonly split?: boolean;
 }
 
+export interface ArchiveReadProgress {
+  readonly phase: 'idle' | 'decoding' | 'sequential' | 'ready' | 'cancelled' | 'error';
+  readonly currentEntry: number;
+  readonly targetEntry: number;
+  readonly decodedBytes: number;
+}
+
 /** Format-neutral archive boundary used by reader renderers. */
 export interface ArchiveProvider {
   readonly entries: readonly ArchiveEntryMetadata[];
   readonly accessMode: 'random' | 'sequential';
+  readonly identity?: string;
+  readonly depth?: number;
+  readonly cumulativeUncompressedBytes?: number;
   readEntry(entryId: string, signal?: AbortSignal): Promise<Uint8Array>;
+  openNested?(entryId: string, signal?: AbortSignal): Promise<ArchiveProvider>;
+  cancel?(): Promise<void>;
+  subscribeProgress?(listener: (progress: ArchiveReadProgress) => void): () => void;
   close(): Promise<void>;
 }
 

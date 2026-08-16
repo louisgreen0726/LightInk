@@ -1721,7 +1721,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }))
       : source;
     if (archiveSource === null) throw new ParseError('漫画归档字节源不可用');
-    const cbz = await renderCbzInto(archiveSource, stagedHost, signal);
+    const cbz = await renderCbzInto(archiveSource, stagedHost, signal, {
+      requestPassword: deps.requestArchivePassword,
+      onArchiveProgress: (progress) => {
+        if (progress.phase === 'sequential' && progress.currentEntry < progress.targetEntry) {
+          status.hidden = false;
+          status.textContent = `${t('reader.loading')} ${progress.currentEntry + 1} / ${progress.targetEntry + 1}`;
+        } else if (readerState.phase === 'ready') {
+          status.hidden = true;
+        }
+      },
+    });
     return { host: stagedHost, pdf: null, cbz };
   };
 

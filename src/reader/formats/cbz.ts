@@ -7,7 +7,12 @@
 
 import { ParseError } from './types.js';
 import { openSafeArchive, type ArchiveInput } from './safe-archive.js';
-import type { ArchiveProvider } from '../sources/types.js';
+import type {
+  ArchiveEntryMetadata,
+  ArchiveProvider,
+  ArchiveReadProgress,
+} from '../sources/types.js';
+import type { ArchivePasswordProvider } from '../sources/native-archive.js';
 import { enforcePageCount } from './page-limits.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { extOfPath } from '../../file/path-ext.js';
@@ -18,6 +23,7 @@ import {
 } from '../../ui/reading-layout.js';
 
 const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+const COMIC_ARCHIVE_EXTS = new Set(['zip', 'cbz', 'rar', 'cbr', '7z', 'cb7']);
 const CBZ_CACHE_RADIUS = 2;
 
 /** 把字符串拆为「非数字段 / 数字段」序列，供自然序比较。 */
@@ -76,8 +82,51 @@ export interface CbzRenderHandle {
 
 export type ComicArchiveInput = ArchiveInput | ArchiveProvider;
 
+export interface CbzRenderOptions {
+  readonly requestPassword?: ArchivePasswordProvider;
+  readonly onArchiveProgress?: (progress: ArchiveReadProgress) => void;
+}
+
 function isArchiveProvider(source: ComicArchiveInput): source is ArchiveProvider {
   return typeof (source as ArchiveProvider).readEntry === 'function';
+}
+
+interface ComicPageEntry {
+  readonly provider: ArchiveProvider;
+  readonly entry: ArchiveEntryMetadata & { readonly id: string; readonly filename: string };
+  readonly virtualPath: string;
+}
+
+async function collectComicPages(
+  provider: ArchiveProvider,
+  openedProviders: Set<ArchiveProvider>,
+  signal?: AbortSignal,
+  prefix = '',
+): Promise<ComicPageEntry[]> {
+  throwIfReaderLoadCancelled(signal);
+  const pages: ComicPageEntry[] = [];
+  const entries = provider.entries
+    .filter(
+      (entry): entry is ArchiveEntryMetadata & { readonly id: string; readonly filename: string } =>
+        !entry.directory && entry.id !== undefined && entry.filename !== undefined,
+    )
+    .sort((left, right) => naturalCompare(left.filename, right.filename));
+  for (const entry of entries) {
+    throwIfReaderLoadCancelled(signal);
+    const virtualPath = prefix === '' ? entry.filename : `${prefix}!/${entry.filename}`;
+    const extension = extOfPath(entry.filename);
+    if (CBZ_IMAGE_EXTS.has(extension)) {
+      pages.push({ provider, entry, virtualPath });
+      continue;
+    }
+    if (!COMIC_ARCHIVE_EXTS.has(extension) || provider.openNested === undefined) {
+      continue;
+    }
+    const child = await provider.openNested(entry.id, signal);
+    openedProviders.add(child);
+    pages.push(...(await collectComicPages(child, openedProviders, signal, virtualPath)));
+  }
+  return pages;
 }
 
 /** Build stable page slots and materialize only a small window of image data. */
@@ -85,30 +134,28 @@ export async function renderCbzInto(
   source: ComicArchiveInput,
   container: HTMLElement,
   signal?: AbortSignal,
+  options: CbzRenderOptions = {},
 ): Promise<CbzRenderHandle> {
   const archive = isArchiveProvider(source)
     ? source
-    : await openSafeArchive(source, 'CBZ', signal);
+    : await openSafeArchive(source, 'CBZ', signal, {
+        requestPassword: options.requestPassword,
+      });
+  const openedProviders = new Set<ArchiveProvider>([archive]);
+  const unsubscribeProgress: Array<() => void> = [];
   let initialized = false;
   try {
-    const imageNames = new Set(
-      listImageEntries(
-        archive.entries.flatMap((entry) =>
-          entry.filename === undefined || entry.directory ? [] : [entry.filename],
-        ),
-      ),
+    const images = (await collectComicPages(archive, openedProviders, signal)).sort(
+      (left, right) => naturalCompare(left.virtualPath, right.virtualPath),
     );
-    const images = archive.entries
-      .filter(
-        (entry): entry is typeof entry & { readonly id: string; readonly filename: string } =>
-          !entry.directory &&
-          entry.id !== undefined &&
-          entry.filename !== undefined &&
-          imageNames.has(entry.filename),
-      )
-      .sort((left, right) => naturalCompare(left.filename, right.filename));
     if (images.length === 0) {
       throw new ParseError('CBZ 未找到图片页');
+    }
+    if (options.onArchiveProgress !== undefined) {
+      for (const provider of openedProviders) {
+        const unsubscribe = provider.subscribeProgress?.(options.onArchiveProgress);
+        if (unsubscribe !== undefined) unsubscribeProgress.push(unsubscribe);
+      }
     }
     enforcePageCount('cbz', images.length);
     container.replaceChildren();
@@ -122,7 +169,8 @@ export async function renderCbzInto(
     });
 
     const materialized = new Map<number, { image: HTMLImageElement; url: string }>();
-    const pending = new Map<number, Promise<void>>();
+    const pending = new Map<number, { promise: Promise<void>; controller: AbortController }>();
+    const sequentialQueues = new Map<ArchiveProvider, Promise<void>>();
     const visible = new Set<number>();
     let wantedPages = new Set<number>([0]);
     let currentPage = 1;
@@ -151,46 +199,76 @@ export async function renderCbzInto(
       }
       const existing = pending.get(index);
       if (existing !== undefined) {
-        return existing;
+        return existing.promise;
       }
+      const controller = new AbortController();
       const operation = (async () => {
-        throwIfReaderLoadCancelled(signal);
-        const page = images[index]!;
-        const name = page.filename;
-        const data = await archive.readEntry(page.id, signal);
-        throwIfReaderLoadCancelled(signal);
-        if (destroyed || !wantedPages.has(index)) {
-          return;
-        }
-        const ext = extOfPath(name);
-        const mime = ext === 'jpg' ? 'jpeg' : ext;
-        const imageBytes = Uint8Array.from(data);
-        const url = URL.createObjectURL(
-          new Blob([imageBytes.buffer], { type: `image/${mime}` }),
-        );
-        if (destroyed || signal?.aborted === true) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        const image = document.createElement('img');
-        image.className = 'lightink-reader-page';
-        image.alt = name;
-        image.src = url;
-        image.addEventListener(
-          'load',
-          () => {
-            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-              slots[index]!.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+        const abortFromParent = (): void => controller.abort();
+        if (signal?.aborted === true) controller.abort();
+        else signal?.addEventListener('abort', abortFromParent, { once: true });
+        try {
+          throwIfReaderLoadCancelled(controller.signal);
+          const page = images[index]!;
+          const name = page.entry.filename;
+          const read = (): Promise<Uint8Array> =>
+            page.provider.readEntry(page.entry.id, controller.signal);
+          let data: Uint8Array;
+          if (page.provider.accessMode === 'sequential') {
+            const previous = sequentialQueues.get(page.provider) ?? Promise.resolve();
+            let resolveQueue = (): void => undefined;
+            const queueTail = new Promise<void>((resolve) => {
+              resolveQueue = resolve;
+            });
+            sequentialQueues.set(page.provider, queueTail);
+            try {
+              await previous.catch(() => undefined);
+              throwIfReaderLoadCancelled(controller.signal);
+              data = await read();
+            } finally {
+              resolveQueue();
+              if (sequentialQueues.get(page.provider) === queueTail) {
+                sequentialQueues.delete(page.provider);
+              }
             }
-          },
-          { once: true },
-        );
-        materialized.set(index, { image, url });
-        slots[index]!.appendChild(image);
+          } else {
+            data = await read();
+          }
+          throwIfReaderLoadCancelled(controller.signal);
+          if (destroyed || !wantedPages.has(index)) {
+            return;
+          }
+          const ext = extOfPath(name);
+          const mime = ext === 'jpg' ? 'jpeg' : ext;
+          const imageBytes = Uint8Array.from(data);
+          const url = URL.createObjectURL(
+            new Blob([imageBytes.buffer], { type: `image/${mime}` }),
+          );
+          if (destroyed || signal?.aborted === true) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          const image = document.createElement('img');
+          image.className = 'lightink-reader-page';
+          image.alt = name;
+          image.src = url;
+          image.addEventListener(
+            'load',
+            () => {
+              if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                slots[index]!.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+              }
+            },
+            { once: true },
+          );
+          materialized.set(index, { image, url });
+          slots[index]!.appendChild(image);
+        } finally {
+          signal?.removeEventListener('abort', abortFromParent);
+        }
       })().finally(() => {
         pending.delete(index);
       });
-      pending.set(index, operation);
+      pending.set(index, { promise: operation, controller });
       return operation;
     };
 
@@ -209,6 +287,11 @@ export async function renderCbzInto(
       for (const index of materialized.keys()) {
         if (!wanted.has(index)) {
           releasePage(index);
+        }
+      }
+      for (const [index, operation] of pending) {
+        if (!wanted.has(index)) {
+          operation.controller.abort();
         }
       }
       wantedPages = wanted;
@@ -278,6 +361,7 @@ export async function renderCbzInto(
         return destruction;
       }
       destroyed = true;
+      for (const operation of pending.values()) operation.controller.abort();
       observer?.disconnect();
       scroller.removeEventListener('scroll', onScrollEvent);
       scrollCoordinator?.cancel();
@@ -285,8 +369,11 @@ export async function renderCbzInto(
         releasePage(index);
       }
       destruction = (async () => {
-        await Promise.allSettled(pending.values());
-        await archive.close().catch(() => undefined);
+        await Promise.allSettled([...pending.values()].map((operation) => operation.promise));
+        unsubscribeProgress.splice(0).forEach((unsubscribe) => unsubscribe());
+        await Promise.allSettled(
+          [...openedProviders].reverse().map((provider) => provider.close()),
+        );
       })();
       return destruction;
     };
@@ -315,7 +402,10 @@ export async function renderCbzInto(
     };
   } finally {
     if (!initialized) {
-      await archive.close().catch(() => undefined);
+      unsubscribeProgress.splice(0).forEach((unsubscribe) => unsubscribe());
+      await Promise.allSettled(
+        [...openedProviders].reverse().map((provider) => provider.close()),
+      );
     }
   }
 }

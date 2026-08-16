@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   NativeArchiveError,
   openNativeArchive,
+  openNativeNestedPayload,
   type NativeArchiveInvoker,
 } from '../native-archive.js';
 import type { ReaderTarget } from '../types.js';
@@ -125,5 +126,107 @@ describe('native archive source', () => {
         code: 'ARCHIVE_MULTIVOLUME_UNSUPPORTED',
       }),
     );
+  });
+
+  it('opens a nested backend archive without exposing the parent path', async () => {
+    let nextArchive = 0;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'archive_open') return { ...openResult(), archiveId: 'archive-parent' };
+      if (command === 'archive_open_nested') {
+        nextArchive += 1;
+        return {
+          ...openResult(),
+          archiveId: `archive-child-${nextArchive}`,
+          format: 'zip',
+          depth: 1,
+          cumulativeUncompressedBytes: 42,
+        };
+      }
+      return undefined;
+    });
+    const parent = await openNativeArchive(localTarget, {
+      invoker: { invoke } as NativeArchiveInvoker,
+    });
+
+    const child = await parent.openNested?.('entry-0');
+    expect(child?.depth).toBe(1);
+    expect(invoke).toHaveBeenCalledWith('archive_open_nested', {
+      parentArchiveId: 'archive-parent',
+      entryId: 'entry-0',
+      password: undefined,
+    });
+    await child?.close();
+    await parent.close();
+  });
+
+  it('stages a ZIP.js child as raw IPC bytes and transfers its cache ownership', async () => {
+    const invoke = vi.fn(
+      async (
+        command: string,
+        _args?: Record<string, unknown> | ArrayBuffer | Uint8Array,
+        _options?: { readonly headers: HeadersInit },
+      ) => {
+        if (command === 'archive_stage_nested') return { stageId: 'stage-1' };
+        if (command === 'archive_open_staged') {
+          return {
+            ...openResult(),
+            archiveId: 'archive-staged',
+            depth: 2,
+            cumulativeUncompressedBytes: 128,
+          };
+        }
+        return undefined;
+      },
+    );
+    const bytes = new Uint8Array([0x37, 0x7a, 0xbc, 0xaf]);
+    const child = await openNativeNestedPayload(
+      bytes,
+      {
+        parentIdentity: 'book-1',
+        entryId: 'nested.7z',
+        displayName: 'nested.7z',
+        depth: 2,
+        parentUncompressedBytes: 64,
+      },
+      { invoker: { invoke } as NativeArchiveInvoker },
+    );
+
+    const stageCall = invoke.mock.calls.find(([command]) => command === 'archive_stage_nested');
+    expect(stageCall?.[1]).toBe(bytes);
+    expect(stageCall?.[2]).toEqual({
+      headers: expect.objectContaining({
+        'x-lightink-depth': '2',
+        'x-lightink-parent-uncompressed-bytes': '64',
+      }),
+    });
+    expect(child.cumulativeUncompressedBytes).toBe(128);
+    expect(invoke).not.toHaveBeenCalledWith('archive_discard_staged', expect.anything());
+    await child.close();
+  });
+
+  it('cancels an in-flight sequential read when its page is no longer wanted', async () => {
+    let finishRead: ((bytes: number[]) => void) | undefined;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'archive_open') {
+        return { ...openResult(), accessMode: 'sequential' as const, solid: true };
+      }
+      if (command === 'archive_read_entry') {
+        return new Promise<number[]>((resolve) => {
+          finishRead = resolve;
+        });
+      }
+      if (command === 'archive_cancel') finishRead?.([1, 2, 3]);
+      return undefined;
+    });
+    const archive = await openNativeArchive(localTarget, {
+      invoker: { invoke } as NativeArchiveInvoker,
+    });
+    const controller = new AbortController();
+    const reading = archive.readEntry('entry-0', controller.signal);
+    controller.abort();
+
+    await expect(reading).rejects.toMatchObject({ name: 'AbortError' });
+    expect(invoke).toHaveBeenCalledWith('archive_cancel', { archiveId: 'archive-1' });
+    await archive.close();
   });
 });

@@ -132,6 +132,14 @@ pub struct RemoteState {
     sequence: AtomicU64,
 }
 
+#[derive(Clone)]
+pub(crate) struct RemoteFileInfo {
+    pub size: u64,
+    pub identity: String,
+    pub cache_path: PathBuf,
+    pub cache_complete: bool,
+}
+
 impl Default for RemoteState {
     fn default() -> Self {
         let started_at = SystemTime::now()
@@ -732,14 +740,14 @@ fn ranges_for(app: &AppHandle, object_id: &str) -> Result<Vec<ByteRange>, Remote
     Ok(ranges)
 }
 
-/// Resolve a remote handle to its cache file only after every byte is present.
-/// Native archive libraries use seekable files; exposing an incomplete sparse
-/// file would make holes look like valid zero bytes and corrupt decoder state.
-pub(crate) fn complete_cached_path(
+/// Return the seek metadata for an opaque remote handle. Callers that can read
+/// through `read_range_bytes` may use the sparse file immediately; path-only
+/// decoders must still require `cache_complete` before opening it.
+pub(crate) fn file_info(
     app: &AppHandle,
     state: &RemoteState,
     resource_id: &str,
-) -> Result<PathBuf, RemoteError> {
+) -> Result<RemoteFileInfo, RemoteError> {
     let handle = state
         .handles
         .lock()
@@ -747,17 +755,19 @@ pub(crate) fn complete_cached_path(
         .get(resource_id)
         .cloned()
         .ok_or_else(|| RemoteError::new("REMOTE_HANDLE_NOT_FOUND", "远程资源句柄不存在"))?;
-    if handle.size > 0 {
+    let cache_complete = if handle.size > 0 {
         let requested = ByteRange::new(0, handle.size)
             .map_err(|message| RemoteError::new("REMOTE_RANGE_INVALID", message))?;
-        if !library::range_is_covered(&ranges_for(app, &handle.object_id)?, requested) {
-            return Err(RemoteError::new(
-                "ARCHIVE_REMOTE_CACHE_INCOMPLETE",
-                "远程 RAR/7z 需要先完成磁盘缓存",
-            ));
-        }
-    }
-    Ok(handle.cache_path.clone())
+        library::range_is_covered(&ranges_for(app, &handle.object_id)?, requested)
+    } else {
+        true
+    };
+    Ok(RemoteFileInfo {
+        size: handle.size,
+        identity: handle.identity.clone(),
+        cache_path: handle.cache_path.clone(),
+        cache_complete,
+    })
 }
 
 #[tauri::command]
@@ -1115,15 +1125,14 @@ async fn fetch_range(
     Ok(bytes.to_vec())
 }
 
-#[tauri::command]
-pub async fn remote_read_range(
-    app: AppHandle,
-    state: State<'_, RemoteState>,
-    resource_id: String,
+pub(crate) async fn read_range_bytes(
+    app: &AppHandle,
+    state: &RemoteState,
+    resource_id: &str,
     offset: u64,
     length: u64,
     request_id: Option<String>,
-) -> Result<tauri::ipc::Response, RemoteError> {
+) -> Result<Vec<u8>, RemoteError> {
     if length > MAX_RANGE_BYTES {
         return Err(RemoteError::new(
             "REMOTE_RANGE_TOO_LARGE",
@@ -1134,7 +1143,7 @@ pub async fn remote_read_range(
         .handles
         .lock()
         .map_err(|_| lock_error())?
-        .get(&resource_id)
+        .get(resource_id)
         .cloned()
         .ok_or_else(|| RemoteError::new("REMOTE_HANDLE_NOT_FOUND", "远程资源句柄不存在"))?;
     let end = offset
@@ -1147,15 +1156,13 @@ pub async fn remote_read_range(
         ));
     }
     if length == 0 {
-        return Ok(tauri::ipc::Response::new(Vec::<u8>::new()));
+        return Ok(Vec::new());
     }
     let requested = ByteRange::new(offset, end)
         .map_err(|message| RemoteError::new("REMOTE_RANGE_INVALID", message))?;
     let ranges = ranges_for(app, &handle.object_id)?;
     if library::range_is_covered(&ranges, requested) {
-        return Ok(tauri::ipc::Response::new(
-            read_range_file(&handle.cache_path, offset, length).await?,
-        ));
+        return read_range_file(&handle.cache_path, offset, length).await;
     }
     if !handle.supports_ranges {
         return Err(RemoteError::new(
@@ -1166,9 +1173,30 @@ pub async fn remote_read_range(
     let request_id = request_id
         .unwrap_or_else(|| format!("request-{}", state.sequence.fetch_add(1, Ordering::Relaxed)));
     let (token, _request_guard) =
-        register_active_request(state.inner(), request_id, resource_id.clone())?;
-    let result = fetch_range(&app, &handle, requested, &token).await;
-    Ok(tauri::ipc::Response::new(result?))
+        register_active_request(state, request_id, resource_id.to_string())?;
+    fetch_range(app, &handle, requested, &token).await
+}
+
+#[tauri::command]
+pub async fn remote_read_range(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+    resource_id: String,
+    offset: u64,
+    length: u64,
+    request_id: Option<String>,
+) -> Result<tauri::ipc::Response, RemoteError> {
+    Ok(tauri::ipc::Response::new(
+        read_range_bytes(
+            &app,
+            state.inner(),
+            &resource_id,
+            offset,
+            length,
+            request_id,
+        )
+        .await?,
+    ))
 }
 
 pub(crate) fn cancel_requests(

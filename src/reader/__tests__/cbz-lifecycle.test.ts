@@ -65,6 +65,24 @@ async function buildCbz(pageCount: number): Promise<Uint8Array> {
   return writer.close();
 }
 
+async function buildNestedCbz(): Promise<Uint8Array> {
+  const inner = new ZipWriter(new Uint8ArrayWriter());
+  await inner.add(
+    'nested-page.png',
+    new Uint8ArrayReader(new Uint8Array([7, 8, 9])),
+    { level: 0 },
+  );
+  const innerBytes = await inner.close();
+  const outer = new ZipWriter(new Uint8ArrayWriter());
+  await outer.add(
+    'cover.png',
+    new Uint8ArrayReader(new Uint8Array([1, 2, 3])),
+    { level: 0 },
+  );
+  await outer.add('chapter.cbz', new Uint8ArrayReader(innerBytes), { level: 0 });
+  return outer.close();
+}
+
 describe('CBZ page materialization', () => {
   it('keeps only the viewport cache window and revokes every object URL', async () => {
     const container = document.createElement('div');
@@ -103,5 +121,17 @@ describe('CBZ page materialization', () => {
     expect(container.querySelectorAll('img')).toHaveLength(3);
 
     await handle.destroy();
+  });
+
+  it('enumerates a nested ZIP only when the comic is opened and closes both layers', async () => {
+    const container = document.createElement('div');
+    const handle = await renderCbzInto(await buildNestedCbz(), container);
+
+    await vi.waitFor(() => expect(createObjectUrl).toHaveBeenCalledTimes(2));
+    expect(container.querySelectorAll('.lightink-reader-page-slot')).toHaveLength(2);
+    expect(handle.totalPages).toBe(2);
+
+    await handle.destroy();
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(2);
   });
 });
