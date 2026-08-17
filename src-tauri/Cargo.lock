@@ -2377,6 +2377,7 @@ dependencies = [
  "futures-util",
  "keyring",
  "objc2",
+ "objc2-core-foundation",
  "objc2-foundation",
  "objc2-web-kit",
  "quick-xml 0.38.4",

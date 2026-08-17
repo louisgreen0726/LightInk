@@ -14,6 +14,7 @@ import {
   EXPORT_ROOT_ID,
   extractPrintParts,
   MAIN_WINDOW_PRINT_CSS,
+  measureExportCaptureSize,
   PRINT_CSS,
   PRINT_STYLE_ID,
   printToPdfFile,
@@ -86,6 +87,8 @@ class FakeEl {
   id = '';
   textContent = '';
   innerHTML = '';
+  scrollWidth = 800;
+  scrollHeight = 2400;
   parent: FakeEl | null = null;
   children: FakeEl[] = [];
   private readonly attrs = new Map<string, string>();
@@ -125,12 +128,17 @@ function makeFakeDocument(): {
     if (el.id) byId.set(el.id, el);
   };
 
+  const documentElement = new FakeEl();
+  documentElement.scrollWidth = 800;
+  documentElement.scrollHeight = 2400;
+
   const doc = {
     getElementById: (id: string) => byId.get(id) ?? null,
     createElement: (tag: string) => {
       void tag;
       return new FakeEl();
     },
+    documentElement,
     head: {
       appendChild: (el: FakeEl) => {
         head.appendChild(el);
@@ -239,9 +247,24 @@ describe('printViaMainWindow', () => {
   });
 });
 
+describe('measureExportCaptureSize', () => {
+  it('取导出根与 documentElement 的较大内容尺寸，而不是视口', () => {
+    const { doc, byId } = makeFakeDocument();
+    const root = new FakeEl();
+    root.id = EXPORT_ROOT_ID;
+    root.scrollWidth = 640;
+    root.scrollHeight = 4000;
+    byId.set(EXPORT_ROOT_ID, root);
+    (doc.documentElement as unknown as FakeEl).scrollWidth = 800;
+    (doc.documentElement as unknown as FakeEl).scrollHeight = 1200;
+    expect(measureExportCaptureSize(doc)).toEqual({ width: 800, height: 4000 });
+  });
+});
+
 describe('printToPdfFile', () => {
   it('invoke 前把文档画成屏幕可见捕获面，结束后卸根', async () => {
     const { doc, head, body, byId } = makeFakeDocument();
+    (doc.documentElement as unknown as FakeEl).setAttribute('data-theme', 'dark');
     const html = buildPrintHtml({
       title: 't',
       theme: 'warm-light',
@@ -263,6 +286,9 @@ describe('printToPdfFile', () => {
       const outsidePrint = text.replace(/@media print\s*\{[\s\S]*?\n\}/g, '');
       expect(outsidePrint).toMatch(/\bbody\s*\{[^}]*max-width:\s*860px/);
       expect(outsidePrint).toContain('display: none !important');
+      expect(outsidePrint).toMatch(
+        /#lightink-export-print-root[^}]*color:\s*var\(--lightink-fg\)\s*!important/,
+      );
       expect(body.children).toContain(root);
       expect(head.children).toContain(style);
       seenDuringInvoke = true;
@@ -277,6 +303,7 @@ describe('printToPdfFile', () => {
     await printToPdfFile(doc, html, invokeNative, win);
 
     expect(invokeNative).toHaveBeenCalledTimes(1);
+    expect(invokeNative).toHaveBeenCalledWith({ width: 800, height: 2400 });
     expect(seenDuringInvoke).toBe(true);
     expect(byId.get(EXPORT_ROOT_ID)?.parent).toBeNull();
     expect(byId.get(PRINT_STYLE_ID)?.parent).toBeNull();

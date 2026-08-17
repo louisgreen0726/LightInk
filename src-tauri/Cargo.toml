@@ -49,7 +49,8 @@ windows = "0.61"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSError"] }
-objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKPDFConfiguration", "block2"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKPDFConfiguration", "block2", "objc2-core-foundation"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["objc2"] }
 block2 = "0.6"
 
 [lints.rust]

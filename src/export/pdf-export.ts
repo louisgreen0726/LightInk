@@ -59,6 +59,7 @@ const EXPORT_ROOT_LAYOUT_CSS = `body > *:not(#${EXPORT_ROOT_ID}) { display: none
   margin: 0 !important;
   padding: 0 !important;
   background: #fff !important;
+  color: var(--lightink-fg) !important;
   opacity: 1 !important;
   overflow: visible !important;
 }`;
@@ -170,15 +171,44 @@ export function mountCaptureRoot(doc: Document, html: string): () => void {
   return mountExportRoot(doc, html, { capture: true });
 }
 
+export interface PdfNativeCaptureSize {
+  readonly width: number;
+  readonly height: number;
+}
+
+function elementExtent(el: Element | null, key: 'scrollWidth' | 'scrollHeight'): number {
+  if (el === null) {
+    return 0;
+  }
+  const value = (el as HTMLElement)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** 装配文档的完整内容尺寸。createPDF 空 rect 只会拍当前可视第一屏。 */
+export function measureExportCaptureSize(doc: Document): PdfNativeCaptureSize {
+  const root = doc.getElementById(EXPORT_ROOT_ID);
+  return {
+    width: Math.max(
+      elementExtent(root, 'scrollWidth'),
+      elementExtent(doc.documentElement, 'scrollWidth'),
+      1,
+    ),
+    height: Math.max(
+      elementExtent(root, 'scrollHeight'),
+      elementExtent(doc.documentElement, 'scrollHeight'),
+      1,
+    ),
+  };
+}
+
 /**
- * 原生矢量 PDF 导出：挂载屏幕捕获面后调用 `invokeNative`
- * （生产为 `invoke('print_webview_to_pdf')`），拍当前 webview 中的文档内容；
- * 成功或失败都立即卸根，避免导出样式留在屏幕上。
+ * 原生矢量 PDF 导出：挂载屏幕捕获面，按整份文档尺寸调用 `invokeNative`
+ * （生产为 `invoke('print_webview_to_pdf')`）；成功或失败都立即卸根。
  */
 export async function printToPdfFile(
   doc: Document,
   html: string,
-  invokeNative: () => Promise<void>,
+  invokeNative: (size: PdfNativeCaptureSize) => Promise<void>,
   win: Window = window,
 ): Promise<void> {
   const cleanup = mountCaptureRoot(doc, html);
@@ -188,7 +218,7 @@ export async function printToPdfFile(
         ? win.requestAnimationFrame(() => resolve())
         : setTimeout(resolve, 0),
     );
-    await invokeNative();
+    await invokeNative(measureExportCaptureSize(doc));
   } finally {
     cleanup();
   }

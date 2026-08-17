@@ -938,7 +938,7 @@ interface ExportPipeline {
   readonly printPdfNative: (
     doc: Document,
     html: string,
-    invokeNative: () => Promise<void>,
+    invokeNative: (size: { readonly width: number; readonly height: number }) => Promise<void>,
   ) => Promise<void>;
 }
 
@@ -1079,8 +1079,12 @@ function createExportDeps(
       return typeof selected === 'string' ? selected : null;
     },
     printPdfNative: (html, path) =>
-      pipeline.printPdfNative(document, html, () =>
-        invoke<void>('print_webview_to_pdf', { path }),
+      pipeline.printPdfNative(document, html, (size) =>
+        invoke<void>('print_webview_to_pdf', {
+          path,
+          contentWidth: size.width,
+          contentHeight: size.height,
+        }),
       ),
     // R1/T6：macOS 平台判断——原生 createPDF 失败时不回退 window.print。
     isMacOS: () => isMac,

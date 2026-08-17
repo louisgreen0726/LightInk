@@ -242,11 +242,23 @@ fn cdp_pdf_base64(json: &str) -> Result<&str, String> {
     Ok(&body[..end])
 }
 
+/// createPDF 空 rect 会退回「当前显示的网页范围」，导出就变成第一页截图。
+/// 宽高必须是装配文档的完整内容尺寸（CSS 像素）。
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) fn validate_pdf_capture_size(width: f64, height: f64) -> Result<(f64, f64), String> {
+    if !width.is_finite() || !height.is_finite() || width < 1.0 || height < 1.0 {
+        return Err("导出内容尺寸无效，无法按整份文档生成 PDF".to_string());
+    }
+    Ok((width, height))
+}
+
 #[cfg(windows)]
 #[tauri::command]
 pub async fn print_webview_to_pdf(
     window: tauri::WebviewWindow,
     path: String,
+    #[allow(unused_variables)] content_width: Option<f64>,
+    #[allow(unused_variables)] content_height: Option<f64>,
 ) -> Result<(), String> {
     use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
     use windows::core::PCWSTR;
@@ -325,11 +337,18 @@ pub async fn print_webview_to_pdf(
 pub async fn print_webview_to_pdf(
     window: tauri::WebviewWindow,
     path: String,
+    content_width: Option<f64>,
+    content_height: Option<f64>,
 ) -> Result<(), String> {
     use block2::RcBlock;
     use objc2::rc::Retained;
+    use objc2::MainThreadMarker;
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_foundation::{NSData, NSError};
-    use objc2_web_kit::WKWebView;
+    use objc2_web_kit::{WKPDFConfiguration, WKWebView};
+
+    let (width, height) =
+        validate_pdf_capture_size(content_width.unwrap_or(0.0), content_height.unwrap_or(0.0))?;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let mut tx = Some(tx);
@@ -374,8 +393,17 @@ pub async fn print_webview_to_pdf(
                     let _ = tx.send(result);
                 }
             });
+            let Some(mtm) = MainThreadMarker::new() else {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(Err("createPDF 必须在主线程".to_string()));
+                }
+                return;
+            };
+            let config = WKPDFConfiguration::new(mtm);
+            // 必须设完整文档 rect。None / null rect = 当前可视范围 = 第一页截图。
             unsafe {
-                wk.createPDFWithConfiguration_completionHandler(None, &block);
+                config.setRect(CGRect::new(CGPoint::ZERO, CGSize::new(width, height)));
+                wk.createPDFWithConfiguration_completionHandler(Some(&config), &block);
             }
             // 闭包立即返回；最终结果由 completion block 经 oneshot 通知 worker。
         })
@@ -392,6 +420,8 @@ pub async fn print_webview_to_pdf(
 pub async fn print_webview_to_pdf(
     _window: tauri::WebviewWindow,
     _path: String,
+    _content_width: Option<f64>,
+    _content_height: Option<f64>,
 ) -> Result<(), String> {
     Err("当前平台不支持原生 PrintToPdf，请使用打印对话框".to_string())
 }
@@ -415,6 +445,17 @@ mod tests {
         );
         assert!(cdp_pdf_base64("{}").is_err());
         assert!(cdp_pdf_base64(r#"{"data":1}"#).is_err());
+    }
+
+    #[test]
+    fn rejects_missing_or_tiny_capture_size() {
+        assert!(validate_pdf_capture_size(0.0, 800.0).is_err());
+        assert!(validate_pdf_capture_size(800.0, 0.0).is_err());
+        assert!(validate_pdf_capture_size(f64::NAN, 800.0).is_err());
+        assert_eq!(
+            validate_pdf_capture_size(800.0, 2400.0).unwrap(),
+            (800.0, 2400.0)
+        );
     }
 
     #[test]
