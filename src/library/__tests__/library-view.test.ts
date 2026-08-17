@@ -2,9 +2,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { bindLibraryProgress, saveLibraryProgressAlias } from '../library-progress.js';
 import { createLibraryView, type LibraryViewDependencies } from '../library-view.js';
 import type { LibraryItem } from '../library-client.js';
 import type { OpdsEntry, OpdsFeed, OpdsSource } from '../opds-client.js';
+import { saveReadingProgress, type ProgressStorage } from '../../reader/reading-progress.js';
 
 const source: OpdsSource = {
   id: 'source-1',
@@ -491,6 +493,62 @@ describe('LibraryView', () => {
     expect(row.dataset.progressStatus).toBe('in-progress');
     expect(row.textContent).toContain('第 12 页');
     expect(row.textContent).toContain('已读 30%');
+    view.destroy();
+  });
+
+  it('renders bindLibraryProgress records with unit/index, not a locationKind adapter', async () => {
+    const store: Record<string, string> = {};
+    const storage: ProgressStorage = {
+      getItem: (key) => store[key] ?? null,
+      setItem: (key, value) => {
+        store[key] = value;
+      },
+    };
+    const unread = localItem();
+    const comicPath = '/comics/bound.cbz';
+    const comic: LibraryItem = {
+      ...localItem(),
+      id: 'local:/comics/bound.cbz',
+      title: '续读漫画',
+      extension: 'cbz',
+      localPath: comicPath,
+      pageCount: 40,
+    };
+    saveReadingProgress(storage, comicPath, {
+      version: 1,
+      kind: 'page',
+      index: 12,
+      ratio: 0,
+      updatedAt: 1,
+    });
+    saveLibraryProgressAlias(storage, comic.id, comicPath);
+    const base = dependencies();
+    const deps = dependencies({
+      getProgress: bindLibraryProgress(storage),
+      library: {
+        ...base.library,
+        listItems: vi.fn(async () => [unread, comic]),
+      },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const unreadRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${unread.id}"]`)!;
+    const comicRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${comic.id}"]`)!;
+    expect(unreadRow.dataset.progressStatus).toBe('not-started');
+    expect(unreadRow.textContent).toContain('未开始');
+    expect(unreadRow.textContent).not.toContain('0%');
+    expect(comicRow.dataset.progressStatus).toBe('in-progress');
+    expect(comicRow.textContent).toContain('第 12 页');
+    expect(comicRow.textContent).toContain('已读 30%');
+
+    buttonWithText(host, '测试书库').click();
+    await settle();
+    expect(host.textContent).toContain('远程漫画');
+    expect(host.querySelector('[data-item-id="item-1"]')?.textContent).not.toContain('已读');
+    expect(host.querySelector('[data-item-id="item-1"]')?.dataset.progressStatus).toBeUndefined();
     view.destroy();
   });
 });

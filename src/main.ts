@@ -116,13 +116,12 @@ import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
 import { libraryClient } from './library/library-client.js';
 import {
-  projectLibraryProgress,
+  bindLibraryProgress,
   saveLibraryProgressAlias,
 } from './library/library-progress.js';
 import {
   createLibraryView,
   type LibraryOpenRequest,
-  type LibraryShelfProgress,
   type LibraryView,
 } from './library/library-view.js';
 import { credentialRefForResource, opdsClient } from './library/opds-client.js';
@@ -579,19 +578,6 @@ function libraryItemIdForTarget(target: ReaderTarget): string {
 
 function bindOpenedBookProgress(progressId: string, target: ReaderTarget): void {
   saveLibraryProgressAlias(window.localStorage, libraryItemIdForTarget(target), progressId);
-}
-
-function shelfProgressForItem(item: LibraryOpenRequest['item']): LibraryShelfProgress | null {
-  const projected = projectLibraryProgress(window.localStorage, item);
-  if (projected === null || projected.status !== 'in-progress') {
-    return projected === null ? null : { status: 'not-started' };
-  }
-  return {
-    status: 'in-progress',
-    locationKind: projected.unit,
-    current: projected.unit === 'chapter' ? projected.index + 1 : projected.index,
-    ...(projected.percent === undefined ? {} : { percent: projected.percent }),
-  };
 }
 
 function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
@@ -1878,7 +1864,7 @@ libraryView = createLibraryView(shell.editorArea, {
   opds: opdsClient,
   library: libraryClient,
   getLocale: () => i18n.locale,
-  getProgress: shelfProgressForItem,
+  getProgress: bindLibraryProgress(window.localStorage),
   onOpen: openLibraryItem,
   onCache: cacheLibraryItem,
   onImportLocal: importLocalLibraryItem,
