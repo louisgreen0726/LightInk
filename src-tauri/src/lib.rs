@@ -1,5 +1,9 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+#[cfg(all(test, windows, target_env = "msvc", lightink_windows_test_manifest))]
+#[link(name = "lightink_windows_test_manifest", kind = "static")]
+extern "C" {}
+
 mod annotations;
 mod archive;
 mod asset;
