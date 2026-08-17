@@ -21,6 +21,11 @@ import {
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 import { labelModal, mountModalFocus } from './modal-focus.js';
+import {
+  applyWorkspaceSurface,
+  type WorkspaceMode,
+  type WorkspaceSnapshot,
+} from './workspace-mode.js';
 
 export interface ShellTabInfo {
   id: string;
@@ -37,8 +42,19 @@ export interface AppShellActions {
   // 文件
   onNew(): void;
   onOpen(): void;
-  /** Open or close the unified OPDS/local library surface. */
+  /**
+   * File → Library: enter reader workspace (shelf). In reader mode with a book
+   * open, return to the shelf without leaving reader mode.
+   */
   onToggleLibrary?(): void;
+  /** Session workspace; defaults to editor. Owned by workspace-mode. */
+  getWorkspaceMode?(): WorkspaceMode;
+  /** Current mode + surface snapshot for chrome dataset. */
+  getWorkspaceSnapshot?(): Pick<WorkspaceSnapshot, 'mode' | 'surface'>;
+  /** View menu: switch the editor / reader workspace. */
+  onSetWorkspaceMode?(mode: WorkspaceMode): void;
+  /** True when reader workspace is showing an open book, not the shelf. */
+  isReaderBookOpen?(): boolean;
   /** R12：列出最近打开文件路径（MRU 序）。 */
   listRecents(): Promise<string[]>;
   /** R12：打开某个最近文件；返回是否成功打开（false=文件缺失等）。 */
@@ -180,6 +196,8 @@ export interface AppShell {
   toggleChromePinned(): boolean;
   /** Rebuild menu bar labels/items after language switch. */
   rebuildMenus(): void;
+  /** Stamp workspace mode/surface on the shell root (dataset + class). */
+  applyWorkspace(snapshot: Pick<WorkspaceSnapshot, 'mode' | 'surface'>): void;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -435,7 +453,13 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         menuItem('file-open', () => t('file.open'), actions.onOpen, sc(actions, 'Ctrl+O')),
         menuItem(
           'file-library',
-          () => (actions.getLocale() === 'en' ? 'Library' : '书库'),
+          () => {
+            const en = actions.getLocale() === 'en';
+            if (actions.getWorkspaceMode?.() === 'reader' && actions.isReaderBookOpen?.()) {
+              return en ? 'Back to Shelf' : '返回书架';
+            }
+            return en ? 'Library' : '书库';
+          },
           () => actions.onToggleLibrary?.(),
         ),
         // R12：VS Code 式「最近打开」子菜单——悬停展开列表（打开时现取，
@@ -523,6 +547,27 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       id: 'view',
       label: () => t('menu.view'),
       items: [
+        menuItem(
+          'view-workspace-editor',
+          () => {
+            const label = ll('Editor Mode', '编辑模式');
+            return actions.getWorkspaceMode?.() === 'reader' ? label : `✓ ${label}`;
+          },
+          () => actions.onSetWorkspaceMode?.('editor'),
+          '',
+          () => actions.getWorkspaceMode?.() === 'reader',
+        ),
+        menuItem(
+          'view-workspace-reader',
+          () => {
+            const label = ll('Reading Mode', '阅读模式');
+            return actions.getWorkspaceMode?.() === 'reader' ? `✓ ${label}` : label;
+          },
+          () => actions.onSetWorkspaceMode?.('reader'),
+          '',
+          () => actions.getWorkspaceMode?.() !== 'reader',
+        ),
+        separator('view-workspace-sep'),
         // Theme controls live under a single submenu (3rd level from the top bar).
         {
           id: 'view-theme',
@@ -720,6 +765,19 @@ export function createAppShell(
   tabsHost.replaceChildren(tabsTrigger, tabBar);
   root.replaceChildren(chromeHost, tabsHost, mainRow, statusBarHost);
   root.classList.add('lightink-immersive');
+
+  function applyWorkspace(snapshot: Pick<WorkspaceSnapshot, 'mode' | 'surface'>): void {
+    applyWorkspaceSurface(root, snapshot);
+    applyWorkspaceSurface(mainRow, snapshot);
+    applyWorkspaceSurface(editorArea, snapshot);
+  }
+
+  applyWorkspace(
+    actions.getWorkspaceSnapshot?.() ?? {
+      mode: actions.getWorkspaceMode?.() ?? 'editor',
+      surface: 'editor',
+    },
+  );
 
   function syncMenuChrome(): void {
     const revealed = chrome.isRevealed('menu');
@@ -980,6 +1038,7 @@ export function createAppShell(
     setChromePinned,
     toggleChromePinned,
     rebuildMenus,
+    applyWorkspace,
     renderTabBar,
   };
 }

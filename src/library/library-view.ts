@@ -198,11 +198,16 @@ export interface LibraryViewDependencies {
   readonly onVisibilityChange?: (visible: boolean) => void;
 }
 
+export interface LibraryHideOptions {
+  /** When false, conceal the shelf without leaving the reader workspace. */
+  readonly notifyVisibility?: boolean;
+}
+
 export interface LibraryView {
   readonly element: HTMLElement;
   readonly visible: boolean;
   show(): Promise<void>;
-  hide(): void;
+  hide(options?: LibraryHideOptions): void;
   toggle(): Promise<void>;
   refresh(): Promise<void>;
   retranslate(): void;
@@ -299,8 +304,9 @@ export function createLibraryView(
   doc: Document = document,
 ): LibraryView {
   const root = doc.createElement('section');
-  root.className = 'lightink-library';
+  root.className = 'lightink-library lightink-library--workspace';
   root.hidden = true;
+  root.dataset.workspaceHome = 'true';
   root.setAttribute('aria-label', LABELS[deps.getLocale()].library);
 
   const header = doc.createElement('header');
@@ -589,7 +595,7 @@ export function createLibraryView(
       await deps.onOpen(request, controller.signal);
       if (controller.signal.aborted) return;
       activeOperations.delete(controller);
-      hide();
+      hide({ notifyVisibility: false });
     } catch (error) {
       if (!controller.signal.aborted) deps.notify(errorText(error, labels().offline), 'error');
     } finally {
@@ -1035,12 +1041,14 @@ export function createLibraryView(
   renderSourceForm();
   retranslate();
 
-  function hide(): void {
+  function hide(options?: LibraryHideOptions): void {
     requestGeneration += 1;
     for (const controller of activeOperations) controller.abort();
     activeOperations.clear();
     root.hidden = true;
-    deps.onVisibilityChange?.(false);
+    if (options?.notifyVisibility !== false) {
+      deps.onVisibilityChange?.(false);
+    }
   }
 
   return {

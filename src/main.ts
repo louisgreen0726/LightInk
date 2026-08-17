@@ -75,6 +75,13 @@ import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
 import { createAppShell } from './ui/app-shell.js';
+import {
+  applyWorkspaceVisibility,
+  createWorkspaceMode,
+  workspaceVisibility,
+  type WorkspaceMode,
+  type WorkspaceSnapshot,
+} from './ui/workspace-mode.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
 import { showExitConfirmation } from './ui/exit-confirmation.js';
 import {
@@ -312,6 +319,8 @@ const markdownAnnotations = new Map<string, MarkdownAnnotationHost>();
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
 let libraryView: LibraryView | undefined;
+const workspace = createWorkspaceMode();
+let applyingWorkspaceSurfaces = false;
 // R6：外部变更秒级轮询句柄（退出时清理）。
 let externalChangeTimer: number | null = null;
 /** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
@@ -463,9 +472,87 @@ function setLibraryVisibility(visible: boolean): void {
   }
 }
 
-function toggleLibrary(): void {
-  void libraryView?.toggle();
+function revealEditorMarkdownTab(): void {
+  if (manager === undefined) return;
+  const active = manager.activeTab;
+  if (active !== null && isMarkdownTab(active)) return;
+  const markdown = manager.tabList.find((tab) => tab.kind === 'markdown');
+  if (markdown !== undefined) {
+    manager.switchTab(markdown.id);
+  }
 }
+
+function revealReaderBookTab(): void {
+  if (manager === undefined) return;
+  const active = manager.activeTab;
+  if (active !== null && active.kind === 'reader') return;
+  const reader = manager.tabList.find((tab) => tab.kind === 'reader');
+  if (reader !== undefined) {
+    manager.switchTab(reader.id);
+  }
+}
+
+function applyWorkspaceState(state: WorkspaceSnapshot = workspace.snapshot()): void {
+  applyingWorkspaceSurfaces = true;
+  try {
+    shell?.applyWorkspace(state);
+    const vis = workspaceVisibility(state.surface);
+    setLibraryVisibility(vis.outlineHidden);
+    if (libraryView !== undefined) {
+      applyWorkspaceVisibility({ shelf: libraryView.element }, state.surface);
+    }
+    if (state.surface === 'shelf') {
+      void libraryView?.show();
+    } else {
+      libraryView?.hide({ notifyVisibility: false });
+    }
+    if (state.surface === 'editor') {
+      revealEditorMarkdownTab();
+    } else if (state.surface === 'reader') {
+      revealReaderBookTab();
+    }
+    if (manager !== undefined) {
+      const shelf = state.surface === 'shelf';
+      for (const tab of manager.tabList) {
+        tab.hostElement.toggleAttribute('inert', shelf);
+        tab.hostElement.setAttribute('aria-hidden', shelf ? 'true' : 'false');
+      }
+    }
+  } catch {
+    // Stay on the current workspace; do not dispose tab-manager state.
+  } finally {
+    applyingWorkspaceSurfaces = false;
+  }
+}
+
+function onLibraryMenu(): void {
+  workspace.toggleLibraryEntry();
+}
+
+function onSetWorkspaceMode(mode: WorkspaceMode): void {
+  if (mode === 'reader') {
+    workspace.enterReader();
+    return;
+  }
+  workspace.enterEditor();
+}
+
+function onLibraryVisibilityChange(visible: boolean): void {
+  if (applyingWorkspaceSurfaces) {
+    setLibraryVisibility(visible);
+    return;
+  }
+  if (!visible && workspace.mode === 'reader' && workspace.surface === 'shelf') {
+    workspace.enterEditor();
+    return;
+  }
+  setLibraryVisibility(visible);
+}
+
+workspace.subscribe((state) => {
+  applyWorkspaceState(state);
+  shell?.rebuildMenus();
+});
 
 function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
   if (acquisition.extension !== undefined && acquisition.extension !== '') return acquisition.extension;
@@ -529,7 +616,14 @@ async function openLibraryItem(
     if (item.localPath === undefined || item.localPath === '') {
       throw new Error('本地书籍路径不可用');
     }
-    await openPathByKind(item.localPath);
+    const tab = await openPathByKind(item.localPath);
+    if (tab === null) {
+      if (workspace.mode === 'reader') {
+        void libraryView?.show();
+      }
+      return;
+    }
+    workspace.openBook();
     return;
   }
   const acquisition = request.acquisition;
@@ -569,9 +663,11 @@ async function openLibraryItem(
     // handle is redundant in that case and must be released immediately.
     if (tab.target.kind !== 'remote' || tab.target.resourceId !== opened.resourceId) {
       await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
+      workspace.openBook();
       return;
     }
     await tab.reader.load(target);
+    workspace.openBook();
   } catch (error) {
     await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
     throw new Error(localizedReaderError(error));
@@ -1113,7 +1209,11 @@ shell = createAppShell(
   {
     onNew: () => void manager.newTab(),
     onOpen: () => void openViaDialog(),
-    onToggleLibrary: toggleLibrary,
+    onToggleLibrary: onLibraryMenu,
+    getWorkspaceMode: () => workspace.mode,
+    getWorkspaceSnapshot: () => workspace.snapshot(),
+    onSetWorkspaceMode,
+    isReaderBookOpen: () => workspace.mode === 'reader' && workspace.hasOpenBook,
     listRecents: () => invoke<string[]>('list_recents'),
     openRecent: async (path) => {
       const tab = await openPathByKind(path);
@@ -1342,11 +1442,28 @@ function renderTabBar(): void {
     }
   }
   shell.renderTabBar(manager.tabList, manager.activeTabId, {
-    onSwitch: (id) => manager.switchTab(id),
+    onSwitch: (id) => {
+      const tab = manager.tabList.find((item) => item.id === id);
+      manager.switchTab(id);
+      if (tab?.kind === 'markdown' && workspace.mode === 'reader') {
+        workspace.enterEditor();
+      } else if (tab?.kind === 'reader') {
+        workspace.openBook();
+        workspace.enterReader();
+      }
+    },
     onClose: (id) => {
       // 关闭前提交该标签的源码态编辑，避免 closeTab 保存分支写旧值/丢 textarea 编辑。
       commitSourceMode(id);
-      void manager.closeTab(id);
+      void manager.closeTab(id).then(() => {
+        if (
+          workspace.mode === 'reader' &&
+          workspace.hasOpenBook &&
+          activeReaderTab() === null
+        ) {
+          workspace.returnToShelf();
+        }
+      });
     },
   });
   syncDocumentTitle();
@@ -1377,6 +1494,12 @@ function cycleActiveTab(delta: 1 | -1): void {
   const next = tabs[(index + delta + tabs.length) % tabs.length];
   if (next !== undefined) {
     manager.switchTab(next.id);
+    if (next.kind === 'markdown' && workspace.mode === 'reader') {
+      workspace.enterEditor();
+    } else if (next.kind === 'reader') {
+      workspace.openBook();
+      workspace.enterReader();
+    }
   }
 }
 
@@ -1723,8 +1846,9 @@ libraryView = createLibraryView(shell.editorArea, {
   notify: (message, kind = 'warning') => {
     void dialogMessage(message, { title: i18n.t('app.name'), kind });
   },
-  onVisibilityChange: setLibraryVisibility,
+  onVisibilityChange: onLibraryVisibilityChange,
 });
+applyWorkspaceState();
 
 /** R8：状态栏 Markdown 序列化缓存——按内容版本去重，避免光标移动时重复全量序列化。 */
 let statusMarkdownCache: { tabId: string; revision: number; markdown: string } | null = null;
