@@ -9,9 +9,44 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+/** Node 实验性 localStorage 在未设 --localstorage-file 时是 undefined，jsdom 盖不掉。 */
+function ensureTestStorage(): Storage {
+  const current = globalThis.localStorage;
+  if (typeof current === 'object' && current !== null) {
+    return current;
+  }
+  const store = new Map<string, string>();
+  const storage: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.get(key) ?? null;
+    },
+    key(index: number) {
+      return [...store.keys()][index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    setItem(key: string, value: string) {
+      store.set(key, String(value));
+    },
+  };
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: storage,
+  });
+  return storage;
+}
+
 describe('archive password dialog', () => {
   it('returns the password without writing browser storage', async () => {
-    localStorage.clear();
+    const storage = ensureTestStorage();
+    storage.clear();
     const result = showArchivePasswordDialog(document, {
       displayName: 'secret.cb7',
       retry: false,
@@ -22,7 +57,7 @@ describe('archive password dialog', () => {
     document.querySelector<HTMLFormElement>('form')!.requestSubmit();
 
     await expect(result).resolves.toBe('session-only');
-    expect(localStorage).toHaveLength(0);
+    expect(storage).toHaveLength(0);
     expect(document.querySelector('.lightink-modal-overlay')).toBeNull();
   });
 
