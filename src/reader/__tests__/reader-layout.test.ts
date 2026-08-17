@@ -19,9 +19,11 @@ import {
   loadReaderLayout,
   parseReaderLayout,
   readerFlowColumnLayout,
+  readerFlowSpreadFromTypography,
   readerFlowUsesTextColumns,
   saveReaderLayout,
 } from '../reader-layout.js';
+import { DEFAULT_READER_TYPOGRAPHY } from '../reader-typography.js';
 
 function memoryStorage(initial: Record<string, string> = {}): {
   store: Record<string, string>;
@@ -150,5 +152,14 @@ describe('READER_FLOW_PAGED_PADDING_X_REM', () => {
     expect(READER_FLOW_PAGED_PADDING_X_REM).toBeLessThan(0.7);
     expect(READER_FLOW_PAGED_PADDING_X_REM).toBeGreaterThanOrEqual(0.35);
     expect(READER_FLOW_PAGED_PADDING_X_REM).toBeLessThanOrEqual(0.45);
+  });
+});
+
+describe('readerFlowSpreadFromTypography', () => {
+  it('reopens or closes the second column when the stored measure changes', () => {
+    const comfortable = { ...DEFAULT_READER_TYPOGRAPHY, measureRem: 22 };
+    const longer = { ...DEFAULT_READER_TYPOGRAPHY, measureRem: 32 };
+    expect(readerFlowSpreadFromTypography(1000, 16, comfortable).columns).toBe(2);
+    expect(readerFlowSpreadFromTypography(1000, 16, longer).columns).toBe(1);
   });
 });

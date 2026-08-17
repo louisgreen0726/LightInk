@@ -101,7 +101,7 @@ export function resolveReaderFontFamily(fontFamily: string): string {
   if (isSafeFontFamily(fontFamily)) {
     return fontFamily;
   }
-  return READER_FONT_FAMILY_PRESETS[DEFAULT_READER_FONT_FAMILY];
+  return READER_FONT_FAMILY_PRESETS.body;
 }
 
 export function normalizeReaderTypography(

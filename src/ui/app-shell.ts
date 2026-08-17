@@ -90,6 +90,28 @@ function applyReaderShellChrome(
   }
 }
 
+function collectReaderHosts(primary: ParentNode): HTMLElement[] {
+  const hosts: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  const scan = (node: ParentNode): void => {
+    if (typeof node.querySelectorAll !== 'function') {
+      return;
+    }
+    for (const el of Array.from(node.querySelectorAll('.lightink-reader'))) {
+      if (seen.has(el as HTMLElement)) {
+        continue;
+      }
+      seen.add(el as HTMLElement);
+      hosts.push(el as HTMLElement);
+    }
+  };
+  scan(primary);
+  if (typeof document !== 'undefined' && document !== primary) {
+    scan(document);
+  }
+  return hosts;
+}
+
 export interface ShellTabInfo {
   id: string;
   title: string;
@@ -876,6 +898,9 @@ export function createAppShell(
     const prefs = currentReaderTypography();
     applyReaderShellChrome(root, layout, prefs);
     applyReaderShellChrome(editorArea, layout, prefs);
+    for (const reader of collectReaderHosts(editorArea)) {
+      applyReaderShellChrome(reader, layout, prefs);
+    }
     dispatchReaderPrefEvent('lightink:reader-flow-layout', layout);
     dispatchReaderPrefEvent('lightink:reader-typography', prefs);
   };

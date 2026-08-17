@@ -20,10 +20,13 @@ import {
   type RemoteImagePolicy,
 } from '../media/remote-image-policy.js';
 import {
+  advancePagedScroller,
   applyPagedProgress,
   applyPagedSpreadVars,
   clearPagedSpreadVars,
+  createPagedWheelGate,
   isReadingNavKey,
+  pagedColumnStep,
   pagedProgressRatio,
   readingNavDirection,
   snapPagedScroller,
@@ -546,6 +549,62 @@ export function createFlowRenderer(
     frameDocument.body.appendChild(pad);
   };
 
+  const gatePagedWheel = createPagedWheelGate();
+
+  const advanceFlowPage = (direction: 1 | -1): boolean => {
+    if (!isFlowPaginated(root)) {
+      return false;
+    }
+    const frame = visibleFrame();
+    const scroller = frame?.contentDocument?.documentElement;
+    const step =
+      scroller === undefined || scroller === null
+        ? 0
+        : pagedColumnStep(
+            Number.parseFloat(scroller.style.width) || scroller.clientWidth,
+            Number.parseFloat(scroller.style.columnGap) || 0,
+          );
+    if (
+      scroller !== undefined &&
+      scroller !== null &&
+      advancePagedScroller(scroller, direction, step)
+    ) {
+      snapPagedScroller(scroller, step);
+      scroller.scrollLeft = Math.round(scroller.scrollLeft / step) * step;
+      hooks.syncState();
+      hooks.dismissSelectionToolbar();
+      return true;
+    }
+    const active = scrollHost.querySelector<HTMLElement>('.lightink-reader-chapter.is-active');
+    const current = Number(active?.dataset.chapterIndex ?? 0);
+    const next = scrollHost.querySelector<HTMLElement>(
+      `.lightink-reader-chapter[data-chapter-index="${current + direction}"]`,
+    );
+    if (next === null) {
+      return false;
+    }
+    setActiveChapter(current + direction);
+    const nextFrame = next.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame');
+    const applyChapterPage = (): void => {
+      const nextDoc = nextFrame?.contentDocument;
+      if (nextFrame === null || nextDoc === undefined || nextDoc === null) {
+        return;
+      }
+      applyPaginatedDocument(nextFrame, nextDoc, { snap: false });
+      nextDoc.documentElement.scrollLeft =
+        direction < 0
+          ? Math.max(0, nextDoc.documentElement.scrollWidth - nextDoc.documentElement.clientWidth)
+          : 0;
+    };
+    applyChapterPage();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(applyChapterPage);
+    }
+    hooks.syncState();
+    hooks.dismissSelectionToolbar();
+    return true;
+  };
+
   const applyPaginatedDocument = (
     frame: HTMLIFrameElement,
     frameDocument: Document,
@@ -816,7 +875,13 @@ export function createFlowRenderer(
           }
           if (!event.ctrlKey && !event.metaKey && !event.altKey && isReadingNavKey(event.key)) {
             const direction = readingNavDirection(event.key, event.shiftKey);
-            if (direction !== null && hooks.advanceReading(direction)) {
+            if (direction === null) {
+              return;
+            }
+            const moved = isFlowPaginated(root)
+              ? advanceFlowPage(direction)
+              : hooks.advanceReading(direction);
+            if (moved) {
               event.preventDefault();
             }
             return;
@@ -872,7 +937,7 @@ export function createFlowRenderer(
             return;
           }
           event.preventDefault();
-          hooks.advancePagedWheel(delta > 0 ? 1 : -1);
+          gatePagedWheel(delta > 0 ? 1 : -1, advanceFlowPage);
         };
         frameDocument.addEventListener('click', onClick);
         frameDocument.addEventListener('mouseup', onMouseUp);
@@ -1012,6 +1077,35 @@ export function createFlowRenderer(
       frameDocument.body.style.color = computed.color;
     }
   };
+
+  const refreshFromPrefs = (): void => {
+    if (isFlowPaginated(root)) {
+      syncVisibleFrames();
+    } else {
+      remasureScrollFrames();
+    }
+  };
+
+  const onFlowLayoutPref = (event: Event): void => {
+    const detail = (event as CustomEvent<string>).detail;
+    if (detail === 'scroll' || detail === 'paginated') {
+      applyReaderLayout(root, detail);
+    }
+    refreshFromPrefs();
+  };
+
+  const onTypographyPref = (event: Event): void => {
+    const detail = (event as CustomEvent<ReaderTypography>).detail;
+    if (detail !== null && detail !== undefined && typeof detail === 'object') {
+      applyReaderTypography(root, normalizeReaderTypography(detail));
+    }
+    refreshFromPrefs();
+  };
+
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('lightink:reader-flow-layout', onFlowLayoutPref);
+    document.addEventListener('lightink:reader-typography', onTypographyPref);
+  }
 
   return {
     render,

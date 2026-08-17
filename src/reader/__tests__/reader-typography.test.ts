@@ -15,10 +15,12 @@ import { DEFAULT_FONT_SCALE, FONT_SCALE_STORAGE_KEY, FONT_SCALE_STEPS } from '..
 import { readerFlowColumnLayout } from '../reader-layout.js';
 import {
   DEFAULT_READER_TYPOGRAPHY,
+  READER_FONT_FAMILY_PRESETS,
   READER_TYPOGRAPHY_STORAGE_KEY,
   applyReaderTypography,
   loadReaderTypography,
   parseReaderTypography,
+  resolveReaderFontFamily,
   saveReaderTypography,
 } from '../reader-typography.js';
 
@@ -127,6 +129,14 @@ describe('load/saveReaderTypography', () => {
         setItem: () => undefined,
       }),
     ).toEqual(DEFAULT_READER_TYPOGRAPHY);
+  });
+});
+
+describe('resolveReaderFontFamily', () => {
+  it('maps preset keys and falls back to the body stack for unsafe families', () => {
+    expect(resolveReaderFontFamily('serif')).toBe(READER_FONT_FAMILY_PRESETS.serif);
+    expect(resolveReaderFontFamily('Georgia, serif')).toBe('Georgia, serif');
+    expect(resolveReaderFontFamily('evil; background:red')).toBe(READER_FONT_FAMILY_PRESETS.body);
   });
 });
 
