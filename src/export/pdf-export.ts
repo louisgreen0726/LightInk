@@ -49,26 +49,34 @@ export const PRINT_STYLE_ID = 'lightink-export-print-style';
  * 主窗口打印时注入：隐藏应用壳层，只显示导出根。
  * 必须与 `EXPORT_ROOT_ID` 配套。
  */
+const EXPORT_ROOT_LAYOUT_CSS = `body > *:not(#${EXPORT_ROOT_ID}) { display: none !important; }
+#${EXPORT_ROOT_ID} {
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  width: 100% !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: #fff !important;
+  opacity: 1 !important;
+  overflow: visible !important;
+}`;
+
 export const MAIN_WINDOW_PRINT_CSS = `/* LightInk 主窗口导出打印 */
 @media print {
   /* 隐藏应用外壳：用 display:none（不占布局），而非 visibility:hidden（仍占位，
      会导致导出 PDF 尾部出现大量空白页）。只保留导出根参与分页。 */
-  body > *:not(#${EXPORT_ROOT_ID}) { display: none !important; }
-  #${EXPORT_ROOT_ID} {
-    position: static !important;
-    left: auto !important;
-    top: auto !important;
-    width: 100% !important;
-    height: auto !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #fff !important;
-    /* 屏幕隐藏用内联 style（opacity:0 / height:0 / overflow:hidden），
-       优先级高于普通规则，必须在此逐条 !important 复位，否则打印空白。 */
-    opacity: 1 !important;
-    overflow: visible !important;
-  }
+  ${EXPORT_ROOT_LAYOUT_CSS}
 }
+`;
+
+/**
+ * 原生 createPDF / PrintToPdf 的屏幕捕获面：选择器与 MAIN_WINDOW_PRINT_CSS 对齐，
+ * 但必须在屏幕媒体生效。macOS WKWebView createPDF 拍的是当前画面，不走 @media print。
+ */
+export const CAPTURE_WINDOW_CSS = `/* LightInk 主窗口原生 PDF 屏幕捕获 */
+${EXPORT_ROOT_LAYOUT_CSS}
 `;
 
 /** 装配打印就绪 HTML：与 HTML 导出同管线，追加打印样式。 */
@@ -101,13 +109,16 @@ export function runPrint(html: string, print: (html: string) => void): void {
  *  `[data-theme]` 规则匹配任意元素，故挂在导出根上即让子树改用浅色令牌。 */
 export const PRINT_THEME = 'warm-light';
 
-/**
- * 把导出 HTML 装配到主文档隐藏根节点（data-theme=浅色），返回清理函数。
- * 屏幕不可见（opacity:0），打印/PrintToPdf 时由 MAIN_WINDOW_PRINT_CSS 可见化。
- * 导出样式裹进 @media print，避免污染应用外壳（屏幕缩窄，见回归测试）。
- */
-export function mountPrintRoot(doc: Document, html: string): () => void {
-  // 清理上次残留。
+const HIDDEN_PRINT_ROOT_STYLE =
+  'position:fixed;left:0;top:0;width:0;height:0;overflow:hidden;opacity:0;pointer-events:none;';
+const CAPTURE_PRINT_ROOT_STYLE =
+  'position:static;width:100%;height:auto;overflow:visible;opacity:1;background:#fff;';
+
+function mountExportRoot(
+  doc: Document,
+  html: string,
+  options: { readonly capture: boolean },
+): () => void {
   doc.getElementById(EXPORT_ROOT_ID)?.remove();
   doc.getElementById(PRINT_STYLE_ID)?.remove();
 
@@ -115,19 +126,18 @@ export function mountPrintRoot(doc: Document, html: string): () => void {
 
   const styleEl = doc.createElement('style');
   styleEl.id = PRINT_STYLE_ID;
-  // 导出样式整体裹进 @media print：否则其中全局 `body { max-width:860px;
-  // font-size:14px; margin:0 auto; ... }` 会覆盖应用外壳，点导出 PDF 时界面
-  // 被缩窄/字号变小（屏幕污染）。屏幕上导出根本就不可见（opacity:0），无需
-  // 屏幕样式；这些规则只在打印渲染 PDF 时才需要。
-  styleEl.textContent = `@media print {\n${styleText}\n}\n${MAIN_WINDOW_PRINT_CSS}`;
+  // 打印对话框路径：导出 CSS 只进 @media print，避免屏幕缩窄/字号污染。
+  // 原生捕获路径：同一份文档 CSS 必须在屏幕媒体生效，createPDF 才能拍到正文。
+  styleEl.textContent = options.capture
+    ? `${styleText}\n${CAPTURE_WINDOW_CSS}\n${MAIN_WINDOW_PRINT_CSS}`
+    : `@media print {\n${styleText}\n}\n${MAIN_WINDOW_PRINT_CSS}`;
 
   const root = doc.createElement('div');
   root.id = EXPORT_ROOT_ID;
   root.setAttribute('data-theme', PRINT_THEME);
-  // 屏幕上不可见，打印时由 MAIN_WINDOW_PRINT_CSS 改为可见。
   root.setAttribute(
     'style',
-    'position:fixed;left:0;top:0;width:0;height:0;overflow:hidden;opacity:0;pointer-events:none;',
+    options.capture ? CAPTURE_PRINT_ROOT_STYLE : HIDDEN_PRINT_ROOT_STYLE,
   );
   root.innerHTML = bodyHtml;
 
@@ -144,9 +154,26 @@ export function mountPrintRoot(doc: Document, html: string): () => void {
 }
 
 /**
- * 原生矢量 PDF 导出（Windows WebView2 PrintToPdf）：挂载导出根（浅色 + @media
- * print）后调用注入的 `invokeNative`（生产为 `invoke('print_webview_to_pdf')`），
- * 打印当前 webview（仅导出根在打印态可见）为含**原生可选文字**的 PDF；完成后立即清理。
+ * 把导出 HTML 装配到主文档隐藏根节点（data-theme=浅色），返回清理函数。
+ * 屏幕不可见（opacity:0），`window.print` / 打印媒体时由 MAIN_WINDOW_PRINT_CSS 可见化。
+ * 导出样式裹进 @media print，避免污染应用外壳（屏幕缩窄，见回归测试）。
+ */
+export function mountPrintRoot(doc: Document, html: string): () => void {
+  return mountExportRoot(doc, html, { capture: false });
+}
+
+/**
+ * 原生 PDF 捕获面：装配文档作为屏幕可见内容，供 createPDF / PrintToPdf 拍摄。
+ * 仍保留 MAIN_WINDOW_PRINT_CSS，Windows 打印媒体路径不被拆掉。
+ */
+export function mountCaptureRoot(doc: Document, html: string): () => void {
+  return mountExportRoot(doc, html, { capture: true });
+}
+
+/**
+ * 原生矢量 PDF 导出：挂载屏幕捕获面后调用 `invokeNative`
+ * （生产为 `invoke('print_webview_to_pdf')`），拍当前 webview 中的文档内容；
+ * 成功或失败都立即卸根，避免导出样式留在屏幕上。
  */
 export async function printToPdfFile(
   doc: Document,
@@ -154,9 +181,8 @@ export async function printToPdfFile(
   invokeNative: () => Promise<void>,
   win: Window = window,
 ): Promise<void> {
-  const cleanup = mountPrintRoot(doc, html);
+  const cleanup = mountCaptureRoot(doc, html);
   try {
-    // 等一帧让 @media print 样式应用后再触发原生打印。
     await new Promise<void>((resolve) =>
       typeof win.requestAnimationFrame === 'function'
         ? win.requestAnimationFrame(() => resolve())

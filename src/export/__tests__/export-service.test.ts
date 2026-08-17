@@ -213,6 +213,8 @@ describe('exportActiveTabPdf', () => {
     await expect(exportActiveTabPdf(deps)).resolves.toBe(true);
     expect(showPdfSaveDialog).toHaveBeenCalledWith('笔记.pdf');
     expect(printPdfNative).toHaveBeenCalledTimes(1);
+    const nativeHtml = vi.mocked(printPdfNative).mock.calls[0]?.[0];
+    expect(nativeHtml).toContain('标题</h1>');
     expect(deps.printHtml).not.toHaveBeenCalled(); // 不回退 window.print
     expect(deps.reportError).not.toHaveBeenCalled(); // 无错误框
   });

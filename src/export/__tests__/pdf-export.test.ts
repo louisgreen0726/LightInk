@@ -10,11 +10,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildPrintHtml,
+  CAPTURE_WINDOW_CSS,
   EXPORT_ROOT_ID,
   extractPrintParts,
   MAIN_WINDOW_PRINT_CSS,
   PRINT_CSS,
   PRINT_STYLE_ID,
+  printToPdfFile,
   printViaMainWindow,
   runPrint,
 } from '../pdf-export.js';
@@ -234,5 +236,73 @@ describe('printViaMainWindow', () => {
     expect(outsidePrint).not.toMatch(/\bbody\s*\{/);
 
     vi.useRealTimers();
+  });
+});
+
+describe('printToPdfFile', () => {
+  it('invoke 前把文档画成屏幕可见捕获面，结束后卸根', async () => {
+    const { doc, head, body, byId } = makeFakeDocument();
+    const html = buildPrintHtml({
+      title: 't',
+      theme: 'warm-light',
+      bodyHtml: '<h1>正文标题</h1><p>一段正文</p>',
+      cssText: 'body { max-width: 860px; font-size: 14px; }',
+    });
+    let seenDuringInvoke = false;
+    const invokeNative = vi.fn(async () => {
+      const root = byId.get(EXPORT_ROOT_ID);
+      const style = byId.get(PRINT_STYLE_ID);
+      expect(root).toBeDefined();
+      expect(root?.innerHTML).toContain('<h1>正文标题</h1>');
+      expect(root?.getAttribute('style') ?? '').toMatch(/width:\s*100%/);
+      expect(root?.getAttribute('style') ?? '').toMatch(/opacity:\s*1/);
+      expect(root?.getAttribute('style') ?? '').not.toMatch(/width:\s*0/);
+      const text = style?.textContent ?? '';
+      expect(text).toContain(CAPTURE_WINDOW_CSS);
+      expect(text).toContain(MAIN_WINDOW_PRINT_CSS);
+      const outsidePrint = text.replace(/@media print\s*\{[\s\S]*?\n\}/g, '');
+      expect(outsidePrint).toMatch(/\bbody\s*\{[^}]*max-width:\s*860px/);
+      expect(outsidePrint).toContain('display: none !important');
+      expect(body.children).toContain(root);
+      expect(head.children).toContain(style);
+      seenDuringInvoke = true;
+    });
+    const win = {
+      requestAnimationFrame: (cb: FrameRequestCallback): number => {
+        cb(0);
+        return 0;
+      },
+    } as unknown as Window;
+
+    await printToPdfFile(doc, html, invokeNative, win);
+
+    expect(invokeNative).toHaveBeenCalledTimes(1);
+    expect(seenDuringInvoke).toBe(true);
+    expect(byId.get(EXPORT_ROOT_ID)?.parent).toBeNull();
+    expect(byId.get(PRINT_STYLE_ID)?.parent).toBeNull();
+  });
+
+  it('invoke 失败也卸根，不残留导出样式', async () => {
+    const { doc, byId } = makeFakeDocument();
+    const html = buildPrintHtml({
+      title: 't',
+      theme: 'warm-light',
+      bodyHtml: '<p>x</p>',
+      cssText: '/* theme */',
+    });
+    const win = {
+      requestAnimationFrame: (cb: FrameRequestCallback): number => {
+        cb(0);
+        return 0;
+      },
+    } as unknown as Window;
+
+    await expect(
+      printToPdfFile(doc, html, async () => {
+        throw new Error('createPDF failed');
+      }, win),
+    ).rejects.toThrow('createPDF failed');
+    expect(byId.get(EXPORT_ROOT_ID)?.parent).toBeNull();
+    expect(byId.get(PRINT_STYLE_ID)?.parent).toBeNull();
   });
 });
