@@ -211,6 +211,35 @@ function readerSurfaceActive(root: HTMLElement): boolean {
   return root.dataset.workspaceSurface === 'reader';
 }
 
+function ancestorIsHidden(root: HTMLElement): boolean {
+  let node: HTMLElement | null = root;
+  while (node !== null) {
+    if (node.hidden || node.style.display === 'none') {
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+function pageFormatHostActive(root: HTMLElement): boolean {
+  return (
+    typeof root.querySelector === 'function' &&
+    root.querySelector('.lightink-reader-pages[data-reader-active="true"]') !== null
+  );
+}
+
+/** Visible, connected flow reader — not a hidden tab or PDF/comic host. */
+function flowReaderHostActive(root: HTMLElement): boolean {
+  if (!root.isConnected || !readerSurfaceActive(root) || ancestorIsHidden(root)) {
+    return false;
+  }
+  if (pageFormatHostActive(root)) {
+    return false;
+  }
+  return isFlowPaginated(root);
+}
+
 function syncReaderDocumentLayout(root: HTMLElement): void {
   if (typeof document === 'undefined' || document.documentElement == null) {
     return;
@@ -486,6 +515,7 @@ export function createFlowRenderer(
 
   const clear = (): void => {
     flowRenderGeneration += 1;
+    unbindHostWheel();
     resourceObserver?.disconnect();
     resourceObserver = null;
     const windows = resourceWindows;
@@ -708,6 +738,7 @@ export function createFlowRenderer(
 
   const render = (chapters: ReaderChapter[], stylesheet = ''): void => {
     clear();
+    bindHostWheel();
     const renderGeneration = flowRenderGeneration;
     scrollHost.replaceChildren();
     // T8：视口窗口驱动物化/释放；rootMargin 预取一屏邻章。无 IO 环境（jsdom）
@@ -1124,7 +1155,7 @@ export function createFlowRenderer(
     if (event.ctrlKey || event.metaKey || event.defaultPrevented) {
       return;
     }
-    if (!readerSurfaceActive(root) || !isFlowPaginated(root)) {
+    if (!flowReaderHostActive(root)) {
       return;
     }
     if (wheelPagingShouldIgnoreTarget(event.target)) {
@@ -1142,9 +1173,37 @@ export function createFlowRenderer(
     if (delta === 0) {
       return;
     }
-    event.preventDefault();
-    event.stopPropagation();
-    gatePagedWheel(delta > 0 ? 1 : -1, advanceFlowPage);
+    const moved = gatePagedWheel(delta > 0 ? 1 : -1, (direction) =>
+      hooks.advancePagedWheel(direction),
+    );
+    if (moved) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+
+  let hostWheelBound = false;
+
+  const bindHostWheel = (): void => {
+    if (hostWheelBound) {
+      return;
+    }
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+      return;
+    }
+    document.addEventListener('wheel', onHostWheel, { passive: false, capture: true });
+    hostWheelBound = true;
+  };
+
+  const unbindHostWheel = (): void => {
+    if (!hostWheelBound) {
+      return;
+    }
+    if (typeof document === 'undefined' || typeof document.removeEventListener !== 'function') {
+      return;
+    }
+    document.removeEventListener('wheel', onHostWheel, { capture: true });
+    hostWheelBound = false;
   };
 
   const onFlowLayoutPref = (event: Event): void => {
@@ -1166,8 +1225,8 @@ export function createFlowRenderer(
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('lightink:reader-flow-layout', onFlowLayoutPref);
     document.addEventListener('lightink:reader-typography', onTypographyPref);
-    document.addEventListener('wheel', onHostWheel, { passive: false, capture: true });
   }
+  bindHostWheel();
 
   syncReaderDocumentLayout(root);
 

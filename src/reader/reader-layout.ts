@@ -94,11 +94,12 @@ export function applyReaderDocumentLayout(
   readerLayout: ReaderFlowLayout,
   editorLayout: ReadingLayout = DEFAULT_READING_LAYOUT,
 ): ReadingLayout {
+  documentRoot.dataset.workspaceMode = workspaceMode === 'reader' ? 'reader' : 'editor';
   const next =
     workspaceMode === 'reader'
       ? parseReaderLayout(readerLayout)
       : parseReadingLayout(editorLayout);
-  applyReadingLayout(documentRoot, next);
+  applyReadingLayout(documentRoot, next, { force: true });
   return next;
 }
 

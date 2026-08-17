@@ -183,6 +183,23 @@ describe('applyReadingLayout', () => {
     expect(root.dataset.readingLayout).toBe('paginated');
     expect(classNames.has('is-paginated')).toBe(true);
   });
+
+  it('still stamps a non-document root that happens to sit in reader workspace', () => {
+    const classNames = new Set<string>();
+    const root = {
+      dataset: { workspaceMode: 'reader' } as DOMStringMap,
+      classList: {
+        toggle(name: string, force?: boolean) {
+          if (force === true) classNames.add(name);
+          else classNames.delete(name);
+          return force === true;
+        },
+      } as unknown as DOMTokenList,
+    };
+    applyReadingLayout(root, 'paginated');
+    expect(root.dataset.readingLayout).toBe('paginated');
+    expect(classNames.has('is-paginated')).toBe(true);
+  });
 });
 
 describe('nearestVisibleSlot', () => {

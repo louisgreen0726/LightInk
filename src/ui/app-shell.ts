@@ -16,6 +16,7 @@ import {
   DEFAULT_READER_FLOW_LAYOUT,
   loadReaderLayout,
   saveReaderLayout,
+  toggleReaderFlowLayout,
   type ReaderFlowLayout,
 } from '../reader/reader-layout.js';
 import {
@@ -45,6 +46,7 @@ import {
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 import { labelModal, mountModalFocus } from './modal-focus.js';
+import { matchEvent } from './shortcuts.js';
 import {
   applyWorkspaceSurface,
   type WorkspaceMode,
@@ -947,6 +949,24 @@ export function createAppShell(
         ? formatFontScaleLabel(currentReaderTypography().fontScaleStep)
         : actions.getFontScaleLabel(),
   };
+
+  const onReaderLayoutShortcut = (event: Event): void => {
+    const keyEvent = event as KeyboardEvent;
+    if (!matchEvent(keyEvent, 'Ctrl+M')) {
+      return;
+    }
+    const workspace =
+      actions.getWorkspaceMode?.() ?? actions.getWorkspaceSnapshot?.()?.mode ?? 'editor';
+    if (workspace !== 'reader') {
+      return;
+    }
+    keyEvent.preventDefault();
+    keyEvent.stopPropagation();
+    menuActions.onSetReaderFlowLayout?.(toggleReaderFlowLayout(currentReaderLayout()));
+  };
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('keydown', onReaderLayoutShortcut, true);
+  }
 
   const pinPrefs = options.initialPinPrefs ?? loadChromePinPrefs(storage);
   if (pinPrefs.menu) {

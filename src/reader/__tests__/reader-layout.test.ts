@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Reader flow layout is keyed separately from the editor Markdown layout.
  *
@@ -9,9 +10,16 @@
  * - paginated flow inline padding is narrower than the previous 0.7rem default
  * - PDF and comics do not use text dual-column
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { READING_LAYOUT_STORAGE_KEY, saveReadingLayout } from '../../ui/reading-layout.js';
+import { createFlowRenderer, type FlowRendererHooks } from '../flow-renderer.js';
+import { sessionRemoteImagePolicy } from '../../media/remote-image-policy.js';
+
+import {
+  applyReadingLayout,
+  READING_LAYOUT_STORAGE_KEY,
+  saveReadingLayout,
+} from '../../ui/reading-layout.js';
 import {
   READER_FLOW_LAYOUT_STORAGE_KEY,
   READER_FLOW_PAGED_PADDING_X_REM,
@@ -106,6 +114,12 @@ describe('load/saveReaderLayout', () => {
 });
 
 describe('applyReaderDocumentLayout', () => {
+  afterEach(() => {
+    delete document.documentElement.dataset.readingLayout;
+    delete document.documentElement.dataset.workspaceMode;
+    document.documentElement.classList.remove('is-paginated');
+  });
+
   function fakeRoot(): {
     dataset: DOMStringMap;
     classList: DOMTokenList;
@@ -129,6 +143,7 @@ describe('applyReaderDocumentLayout', () => {
     const root = fakeRoot();
     expect(applyReaderDocumentLayout(root, 'reader', 'paginated', 'scroll')).toBe('paginated');
     expect(root.dataset.readingLayout).toBe('paginated');
+    expect(root.dataset.workspaceMode).toBe('reader');
     expect(root.classNames.has('is-paginated')).toBe(true);
 
     applyReaderDocumentLayout(root, 'reader', 'scroll', 'paginated');
@@ -144,12 +159,21 @@ describe('applyReaderDocumentLayout', () => {
     });
     applyReaderDocumentLayout(root, 'editor', 'paginated', 'scroll');
     expect(root.dataset.readingLayout).toBe('scroll');
+    expect(root.dataset.workspaceMode).toBe('editor');
     expect(root.classNames.has('is-paginated')).toBe(false);
     applyReaderDocumentLayout(root, 'editor', 'scroll', 'paginated');
     expect(root.dataset.readingLayout).toBe('paginated');
     expect(store[READING_LAYOUT_STORAGE_KEY]).toBe('paginated');
     expect(store[READER_FLOW_LAYOUT_STORAGE_KEY]).toBe('paginated');
     expect(loadReaderLayout(storage)).toBe('paginated');
+  });
+
+  it('keeps the reader key on the document host when the editor applier runs', () => {
+    applyReaderDocumentLayout(document.documentElement, 'reader', 'paginated', 'scroll');
+    expect(document.documentElement.dataset.readingLayout).toBe('paginated');
+    applyReadingLayout(document.documentElement, 'scroll');
+    expect(document.documentElement.dataset.readingLayout).toBe('paginated');
+    expect(document.documentElement.classList.contains('is-paginated')).toBe(true);
   });
 });
 
@@ -210,5 +234,138 @@ describe('readerFlowSpreadFromTypography', () => {
     const longer = { ...DEFAULT_READER_TYPOGRAPHY, measureRem: 32 };
     expect(readerFlowSpreadFromTypography(1000, 16, comfortable).columns).toBe(2);
     expect(readerFlowSpreadFromTypography(1000, 16, longer).columns).toBe(1);
+  });
+});
+
+const flowRendererHooks = (
+  overrides: Partial<FlowRendererHooks> = {},
+): FlowRendererHooks => ({
+  t: (key) => key,
+  remoteImagePolicy: sessionRemoteImagePolicy,
+  syncState: () => undefined,
+  applyPendingRestore: () => undefined,
+  renderHighlights: () => undefined,
+  handleNoteMarkClick: () => false,
+  onSelectionMouseUp: () => undefined,
+  openSearch: () => undefined,
+  advanceReading: () => false,
+  advancePagedWheel: () => false,
+  dismissSelectionToolbar: () => false,
+  isLayoutSwitching: () => false,
+  scrollContainer: () => document.body,
+  ...overrides,
+});
+
+describe('flow host wheel', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+    delete document.documentElement.dataset.workspaceMode;
+  });
+
+  function mountFlowRoot(): { root: HTMLElement; scrollHost: HTMLElement } {
+    const shell = document.createElement('div');
+    shell.dataset.workspaceMode = 'reader';
+    shell.dataset.workspaceSurface = 'reader';
+    const root = document.createElement('div');
+    root.className = 'lightink-reader';
+    root.dataset.readingLayout = 'paginated';
+    const scrollHost = document.createElement('div');
+    root.appendChild(scrollHost);
+    shell.appendChild(root);
+    document.body.appendChild(shell);
+    return { root, scrollHost };
+  }
+
+  it('delegates to advancePagedWheel and preventDefault only when a page moved', () => {
+    const { root, scrollHost } = mountFlowRoot();
+    const dirs: Array<1 | -1> = [];
+    const renderer = createFlowRenderer(
+      scrollHost,
+      root,
+      flowRendererHooks({
+        advancePagedWheel: (direction) => {
+          dirs.push(direction);
+          return true;
+        },
+      }),
+    );
+    const event = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(dirs).toEqual([1]);
+    expect(event.defaultPrevented).toBe(true);
+    renderer.clear();
+  });
+
+  it('does not preventDefault when the active flow cannot turn a page', () => {
+    const { root, scrollHost } = mountFlowRoot();
+    const renderer = createFlowRenderer(
+      scrollHost,
+      root,
+      flowRendererHooks({ advancePagedWheel: () => false }),
+    );
+    const event = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    renderer.clear();
+  });
+
+  it('ignores a hidden inactive-tab flow host', () => {
+    const { root, scrollHost } = mountFlowRoot();
+    root.parentElement!.style.display = 'none';
+    let called = 0;
+    const renderer = createFlowRenderer(
+      scrollHost,
+      root,
+      flowRendererHooks({
+        advancePagedWheel: () => {
+          called += 1;
+          return true;
+        },
+      }),
+    );
+    document.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }));
+    expect(called).toBe(0);
+    renderer.clear();
+  });
+
+  it('does not page a PDF or comic host', () => {
+    const { root, scrollHost } = mountFlowRoot();
+    const pages = document.createElement('div');
+    pages.className = 'lightink-reader-pages';
+    pages.dataset.readerActive = 'true';
+    root.appendChild(pages);
+    let called = 0;
+    const renderer = createFlowRenderer(
+      scrollHost,
+      root,
+      flowRendererHooks({
+        advancePagedWheel: () => {
+          called += 1;
+          return true;
+        },
+      }),
+    );
+    document.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }));
+    expect(called).toBe(0);
+    renderer.clear();
+  });
+
+  it('removes the document wheel listener on clear', () => {
+    const { root, scrollHost } = mountFlowRoot();
+    let called = 0;
+    const renderer = createFlowRenderer(
+      scrollHost,
+      root,
+      flowRendererHooks({
+        advancePagedWheel: () => {
+          called += 1;
+          return true;
+        },
+      }),
+    );
+    renderer.clear();
+    document.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }));
+    expect(called).toBe(0);
   });
 });

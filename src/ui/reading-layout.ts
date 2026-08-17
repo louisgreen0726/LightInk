@@ -57,10 +57,26 @@ export function saveReadingLayout(
   }
 }
 
+export interface ApplyReadingLayoutOptions {
+  /** Apply even when the document host is owned by the reader workspace. */
+  force?: boolean;
+}
+
+function isReaderOwnedDocumentRoot(root: { dataset: DOMStringMap }): boolean {
+  if (root.dataset.workspaceMode !== 'reader') {
+    return false;
+  }
+  return typeof document !== 'undefined' && root === document.documentElement;
+}
+
 export function applyReadingLayout(
   root: { dataset: DOMStringMap; classList: DOMTokenList },
   layout: ReadingLayout,
+  options?: ApplyReadingLayoutOptions,
 ): void {
+  if (options?.force !== true && isReaderOwnedDocumentRoot(root)) {
+    return;
+  }
   root.dataset.readingLayout = layout;
   root.classList.toggle('is-paginated', layout === 'paginated');
 }
