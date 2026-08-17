@@ -15,6 +15,7 @@ import { READING_LAYOUT_STORAGE_KEY, saveReadingLayout } from '../../ui/reading-
 import {
   READER_FLOW_LAYOUT_STORAGE_KEY,
   READER_FLOW_PAGED_PADDING_X_REM,
+  applyReaderDocumentLayout,
   applyReaderLayout,
   loadReaderLayout,
   parseReaderLayout,
@@ -101,6 +102,54 @@ describe('load/saveReaderLayout', () => {
       'scroll',
     );
     expect(written).toEqual([READER_FLOW_LAYOUT_STORAGE_KEY]);
+  });
+});
+
+describe('applyReaderDocumentLayout', () => {
+  function fakeRoot(): {
+    dataset: DOMStringMap;
+    classList: DOMTokenList;
+    classNames: Set<string>;
+  } {
+    const classNames = new Set<string>();
+    return {
+      dataset: {} as DOMStringMap,
+      classNames,
+      classList: {
+        toggle(name: string, force?: boolean) {
+          if (force === true) classNames.add(name);
+          else classNames.delete(name);
+          return force === true;
+        },
+      } as unknown as DOMTokenList,
+    };
+  }
+
+  it('mirrors the reader flow key onto the document host in reader workspace', () => {
+    const root = fakeRoot();
+    expect(applyReaderDocumentLayout(root, 'reader', 'paginated', 'scroll')).toBe('paginated');
+    expect(root.dataset.readingLayout).toBe('paginated');
+    expect(root.classNames.has('is-paginated')).toBe(true);
+
+    applyReaderDocumentLayout(root, 'reader', 'scroll', 'paginated');
+    expect(root.dataset.readingLayout).toBe('scroll');
+    expect(root.classNames.has('is-paginated')).toBe(false);
+  });
+
+  it('restores the editor layout when leaving reader workspace and does not write keys', () => {
+    const root = fakeRoot();
+    const { store, storage } = memoryStorage({
+      [READING_LAYOUT_STORAGE_KEY]: 'paginated',
+      [READER_FLOW_LAYOUT_STORAGE_KEY]: 'paginated',
+    });
+    applyReaderDocumentLayout(root, 'editor', 'paginated', 'scroll');
+    expect(root.dataset.readingLayout).toBe('scroll');
+    expect(root.classNames.has('is-paginated')).toBe(false);
+    applyReaderDocumentLayout(root, 'editor', 'scroll', 'paginated');
+    expect(root.dataset.readingLayout).toBe('paginated');
+    expect(store[READING_LAYOUT_STORAGE_KEY]).toBe('paginated');
+    expect(store[READER_FLOW_LAYOUT_STORAGE_KEY]).toBe('paginated');
+    expect(loadReaderLayout(storage)).toBe('paginated');
   });
 });
 

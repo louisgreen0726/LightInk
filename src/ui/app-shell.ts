@@ -11,6 +11,7 @@ import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
+  applyReaderDocumentLayout,
   applyReaderLayout,
   DEFAULT_READER_FLOW_LAYOUT,
   loadReaderLayout,
@@ -900,6 +901,20 @@ export function createAppShell(
     applyReaderShellChrome(editorArea, layout, prefs);
     for (const reader of collectReaderHosts(editorArea)) {
       applyReaderShellChrome(reader, layout, prefs);
+    }
+    const workspace =
+      actions.getWorkspaceMode?.() ?? actions.getWorkspaceSnapshot?.()?.mode ?? 'editor';
+    const documentRoot =
+      typeof document !== 'undefined' && document.documentElement != null
+        ? document.documentElement
+        : null;
+    if (documentRoot !== null) {
+      applyReaderDocumentLayout(
+        documentRoot,
+        workspace,
+        layout,
+        actions.getReadingLayout?.() ?? 'scroll',
+      );
     }
     dispatchReaderPrefEvent('lightink:reader-flow-layout', layout);
     dispatchReaderPrefEvent('lightink:reader-typography', prefs);

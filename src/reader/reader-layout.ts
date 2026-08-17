@@ -9,6 +9,8 @@
 
 import {
   applyReadingLayout,
+  DEFAULT_READING_LAYOUT,
+  parseReadingLayout,
   pagedSpreadMetrics,
   readingColumnLayout,
   toggleReadingLayout,
@@ -78,6 +80,27 @@ export function applyReaderLayout(
 }
 
 export const applyReaderFlowLayout = applyReaderLayout;
+
+/**
+ * Host consumers in reader-view / PDF still read html[data-reading-layout].
+ * While the reader workspace is showing, that attribute must follow the
+ * reader flow key (default paginated) instead of the editor key (default
+ * scroll). Leaving reader mode restores the editor layout and never writes
+ * either storage key.
+ */
+export function applyReaderDocumentLayout(
+  documentRoot: { dataset: DOMStringMap; classList: DOMTokenList },
+  workspaceMode: string | null | undefined,
+  readerLayout: ReaderFlowLayout,
+  editorLayout: ReadingLayout = DEFAULT_READING_LAYOUT,
+): ReadingLayout {
+  const next =
+    workspaceMode === 'reader'
+      ? parseReaderLayout(readerLayout)
+      : parseReadingLayout(editorLayout);
+  applyReadingLayout(documentRoot, next);
+  return next;
+}
 
 export function toggleReaderFlowLayout(layout: ReaderFlowLayout): ReaderFlowLayout {
   return toggleReadingLayout(parseReaderLayout(layout));

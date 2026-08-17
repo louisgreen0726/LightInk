@@ -31,8 +31,9 @@ import {
   readingNavDirection,
   snapPagedScroller,
 } from '../ui/reading-layout.js';
-import { DEFAULT_SHORTCUTS, matchEvent } from '../ui/shortcuts.js';
+import { DEFAULT_SHORTCUTS, matchEvent, wheelPagingShouldIgnoreTarget } from '../ui/shortcuts.js';
 import {
+  applyReaderDocumentLayout,
   applyReaderLayout,
   loadReaderLayout,
   parseReaderLayout,
@@ -190,6 +191,38 @@ function ensureReaderFlowChrome(root: HTMLElement): void {
 function isFlowPaginated(root: HTMLElement): boolean {
   ensureReaderFlowChrome(root);
   return parseReaderLayout(root.dataset.readingLayout) === 'paginated';
+}
+
+function workspaceModeFromHost(root: HTMLElement): string | undefined {
+  const host =
+    typeof root.closest === 'function' ? root.closest('[data-workspace-mode]') : null;
+  if (host instanceof HTMLElement && host.dataset.workspaceMode) {
+    return host.dataset.workspaceMode;
+  }
+  return root.dataset.workspaceMode;
+}
+
+function readerSurfaceActive(root: HTMLElement): boolean {
+  const host =
+    typeof root.closest === 'function' ? root.closest('[data-workspace-surface]') : null;
+  if (host instanceof HTMLElement) {
+    return host.dataset.workspaceSurface === 'reader';
+  }
+  return root.dataset.workspaceSurface === 'reader';
+}
+
+function syncReaderDocumentLayout(root: HTMLElement): void {
+  if (typeof document === 'undefined' || document.documentElement == null) {
+    return;
+  }
+  if (workspaceModeFromHost(root) !== 'reader') {
+    return;
+  }
+  applyReaderDocumentLayout(
+    document.documentElement,
+    'reader',
+    parseReaderLayout(root.dataset.readingLayout),
+  );
 }
 
 function resolveReaderTypography(root: HTMLElement): ReaderTypography {
@@ -1079,11 +1112,39 @@ export function createFlowRenderer(
   };
 
   const refreshFromPrefs = (): void => {
+    syncReaderDocumentLayout(root);
     if (isFlowPaginated(root)) {
       syncVisibleFrames();
     } else {
       remasureScrollFrames();
     }
+  };
+
+  const onHostWheel = (event: WheelEvent): void => {
+    if (event.ctrlKey || event.metaKey || event.defaultPrevented) {
+      return;
+    }
+    if (!readerSurfaceActive(root) || !isFlowPaginated(root)) {
+      return;
+    }
+    if (wheelPagingShouldIgnoreTarget(event.target)) {
+      return;
+    }
+    if (
+      event.target instanceof Element &&
+      (event.target.closest('.lightink-reader-pages') !== null ||
+        event.target.closest('.lightink-reader-sidebar') !== null)
+    ) {
+      return;
+    }
+    const delta =
+      Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (delta === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    gatePagedWheel(delta > 0 ? 1 : -1, advanceFlowPage);
   };
 
   const onFlowLayoutPref = (event: Event): void => {
@@ -1105,7 +1166,10 @@ export function createFlowRenderer(
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('lightink:reader-flow-layout', onFlowLayoutPref);
     document.addEventListener('lightink:reader-typography', onTypographyPref);
+    document.addEventListener('wheel', onHostWheel, { passive: false, capture: true });
   }
+
+  syncReaderDocumentLayout(root);
 
   return {
     render,
