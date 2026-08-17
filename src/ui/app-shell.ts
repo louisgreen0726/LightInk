@@ -301,6 +301,8 @@ export interface AppShell {
     activeId: string | null,
     callbacks: TabBarCallbacks,
   ): void;
+  /** Remove document listeners installed by the shell. */
+  destroy(): void;
 }
 
 function menuItem(
@@ -961,7 +963,10 @@ export function createAppShell(
       return;
     }
     keyEvent.preventDefault();
-    keyEvent.stopPropagation();
+    // Same-document capture listeners (ShortcutRegistry) still run after
+    // stopPropagation; only stopImmediatePropagation keeps Ctrl+M from also
+    // writing the editor layout key.
+    keyEvent.stopImmediatePropagation();
     menuActions.onSetReaderFlowLayout?.(toggleReaderFlowLayout(currentReaderLayout()));
   };
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
@@ -1337,5 +1342,10 @@ export function createAppShell(
     rebuildMenus,
     applyWorkspace,
     renderTabBar,
+    destroy: () => {
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('keydown', onReaderLayoutShortcut, true);
+      }
+    },
   };
 }

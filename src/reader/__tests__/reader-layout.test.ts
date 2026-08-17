@@ -12,6 +12,10 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { InsertElementId } from '../../editor/insert-commands.js';
+import { createAppShell, type AppShellActions } from '../../ui/app-shell.js';
+import { ShortcutRegistry } from '../../ui/shortcuts.js';
+import type { BuiltinThemeId } from '../../theme/theme-service.js';
 import { createFlowRenderer, type FlowRendererHooks } from '../flow-renderer.js';
 import { sessionRemoteImagePolicy } from '../../media/remote-image-policy.js';
 
@@ -367,5 +371,102 @@ describe('flow host wheel', () => {
     renderer.clear();
     document.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }));
     expect(called).toBe(0);
+  });
+});
+
+function stubShellActions(overrides: Partial<AppShellActions> = {}): AppShellActions {
+  const noop = (): void => undefined;
+  return {
+    onNew: noop,
+    onOpen: noop,
+    listRecents: () => Promise.resolve([]),
+    openRecent: () => Promise.resolve(false),
+    clearRecents: () => Promise.resolve(),
+    onShowVersions: noop,
+    hasActiveFile: () => false,
+    onSave: noop,
+    onSaveAs: noop,
+    onExportHtml: noop,
+    onExportPdf: noop,
+    onUndo: noop,
+    onRedo: noop,
+    onCut: noop,
+    onCopy: noop,
+    onPaste: noop,
+    onInsertElement: (_id: InsertElementId) => undefined,
+    onToggleTheme: noop,
+    onApplyTheme: (_id: BuiltinThemeId) => undefined,
+    getCurrentThemeId: () => 'warm-light',
+    onReloadCustomTheme: noop,
+    onSelectCustomTheme: noop,
+    onResetCustomTheme: noop,
+    canReloadCustomTheme: () => false,
+    canResetCustomTheme: () => false,
+    onToggleOutline: noop,
+    onToggleSourceMode: noop,
+    getReadingLayout: () => 'scroll',
+    onToggleReadingLayout: noop,
+    onToggleFullscreen: noop,
+    isChromePinned: () => false,
+    onToggleChromePinned: noop,
+    onZoomIn: noop,
+    onZoomOut: noop,
+    onZoomReset: noop,
+    getFontScaleLabel: () => '100%',
+    t: (key) => key,
+    formatShortcut: (combo: string) => combo,
+    getLocale: () => 'zh-CN',
+    setLocale: () => undefined,
+    ...overrides,
+  };
+}
+
+describe('reader Ctrl+M vs editor layout key', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    delete document.documentElement.dataset.readingLayout;
+    delete document.documentElement.dataset.workspaceMode;
+  });
+
+  it('keeps the editor layout key unchanged when Ctrl+M fires in reader workspace', () => {
+    const { store, storage } = memoryStorage({
+      [READING_LAYOUT_STORAGE_KEY]: 'scroll',
+      [READER_FLOW_LAYOUT_STORAGE_KEY]: 'paginated',
+    });
+    let editorLayout: 'scroll' | 'paginated' = 'scroll';
+    const onToggleReadingLayout = (): void => {
+      editorLayout = editorLayout === 'paginated' ? 'scroll' : 'paginated';
+      saveReadingLayout(storage, editorLayout);
+    };
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const shell = createAppShell(
+      root,
+      stubShellActions({
+        getWorkspaceMode: () => 'reader',
+        getReadingLayout: () => editorLayout,
+        onToggleReadingLayout,
+      }),
+      { shortcutBindings: () => [], storage },
+    );
+    const registry = new ShortcutRegistry({
+      'toggle-reading-layout': onToggleReadingLayout,
+    });
+    registry.attach(document);
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'm',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(store[READING_LAYOUT_STORAGE_KEY]).toBe('scroll');
+    expect(editorLayout).toBe('scroll');
+    expect(store[READER_FLOW_LAYOUT_STORAGE_KEY]).toBe('scroll');
+    registry.detach(document);
+    shell.destroy();
   });
 });
