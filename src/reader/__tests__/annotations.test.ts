@@ -1,13 +1,19 @@
 /**
- * 标注数据模型与序列化往返测试（ebook-reader T6 / R4）。
- * 覆盖各格式定位器、损坏 JSON 视为空、版本化结构。
+ * 标注数据模型与序列化往返测试（ebook-reader T6 / R4 / R5）。
+ * 覆盖各格式定位器、损坏 JSON 视为空、版本化结构、摘录/备注查询与颜色。
  */
 import { describe, expect, it } from 'vitest';
 
 import {
+  ANNOTATION_COLORS,
   AnnotationWriteQueue,
+  DEFAULT_ANNOTATION_COLOR,
+  filterAnnotations,
   parseAnnotations,
+  removeAnnotation,
+  resolveAnnotationColor,
   serializeAnnotations,
+  updateAnnotationNote,
   type Annotation,
 } from '../annotations.js';
 
@@ -239,6 +245,162 @@ function deferred(): Deferred {
   });
   return { promise, resolve };
 }
+
+describe('annotation color', () => {
+  it('missing and illegal colors resolve to the current flow highlight yellow', () => {
+    expect(DEFAULT_ANNOTATION_COLOR).toBe('#f2d675');
+    expect(ANNOTATION_COLORS[0]).toBe(DEFAULT_ANNOTATION_COLOR);
+    expect(resolveAnnotationColor(undefined)).toBe(DEFAULT_ANNOTATION_COLOR);
+    expect(resolveAnnotationColor('not-a-color')).toBe(DEFAULT_ANNOTATION_COLOR);
+    expect(resolveAnnotationColor('#86C28B')).toBe('#86c28b');
+  });
+
+  it('parse keeps a valid palette color and does not invent color on legacy v2', () => {
+    const colored: Annotation = {
+      id: 'green',
+      kind: 'highlight',
+      locator: { format: 'text', start: 0, end: 4, quote: 'leaf', prefix: '', suffix: '' },
+      quote: 'leaf',
+      color: '#86c28b',
+      createdAt: 4,
+    };
+    expect(parseAnnotations(serializeAnnotations([colored]))).toEqual([colored]);
+
+    const legacy = parseAnnotations(JSON.stringify({
+      version: 2,
+      annotations: [sample[0]],
+    }));
+    expect(legacy[0]!.color).toBeUndefined();
+    expect(resolveAnnotationColor(legacy[0]!.color)).toBe(DEFAULT_ANNOTATION_COLOR);
+  });
+
+  it('illegal color does not discard the record and resolves as default yellow', () => {
+    const back = parseAnnotations(JSON.stringify({
+      version: 2,
+      annotations: [{
+        ...sample[0],
+        color: '#ff00ff',
+      }],
+    }));
+    expect(back).toHaveLength(1);
+    expect(back[0]!.id).toBe('h1');
+    expect(back[0]!.color).toBeUndefined();
+    expect(resolveAnnotationColor(back[0]!.color)).toBe(DEFAULT_ANNOTATION_COLOR);
+  });
+});
+
+describe('filterAnnotations notebook query', () => {
+  const notebook: Annotation[] = [
+    {
+      id: 'h-yellow',
+      kind: 'highlight',
+      locator: {
+        format: 'flow',
+        chapter: 0,
+        start: 0,
+        end: 4,
+        quote: '阳光穿过树叶',
+        prefix: '',
+        suffix: '',
+      },
+      quote: '阳光穿过树叶',
+      createdAt: 1,
+    },
+    {
+      id: 'h-green',
+      kind: 'highlight',
+      locator: {
+        format: 'text',
+        start: 0,
+        end: 2,
+        quote: 'green excerpt',
+        prefix: '',
+        suffix: '',
+      },
+      quote: 'green excerpt',
+      color: '#86c28b',
+      createdAt: 2,
+    },
+    {
+      id: 'n1',
+      kind: 'note',
+      locator: {
+        format: 'text',
+        start: 8,
+        end: 12,
+        quote: '摘录句子',
+        prefix: '',
+        suffix: '',
+      },
+      quote: '摘录句子',
+      note: '关于树叶的备注',
+      createdAt: 3,
+    },
+    {
+      id: 'b1',
+      kind: 'bookmark',
+      locator: { format: 'cbz', page: 2 },
+      createdAt: 4,
+    },
+  ];
+
+  it('search hits excerpt or note and misses unrelated words', () => {
+    expect(filterAnnotations(notebook, { query: '树叶' }).map((a) => a.id)).toEqual([
+      'h-yellow',
+      'n1',
+    ]);
+    expect(filterAnnotations(notebook, { query: '备注' }).map((a) => a.id)).toEqual(['n1']);
+    expect(filterAnnotations(notebook, { query: 'green' }).map((a) => a.id)).toEqual(['h-green']);
+    expect(filterAnnotations(notebook, { query: '无关词' })).toEqual([]);
+    expect(filterAnnotations(notebook, { query: '  ' }).map((a) => a.id)).toEqual(
+      notebook.map((a) => a.id),
+    );
+  });
+
+  it('filters to notes only or to one highlight color', () => {
+    expect(filterAnnotations(notebook, { kind: 'note' }).map((a) => a.id)).toEqual(['n1']);
+    expect(
+      filterAnnotations(notebook, { kind: 'highlight', color: DEFAULT_ANNOTATION_COLOR }).map(
+        (a) => a.id,
+      ),
+    ).toEqual(['h-yellow']);
+    expect(filterAnnotations(notebook, { color: '#86C28B' }).map((a) => a.id)).toEqual([
+      'h-green',
+    ]);
+    expect(
+      filterAnnotations(notebook, { color: DEFAULT_ANNOTATION_COLOR }).map((a) => a.id),
+    ).toEqual(['h-yellow']);
+  });
+
+  it('combines text query with kind and color', () => {
+    expect(
+      filterAnnotations(notebook, { query: '树叶', kind: 'note' }).map((a) => a.id),
+    ).toEqual(['n1']);
+    expect(
+      filterAnnotations(notebook, {
+        query: 'excerpt',
+        kind: 'highlight',
+        color: '#86c28b',
+      }).map((a) => a.id),
+    ).toEqual(['h-green']);
+    expect(
+      filterAnnotations(notebook, { query: '树叶', kind: 'highlight', color: '#86c28b' }),
+    ).toEqual([]);
+  });
+});
+
+describe('updateAnnotationNote / removeAnnotation', () => {
+  it('edits a note in place and deletes by id', () => {
+    const next = updateAnnotationNote(sample, 'n1', '改过的备注');
+    expect(next.find((a) => a.id === 'n1')?.note).toBe('改过的备注');
+    expect(next.find((a) => a.id === 'h1')).toEqual(sample[0]);
+    expect(updateAnnotationNote(sample, 'missing', 'x')).toEqual(sample);
+
+    const removed = removeAnnotation(next, 'n1');
+    expect(removed.map((a) => a.id)).toEqual(['h1', 'b1', 'c1']);
+    expect(removeAnnotation(sample, 'missing')).toEqual(sample);
+  });
+});
 
 describe('AnnotationWriteQueue', () => {
   it('serializes rapid writes for the same content hash', async () => {

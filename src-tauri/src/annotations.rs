@@ -1,8 +1,11 @@
-//! 标注持久化（ebook-reader T6 / R4）。
+//! 标注持久化（ebook-reader T6 / R4 / R5）。
 //!
 //! 标注按「文件内容哈希」关联，存 `<app_data_dir>/annotations/<hash>.json`，
 //! 原子写（复用 [`crate::file::write_file_impl`]）。缺失或不可读视为空标注
 //! （R4：损坏/缺失不阻断阅读）；标注读写永不触碰源电子书文件。
+//!
+//! JSON 对 Rust 不透明：备注、颜色等字段由前端 schema 拥有；改备注或删除是
+//! 整文件覆写，不在此升跨书索引或「全部标注」目录。
 //!
 //! 内容哈希由本模块的 [`content_hash`] 命令在 Rust 侧计算（读字节 +
 //! [`crate::asset::content_hash_hex`]，FNV-1a 64-bit）；`read_annotations` /
@@ -144,6 +147,63 @@ mod tests {
             assert!(write_annotations_impl(dir.path(), hash, "{}").is_err());
         }
         assert!(!dir.path().join(ANNOTATIONS_DIR).exists());
+    }
+
+    #[test]
+    fn note_and_color_overwrite_stays_per_hash() {
+        // R5：改备注/颜色是整文件覆写；只动本书 key，不写跨书总库。
+        let dir = temp_dir();
+        let original = r##"{"version":2,"annotations":[{"id":"n1","kind":"note","note":"旧备注","color":"#86c28b"}]}"##;
+        let updated = r##"{"version":2,"annotations":[{"id":"n1","kind":"note","note":"新备注","color":"#7eb6d9"}]}"##;
+        write_annotations_impl(dir.path(), HASH_A, original).unwrap();
+        write_annotations_impl(
+            dir.path(),
+            HASH_B,
+            r#"{"version":2,"annotations":[{"id":"b1"}]}"#,
+        )
+        .unwrap();
+        write_annotations_impl(dir.path(), HASH_A, updated).unwrap();
+        assert_eq!(read_annotations_impl(dir.path(), HASH_A).unwrap(), updated);
+        assert_eq!(
+            read_annotations_impl(dir.path(), HASH_B).unwrap(),
+            r#"{"version":2,"annotations":[{"id":"b1"}]}"#
+        );
+    }
+
+    #[test]
+    fn delete_overwrite_does_not_create_cross_book_index() {
+        let dir = temp_dir();
+        write_annotations_impl(
+            dir.path(),
+            HASH_A,
+            r##"{"version":2,"annotations":[{"id":"a1","kind":"highlight","color":"#f2d675"}]}"##,
+        )
+        .unwrap();
+        write_annotations_impl(
+            dir.path(),
+            HASH_B,
+            r#"{"version":2,"annotations":[{"id":"b1","kind":"note","note":"留着"}]}"#,
+        )
+        .unwrap();
+        write_annotations_impl(dir.path(), HASH_A, r#"{"version":2,"annotations":[]}"#).unwrap();
+
+        let names: Vec<String> = fs::read_dir(dir.path().join(ANNOTATIONS_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&format!("{HASH_A}.json")));
+        assert!(names.contains(&format!("{HASH_B}.json")));
+        assert!(!names
+            .iter()
+            .any(|name| name == "index.json" || name == "all.json"));
+        assert_eq!(
+            read_annotations_impl(dir.path(), HASH_A).unwrap(),
+            r#"{"version":2,"annotations":[]}"#
+        );
+        assert_eq!(
+            read_annotations_impl(dir.path(), HASH_B).unwrap(),
+            r#"{"version":2,"annotations":[{"id":"b1","kind":"note","note":"留着"}]}"#
+        );
     }
 
     #[test]

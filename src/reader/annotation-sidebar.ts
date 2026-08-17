@@ -1,16 +1,24 @@
 /**
- * `annotation-sidebar` — 标注侧栏（R4 重做）。
+ * `annotation-sidebar` — 本书标注笔记本（R5）。
  *
- * 列出当前文档的全部标注（高亮/书签/笔记）并支持：按类型筛选、显示定位信息
- * （pdf/cbz 页码、flow 章节）、点击跳转、编辑备注（经 onEditNote 弹层）、移除。
- * 纯 DOM 装配；数据模型与持久化在 annotations.ts / Rust。render 全量重绘，
- * 筛选状态在闭包内跨 render 保留。
+ * 列出当前文档的高亮/书签/笔记：搜摘录与备注、按类型和颜色筛、显示定位、
+ * 点击跳转、改备注、删除。可选 `search` 仍是书内正文搜索，与标注搜索并存。
+ * 纯 DOM 装配；查询语义走 annotations.ts 的 filterAnnotations。render 全量重绘，
+ * 筛选与标注搜索状态在闭包内跨 render 保留。
  */
 
-import type { Annotation, AnnotationKind } from './annotations.js';
+import {
+  ANNOTATION_COLORS,
+  filterAnnotations,
+  resolveAnnotationColor,
+  type Annotation,
+  type AnnotationColor,
+  type AnnotationKind,
+} from './annotations.js';
 import type { MessageKey } from '../i18n/messages.js';
 
 type AnnotationFilter = 'all' | AnnotationKind;
+type ColorFilter = 'all' | AnnotationColor;
 
 const FILTERS: readonly AnnotationFilter[] = ['all', 'highlight', 'bookmark', 'note'];
 
@@ -75,6 +83,16 @@ function locationText(
   }
 }
 
+function styleSwatch(element: HTMLElement, color: string): void {
+  element.style.backgroundColor = color;
+  element.style.width = '0.85rem';
+  element.style.height = '0.85rem';
+  element.style.padding = '0';
+  element.style.borderRadius = '50%';
+  element.style.flex = '0 0 auto';
+  element.style.boxSizing = 'border-box';
+}
+
 /**
  * 创建标注侧栏。element 挂到 reader 视图；render 用当前标注集合重绘列表。
  */
@@ -96,12 +114,38 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
   close.addEventListener('click', () => deps.onClose?.());
   header.append(title, close);
 
+  const noteField = document.createElement('div');
+  noteField.className = 'lightink-reader-sidebar-search lightink-reader-sidebar-note-search';
+  noteField.setAttribute('role', 'search');
+  const noteSearchInput = document.createElement('input');
+  noteSearchInput.type = 'text';
+  noteSearchInput.className = 'lightink-reader-sidebar-note-search-input';
+  noteSearchInput.setAttribute('aria-label', deps.t('annotation.sidebar'));
+  noteSearchInput.placeholder = deps.t('reader.search.placeholder');
+  noteSearchInput.autocomplete = 'off';
+  noteSearchInput.spellcheck = false;
+  noteSearchInput.style.flex = '1 1 auto';
+  noteSearchInput.style.minWidth = '0';
+  noteSearchInput.style.border = '1px solid var(--lightink-border)';
+  noteSearchInput.style.borderRadius = '4px';
+  noteSearchInput.style.padding = '0.3rem 0.45rem';
+  noteSearchInput.style.background = 'var(--lightink-bg)';
+  noteSearchInput.style.color = 'var(--lightink-fg)';
+  noteSearchInput.style.font = 'inherit';
+  noteField.appendChild(noteSearchInput);
+
   // 类型筛选：all + 三种 kind，aria-pressed 表达当前筛选。
   const filters = document.createElement('div');
   filters.className = 'lightink-reader-sidebar-filters';
   filters.setAttribute('role', 'group');
   const filterButtons = new Map<AnnotationFilter, HTMLButtonElement>();
   let currentFilter: AnnotationFilter = 'all';
+
+  const colors = document.createElement('div');
+  colors.className = 'lightink-reader-sidebar-filters lightink-reader-sidebar-colors';
+  colors.setAttribute('role', 'group');
+  const colorButtons = new Map<ColorFilter, HTMLButtonElement>();
+  let currentColor: ColorFilter = 'all';
 
   const list = document.createElement('ul');
   list.className = 'lightink-reader-sidebar-list';
@@ -114,12 +158,20 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
         filter === currentFilter,
       );
     }
+    for (const [color, button] of colorButtons) {
+      button.setAttribute('aria-pressed', color === currentColor ? 'true' : 'false');
+      button.classList.toggle(
+        'lightink-reader-sidebar-filter--active',
+        color === currentColor,
+      );
+    }
   };
 
   for (const filter of FILTERS) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'lightink-reader-sidebar-filter';
+    button.dataset.kindFilter = filter;
     button.textContent = deps.t(filterLabelKey(filter));
     button.addEventListener('click', () => {
       currentFilter = filter;
@@ -130,9 +182,57 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     filters.appendChild(button);
   }
 
+  const allColor = document.createElement('button');
+  allColor.type = 'button';
+  allColor.className = 'lightink-reader-sidebar-filter lightink-reader-sidebar-color-filter';
+  allColor.dataset.color = 'all';
+  allColor.textContent = deps.t('annotation.filter.all');
+  allColor.setAttribute('aria-label', deps.t('annotation.filter.all'));
+  allColor.addEventListener('click', () => {
+    currentColor = 'all';
+    applyFilter();
+    renderList(lastAnnotations);
+  });
+  colorButtons.set('all', allColor);
+  colors.appendChild(allColor);
+
+  for (const color of ANNOTATION_COLORS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'lightink-reader-sidebar-filter lightink-reader-sidebar-color-filter';
+    button.dataset.color = color;
+    button.setAttribute('aria-label', color);
+    button.setAttribute('title', color);
+    styleSwatch(button, color);
+    button.addEventListener('click', () => {
+      currentColor = color;
+      applyFilter();
+      renderList(lastAnnotations);
+    });
+    colorButtons.set(color, button);
+    colors.appendChild(button);
+  }
+
   const search = deps.search;
   let searchInput: HTMLInputElement | null = null;
   let searchStatus: HTMLElement | null = null;
+  let annotationQuery = '';
+
+  noteSearchInput.addEventListener('input', () => {
+    annotationQuery = noteSearchInput.value;
+    renderList(lastAnnotations);
+  });
+  noteSearchInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || noteSearchInput.value === '') {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    noteSearchInput.value = '';
+    annotationQuery = '';
+    renderList(lastAnnotations);
+  });
+
   if (search !== undefined) {
     const field = document.createElement('div');
     field.className = 'lightink-reader-sidebar-search';
@@ -149,8 +249,11 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     searchStatus.className = 'lightink-reader-sidebar-search-status';
     searchStatus.setAttribute('aria-live', 'polite');
     field.append(searchInput, searchStatus);
-    root.append(header, field, filters, list);
+    root.append(header, noteField, field, filters, colors, list);
     root.addEventListener('keydown', (event) => {
+      if (event.target === noteSearchInput) {
+        return;
+      }
       if (event.key === 'Enter') {
         if (event.target instanceof HTMLButtonElement) {
           return;
@@ -169,17 +272,25 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
           search.onClear();
           return;
         }
+        if (noteSearchInput.value !== '') {
+          noteSearchInput.value = '';
+          annotationQuery = '';
+          renderList(lastAnnotations);
+          return;
+        }
         deps.onClose?.();
       }
     });
   } else {
-    root.append(header, filters, list);
+    root.append(header, noteField, filters, colors, list);
   }
 
   const renderItem = (annotation: Annotation): HTMLLIElement => {
     const li = document.createElement('li');
     li.className = 'lightink-reader-sidebar-item';
     li.dataset.annotationId = annotation.id;
+    const color = resolveAnnotationColor(annotation.color);
+    li.dataset.annotationColor = color;
 
     const kind = document.createElement('span');
     kind.className = `lightink-reader-sidebar-kind lightink-reader-sidebar-kind--${annotation.kind}`;
@@ -187,6 +298,13 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
 
     const meta = document.createElement('div');
     meta.className = 'lightink-reader-sidebar-item-meta';
+    if (annotation.kind === 'highlight' || annotation.kind === 'note') {
+      const swatch = document.createElement('span');
+      swatch.className = 'lightink-reader-sidebar-color';
+      swatch.dataset.color = color;
+      styleSwatch(swatch, color);
+      meta.appendChild(swatch);
+    }
     meta.appendChild(kind);
     const location = locationText(annotation, deps.t);
     if (location !== null) {
@@ -274,18 +392,21 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
       searchStatus.dataset.searchEmpty = 'false';
     }
     list.replaceChildren();
-    const visible =
-      currentFilter === 'all'
-        ? annotations
-        : annotations.filter((a) => a.kind === currentFilter);
+    const visible = filterAnnotations(annotations, {
+      query: annotationQuery,
+      kind: currentFilter === 'all' ? undefined : currentFilter,
+      color: currentColor === 'all' ? undefined : currentColor,
+    });
     if (visible.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'lightink-reader-sidebar-empty';
-      // 区分"文档无任何标注"与"当前筛选无匹配"（跨文档保留的筛选不再误报空文档）。
+      // 区分无标注、标注搜索无命中、类型/颜色筛无匹配。
       empty.textContent =
         annotations.length === 0
           ? deps.t('annotation.empty')
-          : deps.t('annotation.filter.empty');
+          : annotationQuery.trim() !== ''
+            ? deps.t('reader.search.empty')
+            : deps.t('annotation.filter.empty');
       list.appendChild(empty);
       return;
     }

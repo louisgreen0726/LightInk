@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 
 /**
- * 标注侧栏重做（R4）测试：类型筛选、定位显示、编辑备注入口、跳转/移除派发；
- * 附笔记弹层 Promise 语义（保存/取消）。
+ * 标注侧栏（R5）测试：摘录/备注搜索、类型与颜色筛、定位、跳转/改备注/删除；
+ * 书内正文搜索仍与标注搜索并存；附笔记弹层 Promise 语义。
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createAnnotationSidebar } from '../annotation-sidebar.js';
 import { showNoteDialog } from '../note-dialog.js';
-import type { Annotation } from '../annotations.js';
+import {
+  ANNOTATION_COLORS,
+  DEFAULT_ANNOTATION_COLOR,
+  type Annotation,
+} from '../annotations.js';
 
 const t = (key: string, vars?: Readonly<Record<string, string>>): string => {
   let text = key;
@@ -241,6 +245,115 @@ describe('annotation-sidebar 重做', () => {
   it('omits the document search box when search is not enabled', () => {
     const { sidebar } = mount();
     expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-input')).toBeNull();
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-note-search-input')).not.toBeNull();
+  });
+
+  it('搜备注或摘录能命中，搜无关词不命中', () => {
+    const { sidebar } = mount();
+    const input = sidebar.element.querySelector<HTMLInputElement>(
+      '.lightink-reader-sidebar-note-search-input',
+    )!;
+
+    input.value = '旧备注';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    let items = sidebar.element.querySelectorAll<HTMLElement>('.lightink-reader-sidebar-item');
+    expect(items).toHaveLength(1);
+    expect(items[0]!.dataset.annotationId).toBe('n1');
+
+    input.value = 'pdf 文字';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    items = sidebar.element.querySelectorAll<HTMLElement>('.lightink-reader-sidebar-item');
+    expect(items).toHaveLength(1);
+    expect(items[0]!.dataset.annotationId).toBe('h1');
+
+    input.value = '无关词';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(sidebar.element.querySelectorAll('.lightink-reader-sidebar-item')).toHaveLength(0);
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-empty')?.textContent).toBe(
+      'reader.search.empty',
+    );
+  });
+
+  it('能筛成仅笔记或仅某高亮颜色；缺色视为默认黄', () => {
+    const { sidebar } = mount();
+    const green = ANNOTATION_COLORS[1]!;
+    sidebar.render([
+      ...annotations,
+      {
+        id: 'h-green',
+        kind: 'highlight',
+        locator: {
+          format: 'pdf',
+          page: 4,
+          quote: '绿高亮',
+          anchor: { start: 0, end: 3, quote: '绿高亮', prefix: '', suffix: '' },
+        },
+        quote: '绿高亮',
+        color: green,
+        createdAt: 4,
+      },
+    ]);
+
+    const noteFilter = Array.from(
+      sidebar.element.querySelectorAll<HTMLButtonElement>('.lightink-reader-sidebar-filter'),
+    ).find((b) => b.textContent === 'annotation.kind.note')!;
+    noteFilter.click();
+    let items = sidebar.element.querySelectorAll<HTMLElement>('.lightink-reader-sidebar-item');
+    expect(items).toHaveLength(1);
+    expect(items[0]!.dataset.annotationId).toBe('n1');
+
+    const allKind = Array.from(
+      sidebar.element.querySelectorAll<HTMLButtonElement>('[data-kind-filter]'),
+    ).find((b) => b.dataset.kindFilter === 'all')!;
+    allKind.click();
+
+    const yellow = sidebar.element.querySelector<HTMLButtonElement>(
+      `[data-color="${DEFAULT_ANNOTATION_COLOR}"]`,
+    )!;
+    yellow.click();
+    items = sidebar.element.querySelectorAll<HTMLElement>('.lightink-reader-sidebar-item');
+    expect(Array.from(items).map((el) => el.dataset.annotationId)).toEqual(['h1']);
+    expect(items[0]!.dataset.annotationColor).toBe(DEFAULT_ANNOTATION_COLOR);
+
+    const greenFilter = sidebar.element.querySelector<HTMLButtonElement>(
+      `[data-color="${green}"]`,
+    )!;
+    greenFilter.click();
+    items = sidebar.element.querySelectorAll<HTMLElement>('.lightink-reader-sidebar-item');
+    expect(items).toHaveLength(1);
+    expect(items[0]!.dataset.annotationId).toBe('h-green');
+  });
+
+  it('筛选或搜索后仍可跳转、改备注或删除', () => {
+    const { sidebar, jumps, removals, edits } = mount();
+    const green = ANNOTATION_COLORS[1]!;
+    sidebar.render([
+      annotations[2]!,
+      {
+        id: 'h-green',
+        kind: 'highlight',
+        locator: { format: 'pdf', page: 4, quote: '绿高亮' },
+        quote: '绿高亮',
+        color: green,
+        createdAt: 4,
+      },
+    ]);
+
+    sidebar.element.querySelector<HTMLButtonElement>(`[data-color="${green}"]`)!.click();
+    const greenItem = sidebar.element.querySelector('[data-annotation-id="h-green"]')!;
+    (greenItem.querySelector('.lightink-reader-sidebar-jump') as HTMLElement).click();
+    (greenItem.querySelector('.lightink-reader-sidebar-remove') as HTMLElement).click();
+    expect(jumps).toEqual(['h-green']);
+    expect(removals).toEqual(['h-green']);
+
+    sidebar.element.querySelector<HTMLButtonElement>('[data-color="all"]')!.click();
+    const noteFilter = Array.from(
+      sidebar.element.querySelectorAll<HTMLButtonElement>('[data-kind-filter]'),
+    ).find((b) => b.dataset.kindFilter === 'note')!;
+    noteFilter.click();
+    const noteItem = sidebar.element.querySelector('[data-annotation-id="n1"]')!;
+    (noteItem.querySelector('.lightink-reader-sidebar-edit') as HTMLElement).click();
+    expect(edits).toEqual(['n1']);
   });
 });
 

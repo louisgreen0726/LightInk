@@ -2,6 +2,21 @@
 
 export type AnnotationKind = 'highlight' | 'bookmark' | 'note';
 
+/** Current flow highlight yellow; missing or illegal stored colors resolve here. */
+export const DEFAULT_ANNOTATION_COLOR = '#f2d675';
+
+/** Closed highlight palette. First entry is the historical default yellow. */
+export const ANNOTATION_COLORS = [
+  DEFAULT_ANNOTATION_COLOR,
+  '#86c28b',
+  '#7eb6d9',
+  '#f4a0b4',
+] as const;
+
+export type AnnotationColor = (typeof ANNOTATION_COLORS)[number];
+
+const ANNOTATION_COLOR_SET: ReadonlySet<string> = new Set(ANNOTATION_COLORS);
+
 export interface TextQuoteAnchor {
   start: number;
   end: number;
@@ -44,7 +59,15 @@ export interface Annotation {
   /** Kept at the annotation level for sidebar display and v1 compatibility. */
   readonly quote?: string;
   readonly note?: string;
+  /** Optional highlight color; omitted records resolve to DEFAULT_ANNOTATION_COLOR. */
+  readonly color?: AnnotationColor;
   readonly createdAt: number;
+}
+
+export interface AnnotationQuery {
+  readonly query?: string;
+  readonly kind?: AnnotationKind;
+  readonly color?: string;
 }
 
 interface AnnotationFileV2 {
@@ -97,6 +120,82 @@ function isLocator(value: unknown): value is Locator {
   }
 }
 
+function readColor(value: unknown): AnnotationColor | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return ANNOTATION_COLOR_SET.has(normalized) ? (normalized as AnnotationColor) : undefined;
+}
+
+/** Resolve a stored or missing color to the closed palette (illegal → default yellow). */
+export function resolveAnnotationColor(color: string | undefined): AnnotationColor {
+  return readColor(color) ?? DEFAULT_ANNOTATION_COLOR;
+}
+
+function annotationSearchText(annotation: Annotation): string {
+  const parts: string[] = [];
+  if (annotation.quote !== undefined && annotation.quote !== '') {
+    parts.push(annotation.quote);
+  }
+  if (annotation.note !== undefined && annotation.note !== '') {
+    parts.push(annotation.note);
+  }
+  const locator = annotation.locator;
+  if ('quote' in locator && locator.quote !== '' && locator.quote !== annotation.quote) {
+    parts.push(locator.quote);
+  }
+  return parts.join('\n');
+}
+
+/** Client-side notebook query: excerpt/note text plus optional kind and color. */
+export function filterAnnotations(
+  annotations: readonly Annotation[],
+  query: AnnotationQuery = {},
+): Annotation[] {
+  const text = query.query?.trim().toLowerCase() ?? '';
+  const color =
+    query.color === undefined || query.color.trim() === ''
+      ? undefined
+      : resolveAnnotationColor(query.color);
+  return annotations.filter((annotation) => {
+    if (query.kind !== undefined && annotation.kind !== query.kind) {
+      return false;
+    }
+    if (color !== undefined) {
+      if (annotation.kind !== 'highlight') {
+        return false;
+      }
+      if (resolveAnnotationColor(annotation.color) !== color) {
+        return false;
+      }
+    }
+    if (text === '') {
+      return true;
+    }
+    return annotationSearchText(annotation).toLowerCase().includes(text);
+  });
+}
+
+/** Replace the note on one record; unknown id leaves the collection unchanged. */
+export function updateAnnotationNote(
+  annotations: readonly Annotation[],
+  id: string,
+  note: string,
+): Annotation[] {
+  return annotations.map((annotation) =>
+    annotation.id === id ? { ...annotation, note } : annotation,
+  );
+}
+
+/** Drop one record by id; unknown id leaves the collection unchanged. */
+export function removeAnnotation(
+  annotations: readonly Annotation[],
+  id: string,
+): Annotation[] {
+  return annotations.filter((annotation) => annotation.id !== id);
+}
+
 function isAnnotation(value: unknown): value is Annotation {
   if (typeof value !== 'object' || value === null) {
     return false;
@@ -113,6 +212,28 @@ function isAnnotation(value: unknown): value is Annotation {
     (annotation.quote === undefined || typeof annotation.quote === 'string') &&
     (annotation.note === undefined || typeof annotation.note === 'string')
   );
+}
+
+function fromParsedAnnotation(annotation: Annotation): Annotation {
+  const color = readColor(annotation.color);
+  return color === undefined
+    ? {
+        id: annotation.id,
+        kind: annotation.kind,
+        locator: annotation.locator,
+        quote: annotation.quote,
+        note: annotation.note,
+        createdAt: annotation.createdAt,
+      }
+    : {
+        id: annotation.id,
+        kind: annotation.kind,
+        locator: annotation.locator,
+        quote: annotation.quote,
+        note: annotation.note,
+        createdAt: annotation.createdAt,
+        color,
+      };
 }
 
 function migrateV1Locator(
@@ -224,12 +345,13 @@ export function parseAnnotations(json: string): Annotation[] {
     return [];
   }
   if (file.version === 2) {
-    return file.annotations.filter(isAnnotation);
+    return file.annotations.filter(isAnnotation).map(fromParsedAnnotation);
   }
   if (file.version === 1) {
     return file.annotations
       .map(migrateV1Annotation)
-      .filter((annotation): annotation is Annotation => annotation !== null);
+      .filter((annotation): annotation is Annotation => annotation !== null)
+      .map(fromParsedAnnotation);
   }
   return [];
 }
