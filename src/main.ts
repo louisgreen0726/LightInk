@@ -442,7 +442,7 @@ function reportReaderLoadError(error: unknown): void {
  * 失败标签会立即清理。菜单打开 / 最近打开 / 拖入 / CLI 与文件关联入口共用此分发。
  */
 async function openPathByKind(path: string): Promise<TabState | null> {
-  return openDocumentPath(path, {
+  const tab = await openDocumentPath(path, {
     manager,
     onReaderOpenError: (failedPath, error) => {
       // eslint-disable-next-line no-console
@@ -453,6 +453,13 @@ async function openPathByKind(path: string): Promise<TabState | null> {
       reportReaderLoadError(error);
     },
   });
+  // File→Open / recents / drop share this helper. A reader tab opened while
+  // the shelf is showing must flip hasOpenBook so the book is not left under
+  // the library. Editor mode stays the main surface (openBook does not switch).
+  if (tab?.kind === 'reader') {
+    workspace.openBook();
+  }
+  return tab;
 }
 
 let outlineVisibilityBeforeLibrary: import('./outline/outline-view.js').OutlineVisibility | null = null;
@@ -492,6 +499,8 @@ function revealReaderBookTab(): void {
   }
 }
 
+let appliedWorkspaceSurface: WorkspaceSnapshot['surface'] = workspace.surface;
+
 function applyWorkspaceState(state: WorkspaceSnapshot = workspace.snapshot()): void {
   applyingWorkspaceSurfaces = true;
   try {
@@ -507,10 +516,15 @@ function applyWorkspaceState(state: WorkspaceSnapshot = workspace.snapshot()): v
       libraryView?.hide({ notifyVisibility: false });
     }
     if (state.surface === 'editor') {
-      revealEditorMarkdownTab();
+      // Only steal focus when entering the editor surface. openBook() from
+      // File→Open of a PDF in the editor must not bounce back to Markdown.
+      if (appliedWorkspaceSurface !== 'editor') {
+        revealEditorMarkdownTab();
+      }
     } else if (state.surface === 'reader') {
       revealReaderBookTab();
     }
+    appliedWorkspaceSurface = state.surface;
     if (manager !== undefined) {
       const shelf = state.surface === 'shelf';
       for (const tab of manager.tabList) {
@@ -618,10 +632,7 @@ async function openLibraryItem(
     }
     const tab = await openPathByKind(item.localPath);
     if (tab === null) {
-      if (workspace.mode === 'reader') {
-        void libraryView?.show();
-      }
-      return;
+      throw new Error(i18n.t('reader.loadFailed', { detail: item.title }));
     }
     workspace.openBook();
     return;

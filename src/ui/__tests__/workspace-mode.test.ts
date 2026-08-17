@@ -125,6 +125,17 @@ describe('createWorkspaceMode', () => {
     });
   });
 
+  it('reveals the reader surface when a book opens while the shelf is showing', () => {
+    const workspace = createWorkspaceMode();
+    workspace.enterReader();
+    expect(workspace.surface).toBe('shelf');
+    expect(workspace.openBook()).toEqual({
+      mode: 'reader',
+      hasOpenBook: true,
+      surface: 'reader',
+    });
+  });
+
   it('toggleMode preserves the open-book flag', () => {
     const workspace = createWorkspaceMode();
     workspace.enterReader();
