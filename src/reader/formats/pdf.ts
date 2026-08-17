@@ -24,6 +24,7 @@ import {
   nearestVisibleSlot,
   rafFrameScheduler,
 } from '../../ui/reading-layout.js';
+import type { RandomAccessSource } from '../sources/types.js';
 
 /** 缩放档位（与字号缩放独立，PDF 像素级）。 */
 export const PDF_SCALE_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -222,7 +223,7 @@ export function readingFontScale(): number {
  * 真实 canvas/滚动渲染留手工验证（无 jsdom/pdf 样本的 node 测试）。
  */
 export async function renderPdfInto(
-  bytes: Uint8Array,
+  input: Uint8Array | RandomAccessSource,
   container: HTMLElement,
   signal?: AbortSignal,
 ): Promise<PdfRenderHandle> {
@@ -232,10 +233,51 @@ export async function renderPdfInto(
   throwIfReaderLoadCancelled(signal);
   pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
 
-  // 字节来自 raw IPC 专属拷贝，无复用方，直接移交 pdfjs，避免整本 PDF 防御拷贝。
-  const loadingTask = pdfjs.getDocument({ data: bytes });
+  const randomSource =
+    typeof (input as RandomAccessSource).readRange === 'function'
+      ? (input as RandomAccessSource)
+      : null;
+  let rangeFailure: unknown = null;
+  let rangeController: AbortController | null = null;
+  let loadingTask: ReturnType<typeof pdfjs.getDocument>;
+  if (randomSource === null) {
+    // 字节来自 raw IPC 专属拷贝，无复用方，直接移交 pdfjs，避免整本 PDF 防御拷贝。
+    loadingTask = pdfjs.getDocument({ data: input as Uint8Array });
+  } else {
+    rangeController = new AbortController();
+    const controller = rangeController;
+    class SourceRangeTransport extends pdfjs.PDFDataRangeTransport {
+      override requestDataRange(begin: number, end: number): void {
+        void randomSource!
+          .readRange(begin, end - begin, controller.signal)
+          .then((chunk) => {
+            if (!controller.signal.aborted) {
+              this.onDataRange(begin, chunk);
+            }
+          })
+          .catch((error: unknown) => {
+            if (!controller.signal.aborted) {
+              rangeFailure = error;
+              controller.abort();
+              void loadingTask.destroy();
+            }
+          });
+      }
+
+      override abort(): void {
+        controller.abort();
+      }
+    }
+    loadingTask = pdfjs.getDocument({
+      range: new SourceRangeTransport(randomSource.size, null),
+      rangeChunkSize: 256 * 1024,
+      disableStream: true,
+      disableAutoFetch: true,
+    });
+  }
   let doc: Awaited<typeof loadingTask.promise>;
   const cancelInitialLoad = (): void => {
+    rangeController?.abort();
     void loadingTask.destroy();
   };
   try {
@@ -243,8 +285,12 @@ export async function renderPdfInto(
     doc = await loadingTask.promise;
     throwIfReaderLoadCancelled(signal);
   } catch (error) {
+    await randomSource?.close().catch(() => undefined);
     if (isReaderLoadCancelled(error, signal)) {
       throw new ReaderLoadCancelledError();
+    }
+    if (rangeFailure !== null) {
+      throw rangeFailure;
     }
     throw new ParseError('PDF 文件损坏或无法解析');
   } finally {
@@ -254,6 +300,7 @@ export async function renderPdfInto(
     enforcePageCount('pdf', doc.numPages);
   } catch (error) {
     await loadingTask.destroy().catch(() => undefined);
+    await randomSource?.close().catch(() => undefined);
     throw error;
   }
   const controller = createPdfPageController(doc.numPages);
@@ -295,10 +342,12 @@ export async function renderPdfInto(
 
   const onAbort = (): void => {
     renderGeneration += 1;
+    rangeController?.abort();
     cancelRenderTasks();
     cancelTextLayers();
     observer?.disconnect();
     void loadingTask.destroy();
+    void randomSource?.close().catch(() => undefined);
   };
   signal?.addEventListener('abort', onAbort, { once: true });
   throwIfReaderLoadCancelled(signal);
@@ -657,7 +706,12 @@ export async function renderPdfInto(
       scroller.removeEventListener('scroll', onScrollEvent);
       scrollCoordinator?.cancel();
       observer?.disconnect();
-      await loadingTask.destroy();
+      try {
+        await loadingTask.destroy();
+      } finally {
+        rangeController?.abort();
+        await randomSource?.close().catch(() => undefined);
+      }
     },
   };
 }

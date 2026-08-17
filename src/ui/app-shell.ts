@@ -37,6 +37,8 @@ export interface AppShellActions {
   // 文件
   onNew(): void;
   onOpen(): void;
+  /** Open or close the unified OPDS/local library surface. */
+  onToggleLibrary?(): void;
   /** R12：列出最近打开文件路径（MRU 序）。 */
   listRecents(): Promise<string[]>;
   /** R12：打开某个最近文件；返回是否成功打开（false=文件缺失等）。 */
@@ -431,6 +433,11 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem('file-new', () => t('file.new'), actions.onNew, sc(actions, 'Ctrl+N')),
         menuItem('file-open', () => t('file.open'), actions.onOpen, sc(actions, 'Ctrl+O')),
+        menuItem(
+          'file-library',
+          () => (actions.getLocale() === 'en' ? 'Library' : '书库'),
+          () => actions.onToggleLibrary?.(),
+        ),
         // R12：VS Code 式「最近打开」子菜单——悬停展开列表（打开时现取，
         // 读取失败按空列表处理），不再弹模态层。
         {

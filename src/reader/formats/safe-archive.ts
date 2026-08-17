@@ -8,6 +8,17 @@
 import type { FileEntry } from '@zip.js/zip.js';
 
 import { ParseError, ReaderLimitError } from './types.js';
+import type {
+  ArchiveEntryMetadata as CommonArchiveEntryMetadata,
+  ArchiveProvider,
+  RandomAccessSource,
+} from '../sources/types.js';
+import { readerIdentityKey } from '../sources/types.js';
+import { createMemorySource } from '../sources/memory-source.js';
+import type {
+  ArchivePasswordProvider,
+  NativeArchiveInvoker,
+} from '../sources/native-archive.js';
 import {
   isReaderLoadCancelled,
   ReaderLoadCancelledError,
@@ -28,7 +39,7 @@ export const READER_ARCHIVE_LIMITS: Readonly<ArchiveLimits> = {
   maxCompressionRatio: 200,
 };
 
-export interface ArchiveEntryMetadata {
+export interface ArchiveEntryMetadata extends CommonArchiveEntryMetadata {
   directory: boolean;
   compressedSize: number;
   uncompressedSize: number;
@@ -95,32 +106,73 @@ export function validateArchiveMetadata(
   }
 }
 
-export interface SafeArchiveEntry {
+export interface SafeArchiveEntry extends ArchiveEntryMetadata {
+  readonly id: string;
   readonly filename: string;
-  readonly compressedSize: number;
-  readonly uncompressedSize: number;
   readText(signal?: AbortSignal): Promise<string>;
   readBytes(signal?: AbortSignal): Promise<Uint8Array>;
 }
 
-export interface SafeArchive {
+export interface SafeArchive extends ArchiveProvider {
   readonly entries: readonly SafeArchiveEntry[];
   file(filename: string): SafeArchiveEntry | null;
-  close(): Promise<void>;
+}
+
+export type ArchiveInput = Uint8Array | RandomAccessSource;
+
+export interface SafeArchiveOptions {
+  readonly identity?: string;
+  readonly depth?: number;
+  readonly parentUncompressedBytes?: number;
+  readonly requestPassword?: ArchivePasswordProvider;
+  readonly nativeInvoker?: NativeArchiveInvoker;
+}
+
+function isRandomAccessSource(input: ArchiveInput): input is RandomAccessSource {
+  return typeof (input as RandomAccessSource).readRange === 'function';
 }
 
 /** Open and validate an archive without decompressing its entries. */
 export async function openSafeArchive(
-  bytes: Uint8Array,
+  input: ArchiveInput,
   formatName: 'EPUB' | 'CBZ',
   signal?: AbortSignal,
+  options: SafeArchiveOptions = {},
 ): Promise<SafeArchive> {
   throwIfReaderLoadCancelled(signal);
   const zip = await import('@zip.js/zip.js');
   throwIfReaderLoadCancelled(signal);
-  const reader = new zip.ZipReader(new zip.Uint8ArrayReader(bytes));
+  const source = isRandomAccessSource(input) ? input : createMemorySource(input);
+  /**
+   * zip.js asks its Reader for central-directory slices and entry headers. The
+   * adapter keeps those reads on the backend-owned sparse cache instead of
+   * materializing the complete archive in the WebView.
+   */
+  class SourceReader extends zip.Reader<RandomAccessSource> {
+    constructor(private readonly randomSource: RandomAccessSource) {
+      super(randomSource);
+      this.size = randomSource.size;
+    }
+
+    override async init(): Promise<void> {
+      await super.init?.();
+    }
+
+    override readUint8Array(index: number, length: number): Promise<Uint8Array> {
+      return this.randomSource.readRange(index, length, signal);
+    }
+  }
+  const reader = new zip.ZipReader(new SourceReader(source));
   const files: FileEntry[] = [];
   const budget = new ArchiveBudgetTracker(READER_ARCHIVE_LIMITS);
+  const depth = options.depth ?? 0;
+  const parentUncompressedBytes = options.parentUncompressedBytes ?? 0;
+  const identity = options.identity ?? readerIdentityKey(source.identity);
+  if (depth > 3) {
+    await reader.close().catch(() => undefined);
+    await source.close().catch(() => undefined);
+    throw new ParseError('ARCHIVE_NESTING_LIMIT');
+  }
   try {
     for await (const entry of reader.getEntriesGenerator()) {
       throwIfReaderLoadCancelled(signal);
@@ -131,6 +183,7 @@ export async function openSafeArchive(
     }
   } catch (error) {
     await reader.close().catch(() => undefined);
+    await source.close().catch(() => undefined);
     if (isReaderLoadCancelled(error, signal)) {
       throw new ReaderLoadCancelledError();
     }
@@ -139,9 +192,24 @@ export async function openSafeArchive(
     }
     throw new ParseError(`${formatName} 文件损坏或不是有效的 zip 容器`);
   }
+  const cumulativeUncompressedBytes = files.reduce(
+    (total, entry) => total + entry.uncompressedSize,
+    parentUncompressedBytes,
+  );
+  if (cumulativeUncompressedBytes > READER_ARCHIVE_LIMITS.maxTotalUncompressedBytes) {
+    await reader.close().catch(() => undefined);
+    await source.close().catch(() => undefined);
+    throw new ReaderLimitError(
+      'archiveTotalBytes',
+      cumulativeUncompressedBytes,
+      READER_ARCHIVE_LIMITS.maxTotalUncompressedBytes,
+    );
+  }
 
   const entries: SafeArchiveEntry[] = files.map((entry) => ({
+    id: entry.filename,
     filename: entry.filename,
+    directory: false,
     compressedSize: entry.compressedSize,
     uncompressedSize: entry.uncompressedSize,
     readText: (entrySignal) => entry.getData(new zip.TextWriter(), { signal: entrySignal }),
@@ -149,10 +217,82 @@ export async function openSafeArchive(
       entry.getData(new zip.Uint8ArrayWriter(), { signal: entrySignal }),
   }));
   const byName = new Map(entries.map((entry) => [entry.filename, entry]));
+  const children = new Set<ArchiveProvider>();
+  let closed = false;
 
   return {
     entries,
+    accessMode: 'random',
+    identity,
+    depth,
+    cumulativeUncompressedBytes,
     file: (filename) => byName.get(filename) ?? null,
-    close: () => reader.close(),
+    readEntry: async (entryId, entrySignal) => {
+      const entry = byName.get(entryId);
+      if (entry === undefined) {
+        throw new ParseError(`归档条目不存在：${entryId}`);
+      }
+      return entry.readBytes(entrySignal);
+    },
+    openNested: async (entryId, entrySignal) => {
+      if (closed) {
+        throw new ParseError('归档会话已关闭');
+      }
+      const entry = byName.get(entryId);
+      if (entry === undefined) {
+        throw new ParseError(`归档条目不存在：${entryId}`);
+      }
+      const nextDepth = depth + 1;
+      if (nextDepth > 3) {
+        throw new ParseError('ARCHIVE_NESTING_LIMIT');
+      }
+      const bytes = await entry.readBytes(entrySignal);
+      throwIfReaderLoadCancelled(entrySignal);
+      let child: ArchiveProvider;
+      if (
+        bytes.byteLength >= 4 &&
+        bytes[0] === 0x50 &&
+        bytes[1] === 0x4b &&
+        (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07)
+      ) {
+        child = await openSafeArchive(bytes, 'CBZ', entrySignal, {
+          ...options,
+          identity: `${identity}!${entryId}`,
+          depth: nextDepth,
+          parentUncompressedBytes: cumulativeUncompressedBytes,
+        });
+      } else {
+        const { openNativeNestedPayload } = await import('../sources/native-archive.js');
+        child = await openNativeNestedPayload(
+          bytes,
+          {
+            parentIdentity: identity,
+            entryId,
+            displayName: entry.filename,
+            depth: nextDepth,
+            parentUncompressedBytes: cumulativeUncompressedBytes,
+          },
+          {
+            signal: entrySignal,
+            invoker: options.nativeInvoker,
+            requestPassword: options.requestPassword,
+          },
+        );
+      }
+      if (closed) {
+        await child.close().catch(() => undefined);
+        throw new ParseError('归档会话已关闭');
+      }
+      children.add(child);
+      return child;
+    },
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      await Promise.allSettled([...children].map((child) => child.close()));
+      children.clear();
+      await reader.close();
+      await source.close();
+    },
   };
 }

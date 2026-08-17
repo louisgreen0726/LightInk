@@ -32,11 +32,15 @@ describe('planDroppedFiles', () => {
       'd.azw3',
       'e.fb2',
       'f.cbz',
-      'g.txt',
-      'h.PDF',
-      'i.EPUB',
+      'g.cbr',
+      'h.cb7',
+      'i.rar',
+      'j.7z',
+      'k.txt',
+      'l.PDF',
+      'm.EPUB',
     ]);
-    expect(plan.reader).toHaveLength(8);
+    expect(plan.reader).toHaveLength(12);
     expect(plan.unsupported).toEqual(['d.azw3']);
   });
 

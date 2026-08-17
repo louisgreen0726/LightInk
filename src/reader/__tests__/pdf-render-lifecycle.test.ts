@@ -41,10 +41,27 @@ class MockTextLayer {
   }
 }
 
+class MockPDFDataRangeTransport {
+  readonly received: Array<{ begin: number; chunk: Uint8Array | null }> = [];
+
+  constructor(
+    readonly length: number,
+    readonly initialData: Uint8Array | null,
+  ) {}
+
+  onDataRange(begin: number, chunk: Uint8Array | null): void {
+    this.received.push({ begin, chunk });
+  }
+
+  requestDataRange(_begin: number, _end: number): void {}
+  abort(): void {}
+}
+
 vi.mock('pdfjs-dist', () => ({
   GlobalWorkerOptions: pdfRuntime.workerOptions,
   getDocument: pdfRuntime.getDocument,
   TextLayer: MockTextLayer,
+  PDFDataRangeTransport: MockPDFDataRangeTransport,
 }));
 
 vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: 'mock-worker.js' }));
@@ -190,6 +207,39 @@ async function waitForTask(tasks: readonly ControlledRenderTask[], count: number
 }
 
 describe('PDF render lifecycle', () => {
+  it('uses PDF.js range transport for a random-access source', async () => {
+    mockPdf();
+    const bytes = new Uint8Array(1024).map((_value, index) => index % 251);
+    const source = {
+      size: bytes.length,
+      identity: { id: 'remote-pdf' },
+      readRange: vi.fn(async (offset: number, length: number) =>
+        bytes.slice(offset, offset + length),
+      ),
+      close: vi.fn(async () => undefined),
+    };
+    const container = document.createElement('div');
+    const handle = await renderPdfInto(source, container);
+
+    const options = pdfRuntime.getDocument.mock.calls[0]?.[0] as {
+      data?: Uint8Array;
+      range: MockPDFDataRangeTransport;
+      disableStream: boolean;
+      disableAutoFetch: boolean;
+    };
+    expect(options.data).toBeUndefined();
+    expect(options.disableStream).toBe(true);
+    expect(options.disableAutoFetch).toBe(true);
+    options.range.requestDataRange(128, 384);
+    await vi.waitFor(() => expect(source.readRange).toHaveBeenCalledWith(128, 256, expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(options.range.received).toEqual([
+      { begin: 128, chunk: bytes.slice(128, 384) },
+    ]));
+
+    await handle.destroy();
+    expect(source.close).toHaveBeenCalledTimes(1);
+  });
+
   it('cancels the previous render when zoom requests overlap', async () => {
     const runtime = mockPdf();
     const container = document.createElement('div');

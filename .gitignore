@@ -10,4 +10,9 @@ src-tauri/gen
 
 # Python cache (scripts/ perf tooling)
 __pycache__/
-docs/
+
+# Local workflow notes stay untracked; product requirements are versioned.
+docs/*
+!docs/requirements/
+docs/requirements/*
+!docs/requirements/opds-streaming-archives.md

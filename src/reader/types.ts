@@ -1,7 +1,7 @@
 /**
  * `reader` — 只读阅读标签的实例契约（ebook-reader T1）。
  *
- * reader 标签（PDF/EPUB/MOBI/FB2/CBZ/TXT）在 TabManager 中以
+ * reader 标签（PDF/EPUB/MOBI/FB2/CBZ/CBR/CB7/RAR/7z/TXT）在 TabManager 中以
  * `kind: 'reader'` 与 markdown 编辑标签区分：不挂 Milkdown 编辑器，
  * 永不进入 dirty / autosave / 崩溃快照 / 外部变更检测等可写路径
  * （见 tab-manager 各方法的 kind 守卫）。
@@ -11,6 +11,8 @@
  */
 
 import type { OutlineItem } from '../outline/outline-model.js';
+import type { ComicMetadata } from './comic-model.js';
+import type { ReaderTarget } from './sources/types.js';
 
 export type ReaderPhase =
   | 'empty'
@@ -33,6 +35,8 @@ export interface ReaderState {
   /** Renderer-owned scale. Application-wide reading scale is applied separately. */
   readonly scale: number;
   readonly locationKind: ReaderLocationKind;
+  /** Present while a comic archive is active. */
+  readonly comicMetadata?: ComicMetadata;
 }
 
 export type ReaderStateListener = (state: ReaderState) => void;
@@ -51,7 +55,7 @@ export interface ReaderInstance {
    * 读取并解析文件，把章节渲染进阅读视图（T4 接入流式格式）。
    * 解析失败（DRM、损坏、不支持）reject，由调用方负责 i18n 错误提示。
    */
-  load(filePath: string, options?: ReaderLoadOptions): Promise<void>;
+  load(target: string | ReaderTarget, options?: ReaderLoadOptions): Promise<void>;
   /**
    * 销毁阅读视图：移除 DOM、清理监听与渲染资源。closeTab 关闭 reader
    * 标签时调用；失败由调用方上报，不阻断关闭流程。

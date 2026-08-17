@@ -1,119 +1,526 @@
 /**
- * `cbz` — Comic Book ZIP 解析（ebook-reader T5）。
+ * Comic archive rendering shared by CBZ, CBR, CB7, and nested archives.
  *
- * CBZ 是图片 zip：按自然序（page2 < page10）取出图片条目，并仅为视口附近页面
- * 解压图片和创建 object URL。离开缓存窗口的页面会立即释放 URL。
+ * Archive entries stay behind ArchiveProvider. Only pages selected by the
+ * decoded-byte budget are materialized in the WebView.
  */
 
 import { ParseError } from './types.js';
-import { openSafeArchive } from './safe-archive.js';
+import { openSafeArchive, type ArchiveInput } from './safe-archive.js';
+import type {
+  ArchiveEntryMetadata,
+  ArchiveProvider,
+  ArchiveReadProgress,
+} from '../sources/types.js';
+import type { ArchivePasswordProvider } from '../sources/native-archive.js';
 import { enforcePageCount } from './page-limits.js';
-import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
+import { isReaderLoadCancelled, throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { extOfPath } from '../../file/path-ext.js';
 import {
   createCoalescedScrollHandler,
   nearestVisibleSlot,
   rafFrameScheduler,
 } from '../../ui/reading-layout.js';
+import {
+  comicImageMimeType,
+  compareComicPaths,
+  isComicImagePath,
+  isIgnoredComicPath,
+  orderComicPages,
+  parseComicInfo,
+  selectComicCacheWindow,
+  type ComicMetadata,
+} from '../comic-model.js';
+import {
+  advanceComicPage,
+  comicSpreadStart,
+  comicVisiblePages,
+  loadComicPreferences,
+  saveComicPreferences,
+  type ComicPreferenceStorage,
+  type ComicPreferences,
+} from '../comic-preferences.js';
 
-const CBZ_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
-const CBZ_CACHE_RADIUS = 2;
+const COMIC_ARCHIVE_EXTS = new Set(['zip', 'cbz', 'rar', 'cbr', '7z', 'cb7']);
+const DEFAULT_COMIC_CACHE_BUDGET = 96 * 1024 * 1024;
+const MAX_COMIC_INFO_BYTES = 1024 * 1024;
 
-/** 把字符串拆为「非数字段 / 数字段」序列，供自然序比较。 */
-function splitNatural(s: string): Array<string | number> {
-  const out: Array<string | number> = [];
-  s.replace(/(\d+)|(\D+)/g, (_m, d, nd) => {
-    out.push(d ? Number.parseInt(d, 10) : nd);
-    return '';
-  });
-  return out;
-}
+export const naturalCompare = compareComicPaths;
 
-/** 自然序比较：page2 < page10。 */
-export function naturalCompare(a: string, b: string): number {
-  const ax = splitNatural(a);
-  const bx = splitNatural(b);
-  const n = Math.max(ax.length, bx.length);
-  for (let i = 0; i < n; i++) {
-    const an = ax[i];
-    const bn = bx[i];
-    if (an === undefined) {
-      return -1;
-    }
-    if (bn === undefined) {
-      return 1;
-    }
-    if (typeof an === 'number' && typeof bn === 'number') {
-      if (an !== bn) {
-        return an < bn ? -1 : 1;
-      }
-    } else {
-      const c = String(an).localeCompare(String(bn));
-      if (c !== 0) {
-        return c < 0 ? -1 : 1;
-      }
-    }
-  }
-  return 0;
-}
-
-/**
- * 从 zip 条目名中筛出图片并按自然序排序。过滤目录项（以 `/` 结尾）与非图片。
- * 纯逻辑，headless 可测。
- */
+/** Filter non-page entries and return a stable path-segment natural order. */
 export function listImageEntries(names: readonly string[]): string[] {
-  const images = names.filter((n) => !n.endsWith('/') && CBZ_IMAGE_EXTS.has(extOfPath(n)));
-  return images.sort(naturalCompare);
+  return names.filter(isComicImagePath).sort(compareComicPaths);
+}
+
+export interface ComicToolbarLabels {
+  readonly previous: string;
+  readonly next: string;
+  readonly vertical: string;
+  readonly paged: string;
+  readonly leftToRight: string;
+  readonly rightToLeft: string;
+  readonly singlePage: string;
+  readonly doublePage: string;
+  readonly fitWidth: string;
+  readonly imageDecodeFailed: string;
+  readonly nestedArchive: string;
+  readonly nestedArchiveFailed: string;
+  readonly openingNestedArchive: string;
+  readonly retry: string;
 }
 
 export interface CbzRenderHandle {
   readonly totalPages: number;
   readonly currentPage: number;
+  readonly metadata: ComicMetadata;
+  readonly preferences: ComicPreferences;
   scrollToPage(page: number): void;
+  nextPage(): boolean;
+  previousPage(): boolean;
+  setPreferences(patch: Partial<ComicPreferences>): void;
   destroy(): Promise<void>;
 }
 
-/** Build stable page slots and materialize only a small window of image data. */
+export type ComicArchiveInput = ArchiveInput | ArchiveProvider;
+
+export interface CbzRenderOptions {
+  readonly requestPassword?: ArchivePasswordProvider;
+  readonly onArchiveProgress?: (progress: ArchiveReadProgress) => void;
+  readonly onPageChange?: () => void;
+  readonly onPageListChange?: (totalPages: number, metadata: ComicMetadata) => void;
+  readonly cacheBudgetBytes?: number;
+  readonly preferenceStorage?: ComicPreferenceStorage | null;
+  readonly labels?: Partial<ComicToolbarLabels>;
+}
+
+function isArchiveProvider(source: ComicArchiveInput): source is ArchiveProvider {
+  return typeof (source as ArchiveProvider).readEntry === 'function';
+}
+
+type ComicArchiveEntry = ArchiveEntryMetadata & {
+  readonly id: string;
+  readonly filename: string;
+};
+
+interface ComicPageEntryBase {
+  readonly provider: ArchiveProvider;
+  readonly entry: ComicArchiveEntry;
+  readonly virtualPath: string;
+}
+
+interface ComicImagePageEntry extends ComicPageEntryBase {
+  readonly kind: 'image';
+}
+
+interface ComicNestedArchiveEntry extends ComicPageEntryBase {
+  readonly kind: 'archive';
+}
+
+type ComicPageEntry = ComicImagePageEntry | ComicNestedArchiveEntry;
+
+interface CollectedComicPages {
+  readonly pages: ComicPageEntry[];
+  readonly metadata: ComicMetadata | null;
+  readonly coverEntryId?: string;
+}
+
+function isFileEntry(entry: ArchiveEntryMetadata): entry is ComicArchiveEntry {
+  return !entry.directory && entry.id !== undefined && entry.filename !== undefined;
+}
+
+function isComicInfoPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase() === 'comicinfo.xml';
+}
+
+async function readComicInfo(
+  provider: ArchiveProvider,
+  entries: readonly ComicArchiveEntry[],
+  signal?: AbortSignal,
+): Promise<ComicMetadata | null> {
+  const candidate = entries
+    .filter(
+      (entry) =>
+        isComicInfoPath(entry.filename) && entry.uncompressedSize <= MAX_COMIC_INFO_BYTES,
+    )
+    .sort((left, right) => compareComicPaths(left.filename, right.filename))[0];
+  if (candidate === undefined) return null;
+  const firstImageIndex = entries.findIndex((entry) => isComicImagePath(entry.filename));
+  const metadataIndex = entries.indexOf(candidate);
+  if (
+    provider.accessMode === 'sequential' &&
+    firstImageIndex >= 0 &&
+    metadataIndex > firstImageIndex
+  ) {
+    // Reading metadata at the tail of a solid archive would decode the whole
+    // stream before page one. Preserve progressive display and use natural order.
+    return null;
+  }
+  try {
+    const bytes = await provider.readEntry(candidate.id, signal);
+    throwIfReaderLoadCancelled(signal);
+    if (bytes.byteLength > MAX_COMIC_INFO_BYTES) return null;
+    return parseComicInfo(new TextDecoder('utf-8', { fatal: false }).decode(bytes));
+  } catch (error) {
+    if (isReaderLoadCancelled(error, signal)) throw error;
+    return null;
+  }
+}
+
+async function collectComicPages(
+  provider: ArchiveProvider,
+  signal?: AbortSignal,
+  prefix = '',
+): Promise<CollectedComicPages> {
+  throwIfReaderLoadCancelled(signal);
+  const entries = provider.entries.filter(isFileEntry);
+  const metadata = await readComicInfo(provider, entries, signal);
+  const archiveImageOrder = entries.filter((entry) => isComicImagePath(entry.filename));
+  const orderedImages = orderComicPages(archiveImageOrder, metadata);
+  const coverEntryId =
+    metadata?.coverPage === undefined
+      ? undefined
+      : archiveImageOrder[metadata.coverPage]?.id;
+  let orderedImageIndex = 0;
+  const nodes = entries
+    .filter((entry) => {
+      if (isComicImagePath(entry.filename)) return true;
+      return (
+        !isIgnoredComicPath(entry.filename) &&
+        COMIC_ARCHIVE_EXTS.has(extOfPath(entry.filename)) &&
+        provider.openNested !== undefined
+      );
+    })
+    .sort((left, right) => compareComicPaths(left.filename, right.filename));
+  const pages: ComicPageEntry[] = [];
+  for (const node of nodes) {
+    throwIfReaderLoadCancelled(signal);
+    if (isComicImagePath(node.filename)) {
+      const entry = orderedImages[orderedImageIndex++] ?? node;
+      const virtualPath = prefix === '' ? entry.filename : `${prefix}!/${entry.filename}`;
+      pages.push({ kind: 'image', provider, entry, virtualPath });
+      continue;
+    }
+    const virtualPath = prefix === '' ? node.filename : `${prefix}!/${node.filename}`;
+    pages.push({ kind: 'archive', provider, entry: node, virtualPath });
+  }
+  return { pages, metadata, coverEntryId };
+}
+
+function defaultLabels(): ComicToolbarLabels {
+  const chinese =
+    typeof document !== 'undefined' && document.documentElement.lang.toLowerCase().startsWith('zh');
+  return chinese
+    ? {
+        previous: '上一页',
+        next: '下一页',
+        vertical: '竖向滚动',
+        paged: '横向翻页',
+        leftToRight: '从左到右',
+        rightToLeft: '从右到左',
+        singlePage: '单页',
+        doublePage: '双页',
+        fitWidth: '适合宽度',
+        imageDecodeFailed: '无法解码此图片',
+        nestedArchive: '内层归档',
+        nestedArchiveFailed: '无法打开内层归档',
+        openingNestedArchive: '正在打开内层归档',
+        retry: '重试',
+      }
+    : {
+        previous: 'Previous page',
+        next: 'Next page',
+        vertical: 'Vertical scroll',
+        paged: 'Horizontal pages',
+        leftToRight: 'Left to right',
+        rightToLeft: 'Right to left',
+        singlePage: 'Single page',
+        doublePage: 'Double page',
+        fitWidth: 'Fit width',
+        imageDecodeFailed: 'This image could not be decoded',
+        nestedArchive: 'Nested archive',
+        nestedArchiveFailed: 'The nested archive could not be opened',
+        openingNestedArchive: 'Opening nested archive',
+        retry: 'Retry',
+      };
+}
+
+function preferenceStorage(
+  configured: ComicPreferenceStorage | null | undefined,
+): ComicPreferenceStorage | null {
+  if (configured !== undefined) return configured;
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || isReaderLoadCancelled(error, signal);
+}
+
+function toolbarButton(
+  symbol: string,
+  label: string,
+  className = '',
+): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `lightink-reader-comic-tool ${className}`.trim();
+  button.textContent = symbol;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  return button;
+}
+
+/** Build stable slots and materialize a bounded set of nearby image pages. */
 export async function renderCbzInto(
-  bytes: Uint8Array,
+  source: ComicArchiveInput,
   container: HTMLElement,
   signal?: AbortSignal,
+  options: CbzRenderOptions = {},
 ): Promise<CbzRenderHandle> {
-  const archive = await openSafeArchive(bytes, 'CBZ', signal);
+  const archive = isArchiveProvider(source)
+    ? source
+    : await openSafeArchive(source, 'CBZ', signal, {
+        requestPassword: options.requestPassword,
+      });
+  const openedProviders = new Set<ArchiveProvider>([archive]);
+  const unsubscribeProgress: Array<() => void> = [];
   let initialized = false;
   try {
-    const images = listImageEntries(archive.entries.map((entry) => entry.filename));
-    if (images.length === 0) {
-      throw new ParseError('CBZ 未找到图片页');
+    const collected = await collectComicPages(archive, signal);
+    const images = [...collected.pages];
+    if (images.length === 0) throw new ParseError('CBZ 未找到图片页');
+    if (options.onArchiveProgress !== undefined) {
+      for (const provider of openedProviders) {
+        const unsubscribe = provider.subscribeProgress?.(options.onArchiveProgress);
+        if (unsubscribe !== undefined) unsubscribeProgress.push(unsubscribe);
+      }
     }
     enforcePageCount('cbz', images.length);
+    const coverPage = Math.max(
+      0,
+      collected.coverEntryId === undefined
+        ? 0
+        : images.findIndex(
+            (page) => page.provider === archive && page.entry.id === collected.coverEntryId,
+          ),
+    );
+    let metadata: ComicMetadata = Object.freeze({
+      ...(collected.metadata ?? { pages: [] }),
+      pageCount: images.length,
+      coverPage,
+      pages: collected.metadata?.pages ?? [],
+    });
+    const labels = { ...defaultLabels(), ...options.labels };
+    const storage = preferenceStorage(options.preferenceStorage);
+    let preferences = loadComicPreferences(storage, metadata.readingDirection ?? 'ltr');
+    const cacheBudget = Math.max(1, options.cacheBudgetBytes ?? DEFAULT_COMIC_CACHE_BUDGET);
+
     container.replaceChildren();
-    const slots = images.map((_name, index) => {
+    container.dataset.comicReader = 'true';
+    const toolbar = document.createElement('div');
+    toolbar.className = 'lightink-reader-comic-toolbar';
+    toolbar.setAttribute('role', 'toolbar');
+    toolbar.setAttribute('aria-label', metadata.title ?? 'Comic reader');
+    const pagesRoot = document.createElement('div');
+    pagesRoot.className = 'lightink-reader-comic-pages';
+    container.append(toolbar, pagesRoot);
+
+    const previousButton = toolbarButton('\u2039', labels.previous, 'lightink-reader-comic-nav');
+    const nextButton = toolbarButton('\u203a', labels.next, 'lightink-reader-comic-nav');
+    const verticalButton = toolbarButton('\u2195', labels.vertical);
+    const pagedButton = toolbarButton('\u25a3', labels.paged);
+    const ltrButton = toolbarButton('\u2192', labels.leftToRight);
+    const rtlButton = toolbarButton('\u2190', labels.rightToLeft);
+    const singleButton = toolbarButton('1', labels.singlePage);
+    const doubleButton = toolbarButton('2', labels.doublePage);
+    const fitButton = toolbarButton('\u2194', labels.fitWidth);
+    const group = (...buttons: HTMLButtonElement[]): HTMLDivElement => {
+      const element = document.createElement('div');
+      element.className = 'lightink-reader-comic-tool-group';
+      element.setAttribute('role', 'group');
+      element.append(...buttons);
+      return element;
+    };
+    toolbar.append(
+      group(previousButton, nextButton),
+      group(verticalButton, pagedButton),
+      group(ltrButton, rtlButton),
+      group(singleButton, doubleButton),
+      group(fitButton),
+    );
+
+    const createSlot = (page: ComicPageEntry, index: number): HTMLDivElement => {
       const slot = document.createElement('div');
       slot.className = 'lightink-reader-page-slot lightink-reader-cbz-slot';
       slot.dataset.pageIndex = String(index);
+      slot.dataset.pagePath = page.virtualPath;
       slot.setAttribute('aria-label', `${index + 1} / ${images.length}`);
-      container.appendChild(slot);
+      if (page.kind === 'archive') {
+        slot.dataset.nestedArchive = 'true';
+        const placeholder = document.createElement('div');
+        placeholder.className = 'lightink-reader-nested-archive';
+        placeholder.textContent = `${labels.nestedArchive}: ${page.entry.filename}`;
+        slot.appendChild(placeholder);
+      }
+      return slot;
+    };
+    const slots = images.map((page, index) => {
+      const slot = createSlot(page, index);
+      pagesRoot.appendChild(slot);
       return slot;
     });
 
-    const materialized = new Map<number, { image: HTMLImageElement; url: string }>();
-    const pending = new Map<number, Promise<void>>();
+    const materialized = new Map<
+      number,
+      { image: HTMLImageElement; url: string; decodedBytes: number }
+    >();
+    const pending = new Map<number, { promise: Promise<void>; controller: AbortController }>();
+    const failed = new Set<number>();
+    const sequentialQueues = new Map<ArchiveProvider, Promise<void>>();
     const visible = new Set<number>();
-    let wantedPages = new Set<number>([0]);
+    const estimatedBytes = images.map((page) => Math.max(1, page.entry.uncompressedSize));
+    const naturalWidths = new Map<number, number>();
+    let wantedPages = new Set<number>();
     let currentPage = 1;
     let destroyed = false;
     let destruction: Promise<void> | null = null;
     let observer: IntersectionObserver | null = null;
 
+    const updateToolbar = (): void => {
+      verticalButton.setAttribute('aria-pressed', String(preferences.mode === 'vertical'));
+      pagedButton.setAttribute('aria-pressed', String(preferences.mode === 'paged'));
+      ltrButton.setAttribute('aria-pressed', String(preferences.direction === 'ltr'));
+      rtlButton.setAttribute('aria-pressed', String(preferences.direction === 'rtl'));
+      singleButton.setAttribute('aria-pressed', String(preferences.spread === 'single'));
+      doubleButton.setAttribute('aria-pressed', String(preferences.spread === 'double'));
+      fitButton.setAttribute('aria-pressed', String(preferences.fitWidth));
+      previousButton.disabled = currentPage <= 1;
+      nextButton.disabled =
+        advanceComicPage(currentPage - 1, images.length, 1, preferences) === currentPage - 1;
+    };
+
+    const applySlotWidth = (index: number): void => {
+      const width = naturalWidths.get(index);
+      if (!preferences.fitWidth && width !== undefined) {
+        slots[index]!.style.setProperty('--lightink-comic-natural-width', `${width}px`);
+      } else {
+        slots[index]!.style.removeProperty('--lightink-comic-natural-width');
+      }
+    };
+
     const releasePage = (index: number): void => {
       const page = materialized.get(index);
-      if (page === undefined) {
-        return;
-      }
+      if (page === undefined) return;
       materialized.delete(index);
       page.image.remove();
       URL.revokeObjectURL(page.url);
+    };
+
+    const showPageError = (index: number): void => {
+      failed.add(index);
+      const nestedArchive = images[index]?.kind === 'archive';
+      const error = document.createElement('div');
+      error.className = 'lightink-reader-comic-error';
+      error.dataset.errorCode = nestedArchive
+        ? 'COMIC_NESTED_ARCHIVE_FAILED'
+        : 'COMIC_IMAGE_DECODE_FAILED';
+      error.setAttribute('role', 'alert');
+      const text = document.createElement('span');
+      text.textContent = nestedArchive ? labels.nestedArchiveFailed : labels.imageDecodeFailed;
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = labels.retry;
+      retry.addEventListener('click', () => {
+        failed.delete(index);
+        slots[index]!.replaceChildren();
+        void loadPage(index).catch((loadError: unknown) => {
+          if (!isAbortError(loadError, signal) && !destroyed) showPageError(index);
+        });
+      });
+      error.append(text, retry);
+      slots[index]!.replaceChildren(error);
+    };
+
+    const updatePageList = (
+      index: number,
+      placeholder: ComicNestedArchiveEntry,
+      nestedPages: readonly ComicPageEntry[],
+    ): void => {
+      enforcePageCount('cbz', images.length - 1 + nestedPages.length);
+      const currentAnchor = images[currentPage - 1];
+      const oldSlot = slots[index]!;
+      const reference = oldSlot.nextSibling;
+      observer?.unobserve(oldSlot);
+      oldSlot.remove();
+      const nextSlots = nestedPages.map((page, offset) => {
+        const slot = createSlot(page, index + offset);
+        pagesRoot.insertBefore(slot, reference);
+        observer?.observe(slot);
+        return slot;
+      });
+      images.splice(index, 1, ...nestedPages);
+      slots.splice(index, 1, ...nextSlots);
+      estimatedBytes.splice(
+        index,
+        1,
+        ...nestedPages.map((page) => Math.max(1, page.entry.uncompressedSize)),
+      );
+      visible.clear();
+      slots.forEach((slot, slotIndex) => {
+        slot.dataset.pageIndex = String(slotIndex);
+        slot.setAttribute('aria-label', `${slotIndex + 1} / ${images.length}`);
+      });
+      if (currentAnchor === placeholder) {
+        currentPage = index + 1;
+      } else if (currentAnchor !== undefined) {
+        const anchorIndex = images.indexOf(currentAnchor);
+        if (anchorIndex >= 0) currentPage = anchorIndex + 1;
+      }
+      const nextCoverPage = Math.max(
+        0,
+        collected.coverEntryId === undefined
+          ? 0
+          : images.findIndex(
+              (page) =>
+                page.kind === 'image' &&
+                page.provider === archive &&
+                page.entry.id === collected.coverEntryId,
+            ),
+      );
+      metadata = Object.freeze({
+        ...metadata,
+        pageCount: images.length,
+        coverPage: nextCoverPage,
+      });
+      options.onPageListChange?.(images.length, metadata);
+    };
+
+    const expandNestedArchive = async (
+      index: number,
+      page: ComicNestedArchiveEntry,
+      controller: AbortController,
+    ): Promise<void> => {
+      const child = await page.provider.openNested!(page.entry.id, controller.signal);
+      try {
+        throwIfReaderLoadCancelled(controller.signal);
+        const nested = await collectComicPages(child, controller.signal, page.virtualPath);
+        if (nested.pages.length === 0) throw new ParseError('CBZ 未找到图片页');
+        throwIfReaderLoadCancelled(controller.signal);
+        updatePageList(index, page, nested.pages);
+        openedProviders.add(child);
+        if (options.onArchiveProgress !== undefined) {
+          const unsubscribe = child.subscribeProgress?.(options.onArchiveProgress);
+          if (unsubscribe !== undefined) unsubscribeProgress.push(unsubscribe);
+        }
+      } catch (error) {
+        openedProviders.delete(child);
+        await child.close().catch(() => undefined);
+        throw error;
+      }
     };
 
     const loadPage = (index: number): Promise<void> => {
@@ -121,151 +528,298 @@ export async function renderCbzInto(
         index < 0 ||
         index >= images.length ||
         destroyed ||
-        materialized.has(index)
+        materialized.has(index) ||
+        failed.has(index)
       ) {
         return Promise.resolve();
       }
       const existing = pending.get(index);
-      if (existing !== undefined) {
-        return existing;
+      if (existing !== undefined) return existing.promise;
+      const controller = new AbortController();
+      const requestedPage = images[index]!;
+      if (requestedPage.kind === 'archive') {
+        const placeholder = slots[index]?.querySelector<HTMLElement>(
+          '.lightink-reader-nested-archive',
+        );
+        if (placeholder !== null && placeholder !== undefined) {
+          placeholder.textContent = `${labels.openingNestedArchive}: ${requestedPage.entry.filename}`;
+        }
+        const abortFromParent = (): void => controller.abort();
+        if (signal?.aborted === true) controller.abort();
+        else signal?.addEventListener('abort', abortFromParent, { once: true });
+        const operation = expandNestedArchive(index, requestedPage, controller)
+          .finally(() => {
+            signal?.removeEventListener('abort', abortFromParent);
+            pending.delete(index);
+          })
+          .then(() => {
+            if (!destroyed) applyLayout(false);
+          });
+        pending.set(index, { promise: operation, controller });
+        return operation;
       }
       const operation = (async () => {
-        throwIfReaderLoadCancelled(signal);
-        const name = images[index]!;
-        const file = archive.file(name);
-        if (file === null) {
-          return;
-        }
-        const data = await file.readBytes(signal);
-        throwIfReaderLoadCancelled(signal);
-        if (destroyed || !wantedPages.has(index)) {
-          return;
-        }
-        const ext = extOfPath(name);
-        const mime = ext === 'jpg' ? 'jpeg' : ext;
-        const imageBytes = Uint8Array.from(data);
-        const url = URL.createObjectURL(
-          new Blob([imageBytes.buffer], { type: `image/${mime}` }),
-        );
-        if (destroyed || signal?.aborted === true) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        const image = document.createElement('img');
-        image.className = 'lightink-reader-page';
-        image.alt = name;
-        image.src = url;
-        image.addEventListener(
-          'load',
-          () => {
-            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-              slots[index]!.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+        const abortFromParent = (): void => controller.abort();
+        if (signal?.aborted === true) controller.abort();
+        else signal?.addEventListener('abort', abortFromParent, { once: true });
+        try {
+          throwIfReaderLoadCancelled(controller.signal);
+          const page = images[index]!;
+          if (page.kind !== 'image') return;
+          const read = (): Promise<Uint8Array> =>
+            page.provider.readEntry(page.entry.id, controller.signal);
+          let data: Uint8Array;
+          if (page.provider.accessMode === 'sequential') {
+            const previous = sequentialQueues.get(page.provider) ?? Promise.resolve();
+            let resolveQueue = (): void => undefined;
+            const queueTail = new Promise<void>((resolve) => {
+              resolveQueue = resolve;
+            });
+            sequentialQueues.set(page.provider, queueTail);
+            try {
+              await previous.catch(() => undefined);
+              throwIfReaderLoadCancelled(controller.signal);
+              data = await read();
+            } finally {
+              resolveQueue();
+              if (sequentialQueues.get(page.provider) === queueTail) {
+                sequentialQueues.delete(page.provider);
+              }
             }
-          },
-          { once: true },
-        );
-        materialized.set(index, { image, url });
-        slots[index]!.appendChild(image);
+          } else {
+            data = await read();
+          }
+          throwIfReaderLoadCancelled(controller.signal);
+          if (destroyed || !wantedPages.has(index)) return;
+          const mime = comicImageMimeType(page.entry.filename);
+          if (mime === undefined) throw new ParseError('COMIC_IMAGE_TYPE_UNSUPPORTED');
+          const imageBytes = Uint8Array.from(data);
+          const url = URL.createObjectURL(new Blob([imageBytes.buffer], { type: mime }));
+          if (destroyed || controller.signal.aborted) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          const image = document.createElement('img');
+          image.className = 'lightink-reader-page';
+          image.alt = page.entry.filename;
+          image.addEventListener(
+            'load',
+            () => {
+              if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+              slots[index]!.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+              naturalWidths.set(index, image.naturalWidth);
+              estimatedBytes[index] = Math.max(
+                estimatedBytes[index] ?? 1,
+                image.naturalWidth * image.naturalHeight * 4,
+              );
+              const loaded = materialized.get(index);
+              if (loaded !== undefined) loaded.decodedBytes = estimatedBytes[index]!;
+              applySlotWidth(index);
+              refreshCacheWindow(currentPage - 1);
+            },
+            { once: true },
+          );
+          image.addEventListener(
+            'error',
+            () => {
+              const loaded = materialized.get(index);
+              if (loaded?.image !== image) return;
+              materialized.delete(index);
+              URL.revokeObjectURL(url);
+              showPageError(index);
+            },
+            { once: true },
+          );
+          image.src = url;
+          materialized.set(index, {
+            image,
+            url,
+            decodedBytes: estimatedBytes[index] ?? imageBytes.byteLength,
+          });
+          slots[index]!.replaceChildren(image);
+        } finally {
+          signal?.removeEventListener('abort', abortFromParent);
+        }
       })().finally(() => {
         pending.delete(index);
       });
-      pending.set(index, operation);
+      pending.set(index, { promise: operation, controller });
       return operation;
     };
 
-    const loadWindow = (center: number): void => {
-      const wanted = new Set<number>();
-      const centers = visible.size === 0 ? [center] : [...visible];
-      for (const visibleIndex of centers) {
-        for (
-          let index = Math.max(0, visibleIndex - CBZ_CACHE_RADIUS);
-          index <= Math.min(images.length - 1, visibleIndex + CBZ_CACHE_RADIUS);
-          index += 1
-        ) {
-          wanted.add(index);
-        }
-      }
+    function refreshCacheWindow(center: number): void {
+      const centers =
+        preferences.mode === 'paged'
+          ? comicVisiblePages(center, images.length, preferences)
+          : visible.size === 0
+            ? [center]
+            : [...visible];
+      const wanted = selectComicCacheWindow(estimatedBytes, centers, cacheBudget);
       for (const index of materialized.keys()) {
-        if (!wanted.has(index)) {
-          releasePage(index);
-        }
+        if (!wanted.has(index)) releasePage(index);
+      }
+      for (const [index, operation] of pending) {
+        if (!wanted.has(index)) operation.controller.abort();
       }
       wantedPages = wanted;
-      for (const index of wanted) {
-        void loadPage(index).catch((error: unknown) => {
-          if (signal?.aborted !== true && !destroyed) {
-            // eslint-disable-next-line no-console
-            console.error('[lightink/reader] CBZ page decode failed', error);
-          }
+      const firstUnresolved = images.findIndex((page) => page.kind === 'archive');
+      const furthestCenter = centers.length === 0 ? -1 : Math.max(...centers);
+      if (firstUnresolved >= 0 && firstUnresolved <= furthestCenter) {
+        wantedPages.add(firstUnresolved);
+        void loadPage(firstUnresolved).catch((error: unknown) => {
+          if (!isAbortError(error, signal) && !destroyed) showPageError(firstUnresolved);
         });
       }
+      for (const index of wanted) {
+        if (firstUnresolved >= 0 && index > firstUnresolved) continue;
+        if (images[index]?.kind === 'archive') continue;
+        void loadPage(index).catch((error: unknown) => {
+          if (!isAbortError(error, signal) && !destroyed) showPageError(index);
+        });
+      }
+    }
+
+    const applyLayout = (notify = true): void => {
+      const previousPage = currentPage;
+      const currentIndex = comicSpreadStart(currentPage - 1, images.length, preferences);
+      currentPage = currentIndex + 1;
+      container.dataset.comicMode = preferences.mode;
+      container.dataset.comicDirection = preferences.direction;
+      container.dataset.comicSpread = preferences.spread;
+      container.dataset.comicFitWidth = String(preferences.fitWidth);
+      pagesRoot.dir = preferences.direction;
+      if (preferences.mode === 'paged') {
+        const shown = new Set(comicVisiblePages(currentIndex, images.length, preferences));
+        slots.forEach((slot, index) => {
+          slot.hidden = !shown.has(index);
+        });
+        visible.clear();
+        shown.forEach((index) => visible.add(index));
+      } else {
+        slots.forEach((slot) => {
+          slot.hidden = false;
+        });
+        visible.clear();
+      }
+      slots.forEach((_slot, index) => applySlotWidth(index));
+      updateToolbar();
+      refreshCacheWindow(currentIndex);
+      if (notify && previousPage !== currentPage) options.onPageChange?.();
     };
+
+    const setPreferences = (patch: Partial<ComicPreferences>): void => {
+      preferences = {
+        mode: patch.mode === 'paged' || patch.mode === 'vertical' ? patch.mode : preferences.mode,
+        direction:
+          patch.direction === 'rtl' || patch.direction === 'ltr'
+            ? patch.direction
+            : preferences.direction,
+        spread:
+          patch.spread === 'double' || patch.spread === 'single'
+            ? patch.spread
+            : preferences.spread,
+        fitWidth: typeof patch.fitWidth === 'boolean' ? patch.fitWidth : preferences.fitWidth,
+      };
+      saveComicPreferences(storage, preferences);
+      applyLayout();
+    };
+
+    const scrollToIndex = (requestedIndex: number): boolean => {
+      const index = comicSpreadStart(requestedIndex, images.length, preferences);
+      const changed = currentPage !== index + 1;
+      currentPage = index + 1;
+      if (preferences.mode === 'paged') {
+        applyLayout(false);
+      } else {
+        visible.clear();
+        visible.add(index);
+        refreshCacheWindow(index);
+        slots[index]?.scrollIntoView({ block: 'start' });
+      }
+      updateToolbar();
+      if (changed) options.onPageChange?.();
+      return changed;
+    };
+
+    const advancePage = (direction: 1 | -1): boolean => {
+      const next = advanceComicPage(currentPage - 1, images.length, direction, preferences);
+      if (next === currentPage - 1) return false;
+      return scrollToIndex(next);
+    };
+
+    previousButton.addEventListener('click', () => advancePage(-1));
+    nextButton.addEventListener('click', () => advancePage(1));
+    verticalButton.addEventListener('click', () => setPreferences({ mode: 'vertical' }));
+    pagedButton.addEventListener('click', () => setPreferences({ mode: 'paged' }));
+    ltrButton.addEventListener('click', () => setPreferences({ direction: 'ltr' }));
+    rtlButton.addEventListener('click', () => setPreferences({ direction: 'rtl' }));
+    singleButton.addEventListener('click', () => setPreferences({ spread: 'single' }));
+    doubleButton.addEventListener('click', () => setPreferences({ spread: 'double' }));
+    fitButton.addEventListener('click', () => setPreferences({ fitWidth: !preferences.fitWidth }));
 
     const scroller =
       typeof document !== 'undefined'
         ? (document.getElementById('lightink-editor-area') ?? container)
         : container;
-
-    // 槽位判定走共享 nearestVisibleSlot；scroll 事件经 rAF 合并，帧内连发只同步一次。
     const syncCurrentPage = (): void => {
+      if (preferences.mode === 'paged') return;
       const top = scroller.getBoundingClientRect().top;
       const slotTops = slots.map((slot) => slot.getBoundingClientRect().top);
       const nearest = nearestVisibleSlot(slotTops, top);
       const closest = nearest >= 0 ? nearest : 0;
+      const changed = currentPage !== closest + 1;
       currentPage = closest + 1;
-      if (observer === null) {
-        loadWindow(closest);
-      }
+      updateToolbar();
+      if (observer === null) refreshCacheWindow(closest);
+      if (changed) options.onPageChange?.();
     };
     const scrollFrames = rafFrameScheduler();
     const scrollCoordinator =
       scrollFrames === null ? null : createCoalescedScrollHandler(syncCurrentPage, scrollFrames);
     const onScrollEvent = (): void => {
-      if (scrollCoordinator === null) {
-        syncCurrentPage();
-        return;
-      }
-      scrollCoordinator.schedule();
+      if (scrollCoordinator === null) syncCurrentPage();
+      else scrollCoordinator.schedule();
     };
     scroller.addEventListener('scroll', onScrollEvent, { passive: true });
 
     if (typeof IntersectionObserver !== 'undefined') {
       observer = new IntersectionObserver(
         (entries) => {
+          if (preferences.mode === 'paged') return;
           for (const entry of entries) {
             const index = Number((entry.target as HTMLElement).dataset.pageIndex);
-            if (entry.isIntersecting) {
-              visible.add(index);
-              currentPage = index + 1;
-            } else {
-              visible.delete(index);
-            }
+            if (entry.isIntersecting) visible.add(index);
+            else visible.delete(index);
           }
-          loadWindow(currentPage - 1);
+          if (visible.size > 0) {
+            const next = Math.min(...visible);
+            const changed = currentPage !== next + 1;
+            currentPage = next + 1;
+            updateToolbar();
+            if (changed) options.onPageChange?.();
+          }
+          refreshCacheWindow(currentPage - 1);
         },
         { root: scroller, rootMargin: '200% 0px 200% 0px' },
       );
       slots.forEach((slot) => observer?.observe(slot));
     }
 
-    // Ensure the first page is visible even before the observer's initial callback.
+    applyLayout(false);
     await loadPage(0);
-    loadWindow(0);
 
     const destroy = (): Promise<void> => {
-      if (destruction !== null) {
-        return destruction;
-      }
+      if (destruction !== null) return destruction;
       destroyed = true;
+      for (const operation of pending.values()) operation.controller.abort();
       observer?.disconnect();
       scroller.removeEventListener('scroll', onScrollEvent);
       scrollCoordinator?.cancel();
-      for (const index of [...materialized.keys()]) {
-        releasePage(index);
-      }
+      for (const index of [...materialized.keys()]) releasePage(index);
       destruction = (async () => {
-        await Promise.allSettled(pending.values());
-        await archive.close().catch(() => undefined);
+        await Promise.allSettled([...pending.values()].map((operation) => operation.promise));
+        unsubscribeProgress.splice(0).forEach((unsubscribe) => unsubscribe());
+        await Promise.allSettled([...openedProviders].reverse().map((provider) => provider.close()));
       })();
       return destruction;
     };
@@ -273,20 +827,33 @@ export async function renderCbzInto(
       void destroy();
     };
     signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      throwIfReaderLoadCancelled(signal);
+    } catch (error) {
+      signal?.removeEventListener('abort', onAbort);
+      throw error;
+    }
 
     initialized = true;
     return {
-      totalPages: images.length,
+      get totalPages() {
+        return images.length;
+      },
+      get metadata() {
+        return metadata;
+      },
       get currentPage() {
         return currentPage;
       },
-      scrollToPage(page) {
-        const index = Math.min(images.length - 1, Math.max(0, Math.floor(page) - 1));
-        currentPage = index + 1;
-        visible.clear();
-        loadWindow(index);
-        slots[index]?.scrollIntoView({ block: 'start' });
+      get preferences() {
+        return preferences;
       },
+      scrollToPage(page) {
+        scrollToIndex(Math.min(images.length - 1, Math.max(0, Math.floor(page) - 1)));
+      },
+      nextPage: () => advancePage(1),
+      previousPage: () => advancePage(-1),
+      setPreferences,
       destroy: async () => {
         signal?.removeEventListener('abort', onAbort);
         await destroy();
@@ -294,7 +861,8 @@ export async function renderCbzInto(
     };
   } finally {
     if (!initialized) {
-      await archive.close().catch(() => undefined);
+      unsubscribeProgress.splice(0).forEach((unsubscribe) => unsubscribe());
+      await Promise.allSettled([...openedProviders].reverse().map((provider) => provider.close()));
     }
   }
 }

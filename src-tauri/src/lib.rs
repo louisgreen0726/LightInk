@@ -1,12 +1,16 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 mod annotations;
+mod archive;
 mod asset;
 mod cli;
 mod export;
 mod file;
 mod identifiers;
+mod library;
+mod opds;
 mod recents;
+mod remote;
 mod snapshot;
 
 use tauri_plugin_opener::OpenerExt;
@@ -38,6 +42,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(cli::PendingFile(std::sync::Mutex::new(first_file)))
+        .manage(remote::RemoteState::default())
+        .manage(archive::ArchiveState::default())
         .invoke_handler(tauri::generate_handler![
             file::read_file,
             file::read_file_bytes,
@@ -57,6 +63,38 @@ pub fn run() {
             recents::add_recent,
             recents::remove_recent,
             recents::clear_recents,
+            library::library_list_sources,
+            library::library_upsert_source,
+            library::library_remove_source,
+            library::library_list_items,
+            library::library_list_acquisition_links,
+            library::library_upsert_item,
+            library::library_update_comic_metadata,
+            library::library_remove_item,
+            library::library_clear_cache,
+            library::library_set_cache_limit,
+            library::library_cache_stats,
+            remote::remote_open,
+            remote::remote_info,
+            remote::remote_read_range,
+            remote::remote_close,
+            remote::remote_cancel,
+            remote::remote_store_credential,
+            remote::remote_forget_credential,
+            archive::archive_open,
+            archive::archive_open_nested,
+            archive::archive_stage_nested,
+            archive::archive_open_staged,
+            archive::archive_discard_staged,
+            archive::archive_read_entry,
+            archive::archive_cancel,
+            archive::archive_progress,
+            archive::archive_close,
+            opds::opds_add_source,
+            opds::opds_list_sources,
+            opds::opds_browse,
+            opds::opds_search,
+            opds::opds_remove_source,
             annotations::read_annotations,
             annotations::write_annotations,
             annotations::content_hash,

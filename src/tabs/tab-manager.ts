@@ -33,6 +33,11 @@ import type { EditorInstance, MountOptions } from '../editor/types.js';
 import type { ImageAssetMountOptions } from '../editor/plugins/image.js';
 import type { ReaderInstance } from '../reader/types.js';
 import {
+  normalizeReaderTarget,
+  readerIdentityKey,
+  type ReaderTarget,
+} from '../reader/sources/types.js';
+import {
   defaultRoundtripDeps,
   openFileFlow,
   openPathFlow,
@@ -416,13 +421,19 @@ export class TabManager {
    * 后续任务经 mountReader 注入；本方法只负责 reader 标签的生命周期与可写
    * 路径豁免。
    */
-  async openReader(path: string): Promise<ReaderTabState> {
+  async openReader(targetOrPath: string | ReaderTarget): Promise<ReaderTabState> {
+    const target = normalizeReaderTarget(targetOrPath);
+    const filePath = target.kind === 'local' ? target.path : null;
+    const remoteSyntheticId =
+      target.kind === 'remote' ? `reader:${readerIdentityKey(target.identity)}` : null;
     const existing = this.tabs.find(
-      (t): t is ReaderTabState => t.kind === 'reader' && t.filePath === path,
+      (t): t is ReaderTabState =>
+        t.kind === 'reader' &&
+        (filePath !== null ? t.filePath === filePath : t.syntheticId === remoteSyntheticId),
     );
     if (existing !== undefined) {
       this.switchTab(existing.id);
-      this.deps.onFileOpened?.(path);
+      if (filePath !== null) this.deps.onFileOpened?.(filePath);
       return existing;
     }
     const mountReader = this.deps.mountReader;
@@ -443,10 +454,11 @@ export class TabManager {
     const tab: ReaderTabState = {
       kind: 'reader',
       id,
-      filePath: path,
-      syntheticId: `reader-${newUntitledToken()}`,
-      title: fileNameOf(path),
+      filePath,
+      syntheticId: remoteSyntheticId ?? `reader-${newUntitledToken()}`,
+      title: target.displayName,
       dirty: false,
+      target,
       reader,
       hostElement: host,
       lastSavedMarkdown: '',
@@ -455,7 +467,7 @@ export class TabManager {
     };
     this.tabs.push(tab);
     this.switchTab(id);
-    this.deps.onFileOpened?.(path);
+    if (filePath !== null) this.deps.onFileOpened?.(filePath);
     return tab;
   }
 

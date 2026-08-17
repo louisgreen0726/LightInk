@@ -79,4 +79,26 @@ describe('openDocumentPath', () => {
     expect(onReaderLoadError).toHaveBeenCalledWith(failure);
     expect(order).toEqual(['close', 'report']);
   });
+
+  it.each(['comic.cbr', 'comic.cb7', 'archive.rar', 'archive.7z'])(
+    'routes native comic archive %s to the read-only Reader',
+    async (name) => {
+      const created = {
+        kind: 'reader',
+        id: `reader-${name}`,
+        filePath: `/books/${name}`,
+        reader: { load: vi.fn(async () => undefined) },
+      } as unknown as ReaderTabState;
+      const deps = {
+        manager: manager({ openReader: vi.fn(async () => created) }),
+        onReaderOpenError: vi.fn(),
+        onReaderLoadError: vi.fn(),
+      };
+
+      await expect(openDocumentPath(`/books/${name}`, deps)).resolves.toBe(created);
+      expect(deps.manager.openReader).toHaveBeenCalledWith(`/books/${name}`);
+      expect(created.reader.load).toHaveBeenCalledWith(`/books/${name}`);
+      expect(deps.manager.openFile).not.toHaveBeenCalled();
+    },
+  );
 });
