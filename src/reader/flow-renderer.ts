@@ -2,9 +2,10 @@
  * `flow-renderer` — 流式章节 iframe 的渲染与生命周期（T5 自 reader-view 拆出）。
  *
  * 负责：章节 <article>/<iframe> 创建（sandbox/CSP srcdoc）、frame load 后的
- * chrome 应用（滚动/翻页双布局，度量统一走 pagedSpreadMetrics + 共享
- * --lightink-reader-column-* 应用器）、帧高度同步、帧内
- * click/mouseup/keydown/wheel 接线与释放、远程图授权配对释放。
+ * chrome 应用（阅读流式键默认翻页，与编辑器 lightink.reading.layout 分键；
+ * 栏度量走 readerFlowSpreadFromTypography + 共享 --lightink-reader-column-*
+ * 应用器）、帧高度同步、帧内 click/mouseup/keydown/wheel 接线与释放、
+ * 远程图授权配对释放。
  * 编排壳（reader-view）保留生命周期/状态机/进度/接线，经 hooks 回调。
  * 可观察行为（sandbox、CSS 内联顺序、进度语义）与拆出前一致。
  * T8：章节资源钩子（EPUB 懒物化图片）按 IntersectionObserver 视口窗口
@@ -24,11 +25,25 @@ import {
   clearPagedSpreadVars,
   isReadingNavKey,
   pagedProgressRatio,
-  pagedSpreadMetrics,
   readingNavDirection,
   snapPagedScroller,
 } from '../ui/reading-layout.js';
 import { DEFAULT_SHORTCUTS, matchEvent } from '../ui/shortcuts.js';
+import {
+  applyReaderLayout,
+  loadReaderLayout,
+  parseReaderLayout,
+  readerFlowSpreadFromTypography,
+} from './reader-layout.js';
+import {
+  READER_TYPOGRAPHY_VARS,
+  applyReaderTypography,
+  loadReaderTypography,
+  normalizeReaderTypography,
+  readerTypographyFontSizePx,
+  resolveReaderFontFamily,
+  type ReaderTypography,
+} from './reader-typography.js';
 
 const FLOW_FRAME_CSP = [
   "default-src 'none'",
@@ -47,7 +62,7 @@ body {
   color: inherit;
   background: transparent;
   font: inherit;
-  line-height: 1.8;
+  line-height: var(--lightink-reader-line-height, 1.8);
 }
 p { margin: 0 0 0.55em; }
 h1, h2, h3 {
@@ -142,6 +157,66 @@ mark.lightink-reader-highlight[data-annotation-kind='note'] {
 }
 .lightink-remote-image-placeholder { display: flex; align-items: center; min-height: 2.5rem; }
 `;
+
+function readerPreferenceStorage(): {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+} | null {
+  try {
+    if (typeof localStorage === 'undefined') {
+      return null;
+    }
+    return localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Stamp the flow root from the reader keys when the host has not yet applied them. */
+function ensureReaderFlowChrome(root: HTMLElement): void {
+  if (root.dataset.readingLayout !== 'scroll' && root.dataset.readingLayout !== 'paginated') {
+    applyReaderLayout(root, loadReaderLayout(readerPreferenceStorage()));
+  }
+  const inlineScale = root.style.getPropertyValue(READER_TYPOGRAPHY_VARS.fontScale).trim();
+  const computedScale = getComputedStyle(root).getPropertyValue(READER_TYPOGRAPHY_VARS.fontScale).trim();
+  if (inlineScale === '' && computedScale === '') {
+    applyReaderTypography(root, loadReaderTypography(readerPreferenceStorage()));
+  }
+}
+
+function isFlowPaginated(root: HTMLElement): boolean {
+  ensureReaderFlowChrome(root);
+  return parseReaderLayout(root.dataset.readingLayout) === 'paginated';
+}
+
+function resolveReaderTypography(root: HTMLElement): ReaderTypography {
+  ensureReaderFlowChrome(root);
+  const inline = root.style;
+  const computed = getComputedStyle(root);
+  const read = (name: string): string =>
+    inline.getPropertyValue(name).trim() || computed.getPropertyValue(name).trim();
+  return normalizeReaderTypography({
+    fontFamily: read(READER_TYPOGRAPHY_VARS.fontFamily) || undefined,
+    fontScaleStep: Number.parseFloat(read(READER_TYPOGRAPHY_VARS.fontScale)),
+    lineHeight: Number.parseFloat(read(READER_TYPOGRAPHY_VARS.lineHeight)),
+    measureRem: Number.parseFloat(
+      read(READER_TYPOGRAPHY_VARS.measureRem) || read(READER_TYPOGRAPHY_VARS.measure),
+    ),
+  });
+}
+
+function applyFlowTypography(
+  root: HTMLElement,
+  frameDocument: Document,
+  typography = resolveReaderTypography(root),
+): void {
+  const computed = getComputedStyle(root);
+  applyReaderTypography(frameDocument.documentElement, typography);
+  frameDocument.body.style.color = computed.color;
+  frameDocument.body.style.fontFamily = resolveReaderFontFamily(typography.fontFamily);
+  frameDocument.body.style.fontSize = `calc(${computed.fontSize} * ${typography.fontScaleStep})`;
+  frameDocument.body.style.lineHeight = String(typography.lineHeight);
+}
 
 function flowFrameSource(html: string, stylesheet = ''): string {
   const publisher = sanitizeReaderCss(stylesheet);
@@ -307,7 +382,7 @@ export interface FlowRenderer {
   setActiveChapter(index: number): void;
   /** 当前可见章节的 frame（翻页模式取活动章，滚动模式取视口相交帧）。 */
   visibleFrame(): HTMLIFrameElement | null;
-  /** 翻页布局应用到帧文档（度量走 pagedSpreadMetrics + 共享列变量应用器）。 */
+  /** 翻页布局应用到帧文档（度量走 readerFlowSpreadFromTypography + 共享列变量应用器）。 */
   applyPaginatedDocument(
     frame: HTMLIFrameElement,
     frameDocument: Document,
@@ -398,7 +473,7 @@ export function createFlowRenderer(
   };
 
   const visibleFrame = (): HTMLIFrameElement | null => {
-    if (document.documentElement.dataset.readingLayout === 'paginated') {
+    if (isFlowPaginated(root)) {
       return scrollHost.querySelector<HTMLIFrameElement>(
         '.lightink-reader-chapter.is-active .lightink-reader-chapter-frame',
       );
@@ -427,10 +502,12 @@ export function createFlowRenderer(
       1,
       Math.round((scrollHost.clientHeight || root.clientHeight) - padY),
     );
-    const scale =
-      getComputedStyle(document.documentElement).getPropertyValue('--lightink-font-scale').trim() ||
-      '1';
-    const fontPx = parseFloat(getComputedStyle(root).fontSize) * (Number.parseFloat(scale) || 1);
+    const typography = resolveReaderTypography(root);
+    const basePx = parseFloat(getComputedStyle(root).fontSize);
+    const fontPx = readerTypographyFontSizePx(
+      typography,
+      Number.isFinite(basePx) && basePx > 0 ? basePx : 16,
+    );
     return { width, height, fontPx };
   };
 
@@ -475,12 +552,17 @@ export function createFlowRenderer(
     options?: { restoreRatio?: number; snap?: boolean },
   ): void => {
     const viewport = pagedViewport();
-    const layout = pagedSpreadMetrics(viewport.width, viewport.fontPx);
+    const layout = readerFlowSpreadFromTypography(
+      viewport.width,
+      viewport.fontPx,
+      resolveReaderTypography(root),
+    );
     const { width, columnWidth, columns, gap, step } = layout;
     const height = viewport.height;
     const html = frameDocument.documentElement;
     const previousRatio = pagedProgressRatio(html);
     html.dataset.readingLayout = 'paginated';
+    applyFlowTypography(root, frameDocument);
     html.style.minHeight = '0';
     html.style.overflow = 'hidden';
     html.style.overscrollBehavior = 'none';
@@ -511,7 +593,6 @@ export function createFlowRenderer(
       figure.style.removeProperty('break-before');
       figure.style.removeProperty('column-span');
     }
-    html.style.removeProperty('--lightink-reader-measure');
     frameDocument.body.style.boxSizing = 'border-box';
     frameDocument.body.style.height = 'auto';
     frameDocument.body.style.minHeight = `${height}px`;
@@ -596,21 +677,14 @@ export function createFlowRenderer(
         if (frameDocument === null || frameWindow === null) {
           return;
         }
-        const computed = getComputedStyle(root);
         const applyPaginatedMetrics = (): void => {
           applyPaginatedDocument(frame, frameDocument);
         };
         let applyingFrame = false;
         const applyFrameChrome = (): void => {
-          const paginated = document.documentElement.dataset.readingLayout === 'paginated';
+          const paginated = isFlowPaginated(root);
           frameDocument.documentElement.dataset.readingLayout = paginated ? 'paginated' : 'scroll';
-          frameDocument.body.style.color = computed.color;
-          frameDocument.body.style.fontFamily = computed.fontFamily;
-          const scale = getComputedStyle(document.documentElement)
-            .getPropertyValue('--lightink-font-scale')
-            .trim() || '1';
-          const fontSize = `calc(${computed.fontSize} * ${scale})`;
-          frameDocument.body.style.fontSize = fontSize;
+          applyFlowTypography(root, frameDocument);
           if (!paginated) {
             const html = frameDocument.documentElement;
             for (const pad of frameDocument.querySelectorAll('.lightink-reader-column-pad')) {
@@ -618,7 +692,6 @@ export function createFlowRenderer(
             }
             clearPagedSpreadVars(html);
             html.style.removeProperty('--lightink-reader-page-height');
-            html.style.removeProperty('--lightink-reader-measure');
             html.style.removeProperty('column-width');
             html.style.removeProperty('column-count');
             html.style.removeProperty('column-gap');
@@ -653,7 +726,7 @@ export function createFlowRenderer(
           applyingFrame = true;
           try {
             applyFrameChrome();
-            if (document.documentElement.dataset.readingLayout !== 'paginated') {
+            if (!isFlowPaginated(root)) {
               const nextHeight = `${measureScrollHeight()}px`;
               if (frame.style.height !== nextHeight) {
                 frame.style.height = nextHeight;
@@ -693,7 +766,7 @@ export function createFlowRenderer(
             // 并应用分栏，再滚动到章/目标片段。
             const targetDoc = targetFrame?.contentDocument ?? null;
             if (
-              document.documentElement.dataset.readingLayout === 'paginated' &&
+              isFlowPaginated(root) &&
               targetArticle !== null &&
               targetArticle.classList.contains('is-active') === false
             ) {
@@ -783,7 +856,7 @@ export function createFlowRenderer(
             );
             return;
           }
-          if (document.documentElement.dataset.readingLayout !== 'paginated') {
+          if (!isFlowPaginated(root)) {
             const scroller = hooks.scrollContainer();
             const line = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1;
             if (event.deltaY !== 0 || event.deltaX !== 0) {
@@ -880,7 +953,6 @@ export function createFlowRenderer(
       }
       clearPagedSpreadVars(html);
       html.style.removeProperty('--lightink-reader-page-height');
-      html.style.removeProperty('--lightink-reader-measure');
       html.style.removeProperty('column-width');
       html.style.removeProperty('column-count');
       html.style.removeProperty('column-gap');
@@ -899,6 +971,7 @@ export function createFlowRenderer(
       body.style.overflow = 'hidden';
       frame.style.width = '100%';
       frame.style.removeProperty('min-height');
+      applyFlowTypography(root, frameDocument);
       const nextHeight = `${flowFrameContentHeight(frameDocument)}px`;
       if (frame.style.height !== nextHeight) {
         frame.style.height = nextHeight;
@@ -920,12 +993,8 @@ export function createFlowRenderer(
       if (frameDocument === null) {
         continue;
       }
-      const scale =
-        getComputedStyle(document.documentElement).getPropertyValue('--lightink-font-scale').trim() ||
-        '1';
-      const computed = getComputedStyle(root);
-      frameDocument.body.style.fontSize = `calc(${computed.fontSize} * ${scale})`;
-      if (document.documentElement.dataset.readingLayout === 'paginated') {
+      applyFlowTypography(root, frameDocument);
+      if (isFlowPaginated(root)) {
         applyPaginatedDocument(frame, frameDocument);
       }
     }

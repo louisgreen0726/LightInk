@@ -1,32 +1,45 @@
 /**
- * Scroll vs paginated reading layout. Shared by Markdown and flow/PDF readers.
+ * Editor Markdown scroll vs paginated layout, plus shared column/spread math.
  *
+ * This module owns only `lightink.reading.layout` (default scroll). Reader flow
+ * layout and typography persist in their own keys and must not write this one.
  * Paginated mode follows Readium/Thorium: constrain height to the viewport and
- * fill CSS columns sequentially (column-fill: auto). Scroll mode is a single
- * continuous column. Preference persists in localStorage.
+ * fill CSS columns sequentially (column-fill: auto).
  */
 
 export const READING_LAYOUT_STORAGE_KEY = 'lightink.reading.layout';
 
 export type ReadingLayout = 'scroll' | 'paginated';
 
+/** Comfortable measure used when a caller does not pass R4 row length. */
+export const DEFAULT_READING_MEASURE_REM = 22;
+
+export const DEFAULT_READING_LAYOUT: ReadingLayout = 'scroll';
+
 export interface LayoutStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
+export interface ReadingColumnLayoutOptions {
+  minRem?: number;
+  optRem?: number;
+  maxColumns?: number;
+  gapPx?: number;
+}
+
 export function parseReadingLayout(raw: string | null | undefined): ReadingLayout {
-  return raw === 'paginated' ? 'paginated' : 'scroll';
+  return raw === 'paginated' ? 'paginated' : DEFAULT_READING_LAYOUT;
 }
 
 export function loadReadingLayout(storage: LayoutStorage | null | undefined): ReadingLayout {
   if (storage == null) {
-    return 'scroll';
+    return DEFAULT_READING_LAYOUT;
   }
   try {
     return parseReadingLayout(storage.getItem(READING_LAYOUT_STORAGE_KEY));
   } catch {
-    return 'scroll';
+    return DEFAULT_READING_LAYOUT;
   }
 }
 
@@ -60,13 +73,14 @@ export function toggleReadingLayout(layout: ReadingLayout): ReadingLayout {
  * Paginated columns follow Readium/Thorium + WCAG 1.4.8:
  * open a second column only when each can hold a comfortable measure
  * (~32em CJK / ~55ch Latin). Never more than two facing pages.
+ * `minRem` is the current reading measure so R4 row-length changes recompute columns.
  */
 export function readingColumnLayout(
   containerWidth: number,
   fontSizePx: number,
-  options?: { minRem?: number; optRem?: number; maxColumns?: number; gapPx?: number },
+  options?: ReadingColumnLayoutOptions,
 ): { columnWidth: number; columns: number; gap: number } {
-  const minRem = options?.minRem ?? 22;
+  const minRem = options?.minRem ?? DEFAULT_READING_MEASURE_REM;
   const gap = options?.gapPx ?? 24;
   const maxColumns = options?.maxColumns ?? 2;
   const width = Math.max(1, containerWidth);
@@ -123,8 +137,9 @@ export function pagedColumnStep(viewportWidth: number, gapPx = 0): number {
 export function pagedSpreadMetrics(
   containerWidth: number,
   fontSizePx: number,
+  options?: ReadingColumnLayoutOptions,
 ): { width: number; columnWidth: number; columns: number; gap: number; step: number } {
-  const layout = readingColumnLayout(containerWidth, fontSizePx);
+  const layout = readingColumnLayout(containerWidth, fontSizePx, options);
   const columns = layout.columns;
   const gap = columns === 1 ? 0 : layout.gap;
   const columnWidth = Math.max(

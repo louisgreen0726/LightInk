@@ -1,9 +1,9 @@
 /**
  * reader-view 样式（ebook-reader T3）。
  *
- * 只消费主题令牌 var(--lightink-*) 与字号缩放 var(--lightink-font-scale)：
- * 亮/暗/自定义主题与字号缩放切换即时生效，零新机制。阅读视图挂在 shell
- * 根内，自动继承 :root / [data-theme] 上的令牌。
+ * 流式排版只消费阅读键写到 flow 根上的变量（--lightink-reader-*），
+ * 不把编辑器 html[data-reading-layout] / --lightink-font-scale 当作阅读默认。
+ * 未标 scroll 的 flow 根默认翻页。主题令牌仍作缺省回退。
  */
 
 .lightink-reader {
@@ -13,69 +13,72 @@
   min-height: 100%;
   background: var(--lightink-bg);
   color: var(--lightink-fg);
-  font-family: var(--lightink-font-body);
-  /* 基础字号；整体缩放交给各内容宿主的 `zoom`（见下），避免与字号乘子叠加。 */
+  font-family: var(--lightink-reader-font-family, var(--lightink-font-body));
+  /* 基础字号；阅读缩放走 --lightink-reader-font-scale，不叠全局 --lightink-font-scale。 */
   font-size: var(--lightink-font-size);
-  line-height: 1.7;
+  line-height: var(--lightink-reader-line-height, 1.8);
+  /* 与 reader-layout.ts READER_FLOW_PAGED_PADDING_X_REM 对齐，窄于改前 0.7rem。 */
+  --lightink-reader-paged-pad-x: 0.4rem;
   overflow: visible;
 }
 
-html[data-reading-layout='paginated'] .lightink-reader {
+/* 阅读流式默认翻页：只看 flow 根，不看编辑器 documentElement 布局键。 */
+.lightink-reader:not([data-reading-layout='scroll']) {
   position: absolute;
   inset: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-/* 流式滚动：栏宽对齐 Markdown 的 --lightink-measure。
+/* 流式滚动：行长优先用阅读偏好 --lightink-reader-measure。
    滚动交给最外层 #lightink-editor-area，与 Markdown 同一条壳层滚动条。 */
 .lightink-reader-scroll {
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: visible;
-  max-width: var(--lightink-measure, 48rem);
+  max-width: var(--lightink-reader-measure, var(--lightink-measure, 48rem));
   margin: 0 auto;
   padding: var(--lightink-page-pad-y, 24px) var(--lightink-page-pad-x, 28px)
     calc(var(--lightink-page-pad-y, 24px) * 2.2);
 }
 
-html:not([data-reading-layout='paginated']) .lightink-reader-chapter,
-html:not([data-reading-layout='paginated']) .lightink-reader-chapter-frame {
+.lightink-reader[data-reading-layout='scroll'] .lightink-reader-chapter,
+.lightink-reader[data-reading-layout='scroll'] .lightink-reader-chapter-frame {
   height: auto;
   min-height: 0;
 }
 
 /* 翻页：当前章铺满阅读区，正文在 iframe 内按行长分栏横向翻页。 */
-html[data-reading-layout='paginated'] .lightink-reader-scroll {
+.lightink-reader:not([data-reading-layout='scroll']) .lightink-reader-scroll {
   overflow: hidden;
   max-width: none;
   height: 100%;
-  padding: 0.55rem 0.7rem 0.7rem;
+  padding: 0.55rem var(--lightink-reader-paged-pad-x, 0.4rem) 0.7rem;
   scrollbar-width: none;
 }
 
-html[data-reading-layout='paginated'] .lightink-reader-scroll::-webkit-scrollbar {
+.lightink-reader:not([data-reading-layout='scroll']) .lightink-reader-scroll::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
 
-html[data-reading-layout='paginated'] .lightink-reader-chapter {
+.lightink-reader:not([data-reading-layout='scroll']) .lightink-reader-chapter {
   display: none;
   height: 100%;
   margin-bottom: 0;
 }
 
-html[data-reading-layout='paginated'] .lightink-reader-chapter.is-active {
+.lightink-reader:not([data-reading-layout='scroll']) .lightink-reader-chapter.is-active {
   display: flex;
   flex-direction: column;
 }
 
-html[data-reading-layout='paginated'] .lightink-reader-chapter-title {
+.lightink-reader:not([data-reading-layout='scroll']) .lightink-reader-chapter-title {
   display: none;
 }
 
-html[data-reading-layout='paginated'] .lightink-reader-chapter-frame {
+.lightink-reader:not([data-reading-layout='scroll']) .lightink-reader-chapter-frame {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;

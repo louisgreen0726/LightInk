@@ -10,6 +10,23 @@
 import type { InsertElementId } from '../editor/insert-commands.js';
 import { INSERT_ELEMENTS } from '../editor/insert-commands.js';
 import type { MessageKey } from '../i18n/messages.js';
+import {
+  applyReaderLayout,
+  DEFAULT_READER_FLOW_LAYOUT,
+  loadReaderLayout,
+  saveReaderLayout,
+  type ReaderFlowLayout,
+} from '../reader/reader-layout.js';
+import {
+  applyReaderTypography,
+  defaultReaderTypography,
+  loadReaderTypography,
+  normalizeReaderTypography,
+  READER_FONT_FAMILY_PRESETS,
+  saveReaderTypography,
+  type ReaderFontFamilyPreset,
+  type ReaderTypography,
+} from '../reader/reader-typography.js';
 import { BUILTIN_THEMES, type BuiltinThemeId } from '../theme/theme-service.js';
 import { createChromeController, type ChromeController } from './chrome-controller.js';
 import {
@@ -18,6 +35,12 @@ import {
   type ChromePinPrefs,
   type StorageLike,
 } from './chrome-prefs.js';
+import {
+  DEFAULT_FONT_SCALE,
+  FONT_SCALE_STEPS,
+  formatFontScaleLabel,
+  snapFontScale,
+} from './font-scale.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 import { labelModal, mountModalFocus } from './modal-focus.js';
@@ -26,6 +49,46 @@ import {
   type WorkspaceMode,
   type WorkspaceSnapshot,
 } from './workspace-mode.js';
+
+const READER_FONT_PRESETS = Object.keys(
+  READER_FONT_FAMILY_PRESETS,
+) as ReaderFontFamilyPreset[];
+
+const READER_LINE_HEIGHTS = [1.5, 1.65, 1.8, 2] as const;
+const READER_MEASURE_REMS = [16, 18, 22, 26, 32] as const;
+
+function stepReaderFontScale(current: number, direction: 1 | -1): number {
+  const snapped = snapFontScale(current);
+  const idx = FONT_SCALE_STEPS.indexOf(snapped);
+  const next = Math.min(FONT_SCALE_STEPS.length - 1, Math.max(0, idx + direction));
+  return FONT_SCALE_STEPS[next]!;
+}
+
+function dispatchReaderPrefEvent(name: string, detail: unknown): void {
+  if (typeof document === 'undefined' || typeof CustomEvent !== 'function') {
+    return;
+  }
+  if (typeof document.dispatchEvent !== 'function') {
+    return;
+  }
+  document.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+function canSetCssVars(target: { style: { setProperty?: unknown } }): boolean {
+  return typeof target.style.setProperty === 'function';
+}
+
+function applyReaderShellChrome(
+  target: HTMLElement,
+  layout: ReaderFlowLayout,
+  prefs: ReaderTypography,
+): void {
+  applyReaderLayout(target, layout);
+  target.dataset.readerFlowLayout = layout;
+  if (canSetCssVars(target)) {
+    applyReaderTypography(target, prefs);
+  }
+}
 
 export interface ShellTabInfo {
   id: string;
@@ -126,9 +189,18 @@ export interface AppShellActions {
   canResetCustomTheme(): boolean;
   onToggleOutline(): void;
   onToggleSourceMode(): void;
-  /** 切换滚动 / 翻页（Markdown / 阅读器共用）。 */
+  /** 切换编辑器 Markdown 滚动 / 翻页（`lightink.reading.layout`，默认滚动）。 */
   onToggleReadingLayout?(): void;
   getReadingLayout?(): 'scroll' | 'paginated';
+  /**
+   * 阅读流式布局（`lightink.reader.flow.layout`，默认翻页）。
+   * 与编辑器键分存，菜单不得回写 `getReadingLayout`。
+   */
+  getReaderFlowLayout?(): ReaderFlowLayout;
+  onSetReaderFlowLayout?(layout: ReaderFlowLayout): void;
+  /** 阅读流式字体/字号/行高/行长（`lightink.reader.typography`）。 */
+  getReaderTypography?(): ReaderTypography;
+  onSetReaderTypography?(patch: Partial<ReaderTypography>): void;
   /**
    * T5/R3：切换字数状态栏显隐。可选——测试 stub 可省略（菜单动作空操作）。
    * 实现方负责持久化偏好；关闭即不渲染状态栏。
@@ -313,6 +385,39 @@ function sc(actions: AppShellActions, combo: string): string {
   return actions.formatShortcut(combo);
 }
 
+function isReaderTypographyContext(actions: AppShellActions): boolean {
+  return actions.getWorkspaceMode?.() === 'reader' || actions.activeTabKind?.() === 'reader';
+}
+
+function readerTypographyOrDefault(actions: AppShellActions): ReaderTypography {
+  return actions.getReaderTypography?.() ?? defaultReaderTypography();
+}
+
+function readerFontFamilyLabel(family: ReaderFontFamilyPreset, en: boolean): string {
+  switch (family) {
+    case 'serif':
+      return en ? 'Serif' : '宋体';
+    case 'sans':
+      return en ? 'Sans' : '黑体';
+    case 'mono':
+      return en ? 'Mono' : '等宽';
+    default:
+      return en ? 'Original' : '原文';
+  }
+}
+
+function isReaderFontSelected(current: string, preset: ReaderFontFamilyPreset): boolean {
+  return current === preset || current === READER_FONT_FAMILY_PRESETS[preset];
+}
+
+function readerMeasureLabel(measureRem: number, en: boolean): string {
+  if (measureRem <= 16) return en ? `Narrow (${measureRem})` : `窄（${measureRem}）`;
+  if (measureRem <= 18) return en ? `Compact (${measureRem})` : `较窄（${measureRem}）`;
+  if (measureRem <= 22) return en ? `Standard (${measureRem})` : `标准（${measureRem}）`;
+  if (measureRem <= 26) return en ? `Relaxed (${measureRem})` : `宽松（${measureRem}）`;
+  return en ? `Wide (${measureRem})` : `宽（${measureRem}）`;
+}
+
 export function buildMenus(actions: AppShellActions): Menu[] {
   const t = (key: MessageKey) => actions.t(key);
   const insertItems: MenuItem[] = INSERT_ELEMENTS.map((element) =>
@@ -379,10 +484,32 @@ export function buildMenus(actions: AppShellActions): Menu[] {
   /**
    * T1：视图 →「字体布局」子菜单——收纳放大/缩小/重置缩放与滚动/翻页模式
    * （当前模式打勾并禁用，选择另一模式即切换；Ctrl+M 快捷键行为不变）。
+   * 阅读模式另用流式键（默认翻页）并挂字体/行高/行长分档，不回写编辑器布局。
    * 工厂在每次展开时现取，勾选态随布局切换刷新。
    */
   const fontLayoutSubmenu = (): MenuItem[] => {
-    const current = actions.getReadingLayout?.() ?? 'scroll';
+    const reader = isReaderTypographyContext(actions);
+    const current = reader
+      ? (actions.getReaderFlowLayout?.() ?? DEFAULT_READER_FLOW_LAYOUT)
+      : (actions.getReadingLayout?.() ?? 'scroll');
+    const typography = readerTypographyOrDefault(actions);
+    const scaleLabel = (): string =>
+      reader && actions.getReaderTypography !== undefined
+        ? formatFontScaleLabel(typography.fontScaleStep)
+        : actions.getFontScaleLabel();
+    const zoomBy = (direction: 1 | -1 | 0): void => {
+      if (reader && actions.onSetReaderTypography !== undefined) {
+        const fontScaleStep =
+          direction === 0
+            ? DEFAULT_FONT_SCALE
+            : stepReaderFontScale(typography.fontScaleStep, direction);
+        actions.onSetReaderTypography({ fontScaleStep });
+        return;
+      }
+      if (direction > 0) actions.onZoomIn();
+      else if (direction < 0) actions.onZoomOut();
+      else actions.onZoomReset();
+    };
     const layoutItem = (mode: 'scroll' | 'paginated'): MenuItem =>
       menuItem(
         `view-layout-${mode}`,
@@ -392,25 +519,87 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           return current === mode ? `✓ ${label}` : label;
         },
         () => {
-          // 「选择模式」语义：点击非当前模式触发一次切换；当前模式禁用不可点。
-          if (current !== mode) actions.onToggleReadingLayout?.();
+          if (current === mode) return;
+          // 阅读流式只写阅读键；编辑器仍走既有 toggle（不跨键回写）。
+          if (reader) {
+            actions.onSetReaderFlowLayout?.(mode);
+            return;
+          }
+          actions.onToggleReadingLayout?.();
         },
         sc(actions, 'Ctrl+M'),
         () => current !== mode,
       );
-    return [
-      menuItem('view-zoom-in', () => t('view.zoomIn'), actions.onZoomIn, sc(actions, 'Ctrl+=')),
-      menuItem('view-zoom-out', () => t('view.zoomOut'), actions.onZoomOut, sc(actions, 'Ctrl+-')),
+    const choiceItem = (
+      id: string,
+      selected: boolean,
+      label: string,
+      action: () => void,
+    ): MenuItem =>
+      menuItem(id, () => (selected ? `✓ ${label}` : label), action, '', () => !selected);
+    const items: MenuItem[] = [
+      menuItem('view-zoom-in', () => t('view.zoomIn'), () => zoomBy(1), sc(actions, 'Ctrl+=')),
+      menuItem('view-zoom-out', () => t('view.zoomOut'), () => zoomBy(-1), sc(actions, 'Ctrl+-')),
       menuItem(
         'view-zoom-reset',
-        () => `${t('view.zoomReset')} (${actions.getFontScaleLabel()})`,
-        actions.onZoomReset,
+        () => `${t('view.zoomReset')} (${scaleLabel()})`,
+        () => zoomBy(0),
         sc(actions, 'Ctrl+0'),
       ),
       separator('view-font-layout-sep'),
       layoutItem('scroll'),
       layoutItem('paginated'),
     ];
+    if (!reader) {
+      return items;
+    }
+    const en = actions.getLocale() === 'en';
+    items.push(
+      separator('view-reader-type-sep'),
+      {
+        id: 'view-reader-font',
+        label: () => ll('Reading font', '阅读字体'),
+        action: () => undefined,
+        submenu: () =>
+          READER_FONT_PRESETS.map((family) =>
+            choiceItem(
+              `view-reader-font-${family}`,
+              isReaderFontSelected(typography.fontFamily, family),
+              readerFontFamilyLabel(family, en),
+              () => actions.onSetReaderTypography?.({ fontFamily: family }),
+            ),
+          ),
+      },
+      {
+        id: 'view-reader-line-height',
+        label: () => ll('Line height', '行高'),
+        action: () => undefined,
+        submenu: () =>
+          READER_LINE_HEIGHTS.map((lineHeight) =>
+            choiceItem(
+              `view-reader-line-height-${String(lineHeight).replace('.', '-')}`,
+              typography.lineHeight === lineHeight,
+              lineHeight.toFixed(2).replace(/0$/, ''),
+              () => actions.onSetReaderTypography?.({ lineHeight }),
+            ),
+          ),
+      },
+      {
+        id: 'view-reader-measure',
+        label: () => ll('Measure', '行长'),
+        action: () => undefined,
+        submenu: () =>
+          READER_MEASURE_REMS.map((measureRem) =>
+            choiceItem(
+              `view-reader-measure-${measureRem}`,
+              typography.measureRem === measureRem,
+              readerMeasureLabel(measureRem, en),
+              () => actions.onSetReaderTypography?.({ measureRem }),
+            ),
+          ),
+      },
+    );
+    return items;
   };
 
   /** reader 态「标注」菜单：书签 / 笔记 / 侧栏开关（侧栏默认隐藏，勾选标记当前态）。 */
@@ -673,6 +862,52 @@ export function createAppShell(
 ): AppShell {
   const chrome = createChromeController();
   const storage = resolveStorage(options);
+  let fallbackReaderLayout = loadReaderLayout(storage);
+  let fallbackReaderTypography = loadReaderTypography(storage);
+  let rebuildMenusRef = (): void => undefined;
+
+  const currentReaderLayout = (): ReaderFlowLayout =>
+    actions.getReaderFlowLayout?.() ?? fallbackReaderLayout;
+  const currentReaderTypography = (): ReaderTypography =>
+    actions.getReaderTypography?.() ?? fallbackReaderTypography;
+
+  const applyReaderChrome = (): void => {
+    const layout = currentReaderLayout();
+    const prefs = currentReaderTypography();
+    applyReaderShellChrome(root, layout, prefs);
+    applyReaderShellChrome(editorArea, layout, prefs);
+    dispatchReaderPrefEvent('lightink:reader-flow-layout', layout);
+    dispatchReaderPrefEvent('lightink:reader-typography', prefs);
+  };
+
+  const menuActions: AppShellActions = {
+    ...actions,
+    getReaderFlowLayout: currentReaderLayout,
+    onSetReaderFlowLayout: (layout) => {
+      if (actions.getReaderFlowLayout === undefined) {
+        fallbackReaderLayout = layout;
+        saveReaderLayout(storage, layout);
+      }
+      actions.onSetReaderFlowLayout?.(layout);
+      applyReaderChrome();
+      rebuildMenusRef();
+    },
+    getReaderTypography: currentReaderTypography,
+    onSetReaderTypography: (patch) => {
+      const next = normalizeReaderTypography({ ...currentReaderTypography(), ...patch });
+      if (actions.getReaderTypography === undefined) {
+        fallbackReaderTypography = saveReaderTypography(storage, next);
+      }
+      actions.onSetReaderTypography?.(patch);
+      applyReaderChrome();
+      rebuildMenusRef();
+    },
+    getFontScaleLabel: () =>
+      isReaderTypographyContext(actions)
+        ? formatFontScaleLabel(currentReaderTypography().fontScaleStep)
+        : actions.getFontScaleLabel(),
+  };
+
   const pinPrefs = options.initialPinPrefs ?? loadChromePinPrefs(storage);
   if (pinPrefs.menu) {
     chrome.setPinned('menu', true);
@@ -733,7 +968,7 @@ export function createAppShell(
     }
   }
 
-  const initialMenus = buildMenus(actions);
+  const initialMenus = buildMenus(menuActions);
   wireHelpCheatsheet(initialMenus);
   const menuBar = createMenuBar({
     menus: initialMenus,
@@ -753,13 +988,14 @@ export function createAppShell(
   toolbar.appendChild(menuBar.element);
 
   function rebuildMenus(): void {
-    const next = buildMenus(actions);
+    const next = buildMenus(menuActions);
     wireHelpCheatsheet(next);
     menuBar.rebuild(next, {
       loadingLabel: () => actions.t('menu.loading'),
       overflowLabel: () => actions.t('menu.more'),
     });
   }
+  rebuildMenusRef = rebuildMenus;
 
   chromeHost.replaceChildren(menuTrigger, toolbar);
   tabsHost.replaceChildren(tabsTrigger, tabBar);
@@ -770,6 +1006,7 @@ export function createAppShell(
     applyWorkspaceSurface(root, snapshot);
     applyWorkspaceSurface(mainRow, snapshot);
     applyWorkspaceSurface(editorArea, snapshot);
+    applyReaderChrome();
   }
 
   applyWorkspace(

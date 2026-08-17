@@ -7,6 +7,8 @@ import {
   createCoalescedScrollHandler,
   createPagedWheelGate,
   createResizeSettle,
+  DEFAULT_READING_LAYOUT,
+  DEFAULT_READING_MEASURE_REM,
   isReadingNavKey,
   loadReadingLayout,
   nearestVisibleSlot,
@@ -26,6 +28,7 @@ import {
 
 describe('parseReadingLayout', () => {
   it('defaults to scroll and accepts paginated', () => {
+    expect(DEFAULT_READING_LAYOUT).toBe('scroll');
     expect(parseReadingLayout(null)).toBe('scroll');
     expect(parseReadingLayout('paginated')).toBe('paginated');
     expect(parseReadingLayout('other')).toBe('scroll');
@@ -33,7 +36,7 @@ describe('parseReadingLayout', () => {
 });
 
 describe('load/saveReadingLayout', () => {
-  it('round-trips through storage', () => {
+  it('round-trips through the editor key only', () => {
     const store: Record<string, string> = {};
     const storage = {
       getItem: (key: string) => store[key] ?? null,
@@ -45,6 +48,9 @@ describe('load/saveReadingLayout', () => {
     saveReadingLayout(storage, 'paginated');
     expect(store[READING_LAYOUT_STORAGE_KEY]).toBe('paginated');
     expect(loadReadingLayout(storage)).toBe('paginated');
+    expect(store['lightink.reader.flow.layout']).toBeUndefined();
+    expect(store['lightink.reader.typography']).toBeUndefined();
+    expect(Object.keys(store)).toEqual([READING_LAYOUT_STORAGE_KEY]);
   });
 });
 
@@ -143,6 +149,20 @@ describe('readingColumnLayout', () => {
     expect(readingColumnLayout(760, 16).columns).toBe(2);
     expect(readingColumnLayout(1400, 40).columns).toBe(1);
     expect(readingColumnLayout(2200, 16).columns).toBe(2);
+  });
+
+  it('opens two columns in a 1200–1400 CSS-pixel pane at the default measure', () => {
+    expect(DEFAULT_READING_MEASURE_REM).toBe(22);
+    expect(readingColumnLayout(1200, 16).columns).toBe(2);
+    expect(readingColumnLayout(1400, 16).columns).toBe(2);
+    expect(readingColumnLayout(700, 16).columns).toBe(1);
+  });
+
+  it('recomputes columns when the reading measure rem changes', () => {
+    expect(readingColumnLayout(1300, 16, { minRem: DEFAULT_READING_MEASURE_REM }).columns).toBe(2);
+    expect(readingColumnLayout(1300, 16, { minRem: 40 }).columns).toBe(1);
+    expect(pagedSpreadMetrics(1300, 16, { minRem: 40 }).columns).toBe(1);
+    expect(pagedSpreadMetrics(1300, 16, { minRem: DEFAULT_READING_MEASURE_REM }).columns).toBe(2);
   });
 });
 
