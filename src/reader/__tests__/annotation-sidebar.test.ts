@@ -199,6 +199,16 @@ describe('annotation-sidebar 重做', () => {
     expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-input')).not.toBeNull();
     expect(sidebar.element.querySelectorAll('.lightink-reader-sidebar-item')).toHaveLength(3);
 
+    sidebar.renderHits([]);
+    expect(sidebar.element.classList.contains('is-searching')).toBe(true);
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-empty')?.textContent).toBe(
+      'reader.search.empty',
+    );
+    expect(
+      sidebar.element.querySelector<HTMLElement>('.lightink-reader-sidebar-search-status')
+        ?.dataset.searchEmpty,
+    ).toBe('true');
+
     sidebar.setSearchQuery('keyword');
     sidebar.renderHits([
       { key: '1:0:7', snippet: 'alpha keyword', location: 'page 1', current: true },

@@ -234,14 +234,6 @@ html[data-display='xuhd'] .lightink-reader-pages[data-reader-format='pdf'] .ligh
   outline: 1px solid var(--lightink-fg);
 }
 
-/* 阅读器搜索：钉在不滚动的主区上，聚焦输入时不能把正文滚回顶部。 */
-.lightink-reader-search-panel {
-  position: absolute;
-  top: 10px;
-  right: 14px;
-  z-index: 40;
-}
-
 .lightink-reader-scroll .lightink-reader-search-mark {
   background: var(--lightink-selection);
   border-radius: 2px;

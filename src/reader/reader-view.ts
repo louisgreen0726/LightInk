@@ -934,10 +934,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     sidebarBackdrop.addEventListener('click', () => setSidebarVisible(false));
     sidebar = createAnnotationSidebar({
       t,
-      onClose: () => {
-        clearSearchSession();
-        setSidebarVisible(false);
-      },
+      onClose: () => setSidebarVisible(false),
       search: {
         onQuery: (nextQuery) => {
           if (nextQuery.trim() === '') {
@@ -1051,6 +1048,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   /** 切换侧栏显隐，并让窄窗 drawer 获得或释放键盘焦点。 */
   function setSidebarVisible(visible: boolean): void {
+    if (!visible && sidebarVisible) {
+      closePdfSearch();
+    }
     sidebarVisible = visible;
     if (visible) {
       ensureSidebar();
@@ -1367,6 +1367,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const closePdfSearch = (): void => {
     clearSearchSession();
     sidebar?.setSearchQuery('');
+    sidebar?.render(annotations);
   };
 
   /**

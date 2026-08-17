@@ -337,6 +337,13 @@ describe('Reader load lifecycle', () => {
     expect(
       sidebar.querySelector<HTMLInputElement>('.lightink-reader-sidebar-search-input')?.value,
     ).toBe('keyword');
+
+    sidebar.querySelector<HTMLButtonElement>('.lightink-reader-sidebar-close')!.click();
+    expect(sidebar.hidden).toBe(true);
+    expect(
+      sidebar.querySelector<HTMLInputElement>('.lightink-reader-sidebar-search-input')?.value,
+    ).toBe('');
+    expect(sidebar.classList.contains('is-searching')).toBe(false);
     await view.destroy();
   });
 
