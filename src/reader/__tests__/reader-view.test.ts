@@ -508,6 +508,7 @@ describe('滚动模式章节帧高度（末行裁切）', () => {
   it('scroll chrome uses overflow:hidden so Windows does not reserve a scrollbar gutter', () => {
     document.documentElement.dataset.readingLayout = 'scroll';
     const root = document.createElement('div');
+    root.dataset.readingLayout = 'scroll';
     const scrollHost = document.createElement('div');
     root.appendChild(scrollHost);
     document.body.appendChild(root);
@@ -639,7 +640,7 @@ describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式�
   it('滚动模式：字号缩放经 ~200ms settle 合并去抖，仅刷新可见帧并保持视口锚点', async () => {
     vi.useFakeTimers();
     document.documentElement.dataset.readingLayout = 'scroll';
-    const { view, scroll, chapters, frames } = await loadFlowBook(2);
+    const { host, view, scroll, chapters, frames } = await loadFlowBook(2);
 
     Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
     vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue(rect(0, 500));
@@ -662,6 +663,10 @@ describe('缩放性能（T6：档位合并去抖 + 仅可见章分栏 + 流式�
     scroll.scrollTop = 100;
 
     document.documentElement.style.setProperty('--lightink-font-scale', '2');
+    host.querySelector<HTMLElement>('.lightink-reader')!.style.setProperty(
+      '--lightink-reader-font-scale',
+      '2',
+    );
     document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: 2 }));
 
     // settle 窗口内不重排（连续缩放合并去抖，避免每档整章 column 重排）。

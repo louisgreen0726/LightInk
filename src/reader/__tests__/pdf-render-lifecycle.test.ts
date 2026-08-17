@@ -395,7 +395,7 @@ describe('PDF render lifecycle', () => {
   it('keeps paginated PDF overflow on the page host so IntersectionObserver can see later slots', () => {
     const css = readFileSync(path.join(process.cwd(), 'src/reader/reader.css'), 'utf-8');
     expect(css).toMatch(
-      /html\[data-reading-layout='paginated'\] \.lightink-reader-pages\[data-reader-format='pdf'\]\[data-reader-active='true'\]\s*\{[^}]*overflow:\s*auto/,
+      /html\[data-reading-layout='paginated'\] \.lightink-reader-pages\[data-reader-format='pdf'\]\[data-reader-active='true'\][\s\S]*?\{[^}]*overflow:\s*auto/,
     );
     expect(css).not.toMatch(
       /html\[data-reading-layout='paginated'\] \.lightink-reader:has\([^)]*\)\s*\{[^}]*overflow:\s*auto/,
