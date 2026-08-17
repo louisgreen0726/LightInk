@@ -370,6 +370,16 @@ pub async fn print_webview_to_pdf(
             let Some(tx) = tx.take() else {
                 return;
             };
+            let Some(mtm) = MainThreadMarker::new() else {
+                let _ = tx.send(Err("createPDF 必须在主线程".to_string()));
+                return;
+            };
+            // 必须先建 config，再把 sender 移进 completion block。
+            // None / null rect = 当前可视范围 = 第一页截图。
+            let config = unsafe { WKPDFConfiguration::new(mtm) };
+            unsafe {
+                config.setRect(CGRect::new(CGPoint::ZERO, CGSize::new(width, height)));
+            }
             // createPDF completion 即终点：retain NSData → 写盘 → tx.send。
             // 闭包调 createPDF 后立即返回，主线程回到 run loop 派发 completion，
             // 避免在主线程 recv 阻塞 → completion 派发回主队列 → 死锁。
@@ -393,16 +403,7 @@ pub async fn print_webview_to_pdf(
                     let _ = tx.send(result);
                 }
             });
-            let Some(mtm) = MainThreadMarker::new() else {
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(Err("createPDF 必须在主线程".to_string()));
-                }
-                return;
-            };
-            let config = WKPDFConfiguration::new(mtm);
-            // 必须设完整文档 rect。None / null rect = 当前可视范围 = 第一页截图。
             unsafe {
-                config.setRect(CGRect::new(CGPoint::ZERO, CGSize::new(width, height)));
                 wk.createPDFWithConfiguration_completionHandler(Some(&config), &block);
             }
             // 闭包立即返回；最终结果由 completion block 经 oneshot 通知 worker。
