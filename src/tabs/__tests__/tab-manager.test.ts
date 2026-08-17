@@ -1121,6 +1121,31 @@ describe('reader 标签（只读，豁免可写路径）', () => {
     expect(deps.mountReader).toHaveBeenCalledTimes(1);
   });
 
+  it('远程阅读目标使用稳定 identity 去重且不写入本地最近记录', async () => {
+    const rd = makeReaderDeps();
+    const onFileOpened = vi.fn();
+    const { manager } = makeHarness({ ...rd, onFileOpened });
+    const target = {
+      kind: 'remote' as const,
+      itemId: 'item-1',
+      resourceId: 'https://books.example/a.cbz',
+      identity: { id: 'item-1', validator: '"v1"' },
+      displayName: '远程漫画.cbz',
+      extension: 'cbz',
+      mimeType: 'application/vnd.comicbook+zip',
+    };
+
+    const first = await manager.openReader(target);
+    const second = await manager.openReader({ ...target });
+
+    expect(second).toBe(first);
+    expect(first.filePath).toBeNull();
+    expect(first.syntheticId).toBe('reader:item-1@"v1"');
+    expect(first.target).toEqual(target);
+    expect(manager.tabList).toHaveLength(1);
+    expect(onFileOpened).not.toHaveBeenCalled();
+  });
+
   it('reader 标签与 markdown 标签可互相切换（宿主 show/hide）', async () => {
     const rd = makeReaderDeps();
     const { manager } = makeHarness(rd);

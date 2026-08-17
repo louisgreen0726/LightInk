@@ -44,6 +44,7 @@ import {
   createContextMenu,
 } from './ui/context-menu.js';
 import { showLinkDialog, showOpenLinkConfirm } from './ui/link-dialog.js';
+import { showArchivePasswordDialog } from './ui/archive-password-dialog.js';
 import {
   formatLinkMarkdown,
   getInsertElement,
@@ -54,6 +55,7 @@ import { fileNameStem, importImageAsset } from './asset/asset-service.js';
 import { planDroppedFiles } from './file/file-drop.js';
 import { OPEN_FILTERS } from './file/file-dialog.js';
 import { openDocumentPath } from './file/document-router.js';
+import { extOfPath } from './file/path-ext.js';
 import type {
   ExportServiceDeps,
   ExportTabSnapshot,
@@ -64,7 +66,10 @@ import {
   createMarkdownAnnotationHost,
   type MarkdownAnnotationHost,
 } from './reader/markdown-annotations.js';
-import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
+import type { RemoteOpenResult } from './reader/sources/remote-source.js';
+import type { RemoteReaderTarget } from './reader/sources/types.js';
+import { readerLoadErrorDetail } from './reader/error-message.js';
+import { TabManager, fileNameOf, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
@@ -102,6 +107,13 @@ import { ShortcutRegistry, pagingShouldIgnoreTarget, wheelPagingShouldIgnoreTarg
 import { setNativeTheme, setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
+import { libraryClient } from './library/library-client.js';
+import {
+  createLibraryView,
+  type LibraryOpenRequest,
+  type LibraryView,
+} from './library/library-view.js';
+import { credentialRefForResource, opdsClient } from './library/opds-client.js';
 import {
   createBoundVersionActions,
   showVersionsModal,
@@ -109,6 +121,7 @@ import {
 } from './ui/versions.js';
 import './theme/tokens.css';
 import './ui/theme.css';
+import './library/library.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (app === null) {
@@ -298,6 +311,7 @@ const sourceViews = new Map<string, SourceView>();
 const markdownAnnotations = new Map<string, MarkdownAnnotationHost>();
 // R14：自动保存控制器在 TabManager 之后创建（见下），菜单回调用 ?. 短路。
 let autosave: AutosaveController;
+let libraryView: LibraryView | undefined;
 // R6：外部变更秒级轮询句柄（退出时清理）。
 let externalChangeTimer: number | null = null;
 /** 跟踪上次记录的活动标签 kind；markdown↔reader 切换时重建菜单结构。 */
@@ -403,52 +417,11 @@ async function readReaderChunk(
   }
 }
 
-const READER_LIMIT_MESSAGE_KEYS = {
-  archiveEntries: 'reader.limit.archiveEntries',
-  archiveTotalBytes: 'reader.limit.archiveTotalBytes',
-  archiveEntryBytes: 'reader.limit.archiveEntryBytes',
-  archiveCompressionRatio: 'reader.limit.archiveCompressionRatio',
-  readerImageBytes: 'reader.limit.readerImageBytes',
-  pdfPages: 'reader.limit.pdfPages',
-  cbzPages: 'reader.limit.cbzPages',
-} as const;
-
-const READER_CAPABILITY_MESSAGE_KEYS = {
-  mobiDrm: 'reader.capability.mobiDrm',
-  mobiKf8: 'reader.capability.mobiKf8',
-  mobiHuff: 'reader.capability.mobiHuff',
-} as const;
-
-function readerLoadErrorDetail(error: unknown): string {
-  if (error !== null && typeof error === 'object') {
-    const candidate = error as Record<string, unknown>;
-    const kind = typeof candidate['kind'] === 'string' ? candidate['kind'] : '';
-    if (
-      candidate['name'] === 'ReaderLimitError' &&
-      Object.prototype.hasOwnProperty.call(READER_LIMIT_MESSAGE_KEYS, kind) &&
-      typeof candidate['actual'] === 'number' &&
-      typeof candidate['limit'] === 'number'
-    ) {
-      const key = READER_LIMIT_MESSAGE_KEYS[kind as keyof typeof READER_LIMIT_MESSAGE_KEYS];
-      return i18n.t(key, {
-        actual: String(candidate['actual']),
-        limit: String(candidate['limit']),
-      });
-    }
-    if (
-      candidate['name'] === 'ReaderCapabilityError' &&
-      Object.prototype.hasOwnProperty.call(READER_CAPABILITY_MESSAGE_KEYS, kind)
-    ) {
-      const key =
-        READER_CAPABILITY_MESSAGE_KEYS[kind as keyof typeof READER_CAPABILITY_MESSAGE_KEYS];
-      return i18n.t(key);
-    }
-  }
-  return error instanceof Error ? error.message : String(error ?? '');
-}
+const localizedReaderError = (error: unknown): string =>
+  readerLoadErrorDetail(error, (key, vars) => i18n.t(key, vars));
 
 function reportReaderLoadError(error: unknown): void {
-  void dialogMessage(i18n.t('reader.loadFailed', { detail: readerLoadErrorDetail(error) }), {
+  void dialogMessage(i18n.t('reader.loadFailed', { detail: localizedReaderError(error) }), {
     title: i18n.t('app.name'),
     kind: 'error',
   });
@@ -471,6 +444,206 @@ async function openPathByKind(path: string): Promise<TabState | null> {
       reportReaderLoadError(error);
     },
   });
+}
+
+let outlineVisibilityBeforeLibrary: import('./outline/outline-view.js').OutlineVisibility | null = null;
+
+function setLibraryVisibility(visible: boolean): void {
+  if (outline === undefined) return;
+  if (visible) {
+    if (outline.visibility !== 'hidden') {
+      outlineVisibilityBeforeLibrary = outline.visibility;
+      outline.setVisibility('hidden');
+    }
+    return;
+  }
+  if (outlineVisibilityBeforeLibrary !== null) {
+    outline.setVisibility(outlineVisibilityBeforeLibrary);
+    outlineVisibilityBeforeLibrary = null;
+  }
+}
+
+function toggleLibrary(): void {
+  void libraryView?.toggle();
+}
+
+function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
+  if (acquisition.extension !== undefined && acquisition.extension !== '') return acquisition.extension;
+  if (item.extension !== undefined && item.extension !== '') return item.extension;
+  try {
+    const path = new URL(acquisition.href).pathname;
+    return extOfPath(path);
+  } catch {
+    return extOfPath(acquisition.href);
+  }
+}
+
+function remoteOperationId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function throwIfOperationAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) {
+    throw new DOMException('The operation was aborted', 'AbortError');
+  }
+}
+
+async function openLibraryRemote(
+  request: LibraryOpenRequest,
+  signal?: AbortSignal,
+): Promise<RemoteOpenResult> {
+  const { item, acquisition } = request;
+  if (acquisition === undefined) throw new Error('没有可用的获取链接');
+  const requestId = remoteOperationId('library-open');
+  const cancel = (): void => {
+    void invoke<void>('remote_cancel', { requestId }).catch(() => undefined);
+  };
+  throwIfOperationAborted(signal);
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const opened = await invoke<RemoteOpenResult>('remote_open', {
+      url: acquisition.href,
+      itemId: item.id,
+      allowHttp: request.source?.allowHttp === true,
+      credentialRef: credentialRefForResource(request.source, acquisition.href),
+      requestId,
+    });
+    try {
+      throwIfOperationAborted(signal);
+    } catch (error) {
+      await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
+      throw error;
+    }
+    return opened;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+async function openLibraryItem(
+  request: LibraryOpenRequest,
+  signal?: AbortSignal,
+): Promise<void> {
+  const { item } = request;
+  if (item.sourceKind === 'local') {
+    if (item.localPath === undefined || item.localPath === '') {
+      throw new Error('本地书籍路径不可用');
+    }
+    await openPathByKind(item.localPath);
+    return;
+  }
+  const acquisition = request.acquisition;
+  if (acquisition === undefined) throw new Error('没有可用的获取链接');
+  let opened: RemoteOpenResult;
+  try {
+    opened = await openLibraryRemote(request, signal);
+  } catch (error) {
+    throw new Error(localizedReaderError(error));
+  }
+  const cancel = (): void => {
+    void invoke<void>('remote_cancel', { resourceId: opened.resourceId }).catch(() => undefined);
+    void invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    throwIfOperationAborted(signal);
+    if (!opened.supportsRanges) {
+      await dialogMessage(i18n.t('reader.remote.noRange'), {
+        title: i18n.t('app.name'),
+        kind: 'warning',
+      });
+    }
+    throwIfOperationAborted(signal);
+    const extension = remoteExtension(item, acquisition);
+    const target: RemoteReaderTarget = {
+      kind: 'remote',
+      itemId: item.id,
+      resourceId: opened.resourceId,
+      identity: { id: opened.identity },
+      displayName: item.title,
+      extension,
+      mimeType: opened.mimeType ?? acquisition.mediaType ?? 'application/octet-stream',
+    };
+    const tab = await manager.openReader(target);
+    // openReader switches to an existing identity. The newly opened backend
+    // handle is redundant in that case and must be released immediately.
+    if (tab.target.kind !== 'remote' || tab.target.resourceId !== opened.resourceId) {
+      await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
+      return;
+    }
+    await tab.reader.load(target);
+  } catch (error) {
+    await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
+    throw new Error(localizedReaderError(error));
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+async function cacheLibraryItem(
+  request: LibraryOpenRequest,
+  signal?: AbortSignal,
+): Promise<void> {
+  const { item, acquisition } = request;
+  if (item.sourceKind === 'local' || acquisition === undefined) return;
+  let opened: RemoteOpenResult;
+  try {
+    opened = await openLibraryRemote(request, signal);
+  } catch (error) {
+    throw new Error(localizedReaderError(error));
+  }
+  const cancel = (): void => {
+    void invoke<void>('remote_cancel', { resourceId: opened.resourceId }).catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const chunkSize = 16 * 1024 * 1024;
+    for (let offset = 0; offset < opened.size; offset += chunkSize) {
+      throwIfOperationAborted(signal);
+      const length = Math.min(chunkSize, opened.size - offset);
+      await invoke<ArrayBuffer | number[]>('remote_read_range', {
+        resourceId: opened.resourceId,
+        offset,
+        length,
+      });
+      throwIfOperationAborted(signal);
+    }
+    await libraryClient.upsertItem({
+      ...item,
+      etag: opened.etag,
+      lastModified: opened.lastModified,
+      size: opened.size,
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    throw new Error(localizedReaderError(error));
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    await invoke<void>('remote_close', { resourceId: opened.resourceId }).catch(() => undefined);
+  }
+}
+
+async function importLocalLibraryItem(): Promise<import('./library/library-client.js').LibraryItem | null> {
+  let selected: string | null = null;
+  try {
+    const result = await openDialog({ multiple: false, directory: false, filters: OPEN_FILTERS });
+    selected = typeof result === 'string' ? result : null;
+  } catch {
+    return null;
+  }
+  if (selected === null) return null;
+  const extension = extOfPath(selected);
+  const item = {
+    id: `local:${selected}`,
+    sourceKind: 'local' as const,
+    title: fileNameOf(selected),
+    authors: [] as string[],
+    localPath: selected,
+    extension,
+    updatedAt: Date.now(),
+  };
+  await libraryClient.upsertItem(item);
+  return item;
 }
 
 /**
@@ -936,6 +1109,7 @@ shell = createAppShell(
   {
     onNew: () => void manager.newTab(),
     onOpen: () => void openViaDialog(),
+    onToggleLibrary: toggleLibrary,
     listRecents: () => invoke<string[]>('list_recents'),
     openRecent: async (path) => {
       const tab = await openPathByKind(path);
@@ -1074,6 +1248,7 @@ shell = createAppShell(
       if (outline !== undefined) {
         outline.retranslate();
       }
+      libraryView?.retranslate();
       statusBar?.refresh(getActiveStatusSnapshot);
       // Refresh window title with localized app name.
       const tab = manager?.activeTab ?? null;
@@ -1280,6 +1455,24 @@ manager = new TabManager({
       notify: (message) => {
         void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
       },
+      requestArchivePassword: ({ displayName, retry }) =>
+        showArchivePasswordDialog(document, {
+          displayName,
+          retry,
+          t: (key, vars) => i18n.t(key, vars),
+        }),
+      onComicMetadata: (target, metadata) =>
+        libraryClient.updateComicMetadata(
+          target.kind === 'remote' ? target.itemId : target.identity.id,
+          {
+            series: metadata.series,
+            number: metadata.number,
+            volume: metadata.volume,
+            pageCount: metadata.pageCount,
+            readingDirection: metadata.readingDirection,
+            coverPage: metadata.coverPage,
+          },
+        ),
     });
     reader.subscribeState(() => {
       const active = manager?.activeTab;
@@ -1514,6 +1707,19 @@ statusBar = createStatusBar(document, shell.statusBarHost, {
       zoom: i18n.t('status.reader.zoom'),
     },
   }),
+});
+
+libraryView = createLibraryView(shell.editorArea, {
+  opds: opdsClient,
+  library: libraryClient,
+  getLocale: () => i18n.locale,
+  onOpen: openLibraryItem,
+  onCache: cacheLibraryItem,
+  onImportLocal: importLocalLibraryItem,
+  notify: (message, kind = 'warning') => {
+    void dialogMessage(message, { title: i18n.t('app.name'), kind });
+  },
+  onVisibilityChange: setLibraryVisibility,
 });
 
 /** R8：状态栏 Markdown 序列化缓存——按内容版本去重，避免光标移动时重复全量序列化。 */

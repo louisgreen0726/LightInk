@@ -11,8 +11,16 @@
 
 import './reader.css';
 import type { MessageKey } from '../i18n/messages.js';
-import { parseReaderContent } from './formats/index.js';
-import type { ReaderByteSource, ReaderChapter, ReaderContent } from './formats/types.js';
+import { parseReaderContent, type ReaderInputSource } from './formats/index.js';
+import {
+  normalizeReaderTarget,
+  readerIdentityKey,
+  type ArchiveProvider,
+  type RandomAccessSource,
+  type ReaderTarget,
+  type RemoteReaderTarget,
+} from './sources/types.js';
+import type { ReaderChapter, ReaderContent } from './formats/types.js';
 import { ParseError } from './formats/types.js';
 import { sanitizeReaderCss } from './sanitize-css.js';
 import { renderCbzInto, type CbzRenderHandle } from './formats/cbz.js';
@@ -105,8 +113,16 @@ import {
   viewportAnchor,
 } from '../ui/reading-layout.js';
 import { createFlowRenderer } from './flow-renderer.js';
+import { attachRemoteSource } from './sources/remote-source.js';
+import {
+  NATIVE_ARCHIVE_EXTENSIONS,
+  openNativeArchive,
+  type ArchivePasswordProvider,
+} from './sources/native-archive.js';
+import { fnv1a64Hex } from './document-hash.js';
+import type { ComicMetadata } from './comic-model.js';
 
-const PAGE_EXTS = new Set(['pdf', 'cbz']);
+const PAGE_EXTS = new Set(['pdf', 'cbz', ...NATIVE_ARCHIVE_EXTENSIONS]);
 
 /** 仅用于稳定标注 id（无加密强度需求）。 */
 function newAnnotationId(): string {
@@ -179,11 +195,25 @@ export interface ReaderViewDeps {
   /** Injectable flow parser for lifecycle tests. */
   parseContent?: (
     filePath: string,
-    bytes: Uint8Array | ReaderByteSource,
+    source: ReaderInputSource,
     signal?: AbortSignal,
   ) => Promise<ReaderContent>;
+  /** Bind an opaque backend handle to a random-access source. */
+  openRemoteSource?: (
+    target: RemoteReaderTarget,
+    signal?: AbortSignal,
+  ) => Promise<RandomAccessSource>;
+  /** Open a native RAR/7z provider; injectable for focused tests. */
+  openArchiveProvider?: (
+    target: ReaderTarget,
+    signal?: AbortSignal,
+  ) => Promise<ArchiveProvider>;
+  /** Session-only password prompt used by encrypted native archives. */
+  requestArchivePassword?: ArchivePasswordProvider;
   /** Injectable progress storage; production uses localStorage. */
   progressStorage?: ProgressStorage | null;
+  /** Persist normalized ComicInfo metadata for an existing library item. */
+  onComicMetadata?: (target: ReaderTarget, metadata: ComicMetadata) => void | Promise<void>;
 }
 
 /**
@@ -224,8 +254,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   root.append(scrollHost, pageHost, status);
   host.appendChild(root);
 
-  const annotationsEnabled =
-    deps.getContentHash !== undefined && deps.readAnnotations !== undefined;
+  const annotationsEnabled = deps.readAnnotations !== undefined;
 
   let pdfHandle: PdfRenderHandle | null = null;
   let cbzHandle: CbzRenderHandle | null = null;
@@ -565,7 +594,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       readerState.total !== next.total ||
       readerState.progress !== next.progress ||
       readerState.scale !== next.scale ||
-      readerState.locationKind !== next.locationKind;
+      readerState.locationKind !== next.locationKind ||
+      readerState.comicMetadata !== next.comicMetadata;
     if (changed) {
       readerState = Object.freeze({ ...next });
     }
@@ -833,6 +863,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       progress: total === 0 ? 0 : Math.min(1, Math.max(0, current / total)),
       scale,
       locationKind: total === 0 ? null : 'page',
+      comicMetadata: cbzHandle?.metadata,
     });
   };
 
@@ -1765,27 +1796,80 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const stagePages = async (
     filePath: string,
-    bytes: Uint8Array,
+    source: Uint8Array | RandomAccessSource | null,
     signal: AbortSignal,
+    target: ReaderTarget,
   ): Promise<{
     host: HTMLDivElement;
     pdf: PdfRenderHandle | null;
     cbz: CbzRenderHandle | null;
   }> => {
     const ext = extOfPath(filePath);
-    if (ext !== 'pdf' && ext !== 'cbz') {
+    if (ext !== 'pdf' && ext !== 'cbz' && !NATIVE_ARCHIVE_EXTENSIONS.has(ext)) {
       throw new ParseError(`暂不支持的页格式：.${ext || '?'}`);
     }
     const stagedHost = createPageHost();
     stagedHost.hidden = false;
     stagedHost.dataset.readerActive = 'true';
     if (ext === 'pdf') {
+      if (source === null) throw new ParseError('PDF 字节源不可用');
       stagedHost.dataset.readerFormat = 'pdf';
-      const pdf = await renderPdfInto(bytes, stagedHost, signal);
+      const pdf = await renderPdfInto(source, stagedHost, signal);
       return { host: stagedHost, pdf, cbz: null };
     }
-    stagedHost.dataset.readerFormat = 'cbz';
-    const cbz = await renderCbzInto(bytes, stagedHost, signal);
+    stagedHost.dataset.readerFormat = ext;
+    const archiveSource = NATIVE_ARCHIVE_EXTENSIONS.has(ext)
+      ? await (deps.openArchiveProvider?.(target, signal) ??
+        openNativeArchive(target, {
+          signal,
+          requestPassword: deps.requestArchivePassword,
+        }))
+      : source;
+    if (archiveSource === null) throw new ParseError('漫画归档字节源不可用');
+    const cbz = await renderCbzInto(archiveSource, stagedHost, signal, {
+      requestPassword: deps.requestArchivePassword,
+      labels: {
+        previous: t('reader.comic.previous'),
+        next: t('reader.comic.next'),
+        vertical: t('reader.comic.vertical'),
+        paged: t('reader.comic.paged'),
+        leftToRight: t('reader.comic.ltr'),
+        rightToLeft: t('reader.comic.rtl'),
+        singlePage: t('reader.comic.single'),
+        doublePage: t('reader.comic.double'),
+        fitWidth: t('reader.comic.fitWidth'),
+        imageDecodeFailed: t('reader.comic.imageDecodeFailed'),
+        retry: t('reader.comic.retry'),
+      },
+      onPageChange: () => {
+        if (cbzHandle !== null) {
+          syncPageState();
+          schedulePersistReadingProgress();
+        }
+      },
+      onPageListChange: (totalPages, metadata) => {
+        readerOutline = outlineFromEntries(
+          Array.from({ length: totalPages }, (_, index) => ({
+            title: t('annotation.location.page', { page: String(index + 1) }),
+          })),
+          'page',
+        );
+        if (cbzHandle !== null) syncPageState();
+        void Promise.resolve(deps.onComicMetadata?.(target, metadata)).catch(() => undefined);
+      },
+      onArchiveProgress: (progress) => {
+        if (progress.phase === 'sequential' && progress.currentEntry < progress.targetEntry) {
+          status.hidden = false;
+          status.textContent = t('reader.archive.sequentialProgress', {
+            current: String(progress.currentEntry + 1),
+            target: String(progress.targetEntry + 1),
+          });
+        } else if (readerState.phase === 'ready') {
+          status.hidden = true;
+        }
+      },
+    });
+    void Promise.resolve(deps.onComicMetadata?.(target, cbz.metadata)).catch(() => undefined);
     return { host: stagedHost, pdf: null, cbz };
   };
 
@@ -1828,15 +1912,21 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const loadAnnotations = async (
-    filePath: string,
+    target: ReaderTarget,
     generation: number,
     signal: AbortSignal,
   ): Promise<void> => {
-    if (!annotationsEnabled) {
+    if (
+      !annotationsEnabled ||
+      (target.kind === 'local' && deps.getContentHash === undefined)
+    ) {
       return;
     }
     try {
-      const nextContentHash = await deps.getContentHash!(filePath);
+      const nextContentHash =
+        target.kind === 'local'
+          ? await deps.getContentHash!(target.path)
+          : fnv1a64Hex(`remote:${readerIdentityKey(target.identity)}`);
       if (destroyed || signal.aborted || generation !== loadGeneration) {
         return;
       }
@@ -1871,7 +1961,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       return true;
     }
     if (cbzHandle !== null) {
-      cbzHandle.scrollToPage(cbzHandle.currentPage + direction);
+      if (direction > 0) cbzHandle.nextPage();
+      else cbzHandle.previousPage();
       syncPageState();
       schedulePersistReadingProgress();
       return true;
@@ -2235,9 +2326,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         stateListeners.delete(listener);
       };
     },
-    async load(filePath: string, options: ReaderLoadOptions = {}): Promise<void> {
+    async load(targetOrPath: string | ReaderTarget, options: ReaderLoadOptions = {}): Promise<void> {
+      const target = normalizeReaderTarget(targetOrPath);
+      const filePath = target.kind === 'local' ? target.path : target.displayName;
+      const nextExt = (target.extension || extOfPath(filePath)).toLowerCase();
+      const nativeArchive = NATIVE_ARCHIVE_EXTENSIONS.has(nextExt);
       const readBytes = deps.readBytes;
-      if (readBytes === undefined) {
+      if (target.kind === 'local' && readBytes === undefined && !nativeArchive) {
         throw new Error('reader-view load requires the readBytes dependency');
       }
       if (destroyed) {
@@ -2260,7 +2355,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const controller = new AbortController();
       activeLoadController = controller;
       const generation = ++loadGeneration;
-      const nextExt = extOfPath(filePath);
+      const formatPath = extOfPath(filePath) === nextExt ? filePath : `${filePath}.${nextExt}`;
       const cancelFromCaller = (): void => controller.abort();
       if (options.signal?.aborted === true) {
         controller.abort();
@@ -2270,16 +2365,33 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       const isCurrent = (): boolean =>
         !destroyed && !controller.signal.aborted && generation === loadGeneration;
       let completed = false;
+      let pendingRemoteSource: RandomAccessSource | null = null;
 
       setReaderPhase('loading', true);
       try {
+        if (target.kind === 'remote' && !nativeArchive) {
+          pendingRemoteSource =
+            deps.openRemoteSource !== undefined
+              ? await deps.openRemoteSource(target, controller.signal)
+              : (await attachRemoteSource(target, { signal: controller.signal })).source;
+          throwIfReaderLoadCancelled(controller.signal);
+        }
         if (PAGE_EXTS.has(nextExt)) {
-          const bytes = await readBytes(filePath, controller.signal);
+          const pageSource =
+            nativeArchive
+              ? null
+              : target.kind === 'remote'
+              ? pendingRemoteSource!
+              : await readBytes!(filePath, controller.signal);
           throwIfReaderLoadCancelled(controller.signal);
           if (!isCurrent()) {
             return;
           }
-          const staged = await stagePages(filePath, bytes, controller.signal);
+          const staged = await stagePages(formatPath, pageSource, controller.signal, target);
+          if (target.kind === 'remote' && !nativeArchive) {
+            // The page renderer now owns the source and closes it with its handle.
+            pendingRemoteSource = null;
+          }
           if (controller.signal.aborted) {
             await staged.pdf?.destroy().catch(() => undefined);
             await staged.cbz?.destroy().catch(() => undefined);
@@ -2309,23 +2421,34 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
         } else {
           // T8：txt 经分块字节源懒读（不整文件驻留）；无 readChunk 依赖时回退整读。
-          const readChunk = nextExt === 'txt' ? deps.readChunk : undefined;
-          const source: Uint8Array | ReaderByteSource =
-            readChunk === undefined
-              ? await readBytes(filePath, controller.signal)
-              : {
-                  read: (offset, length, readSignal) =>
-                    readChunk(filePath, offset, length, readSignal ?? controller.signal),
-                };
+          const readChunk = target.kind === 'local' && nextExt === 'txt' ? deps.readChunk : undefined;
+          const source: ReaderInputSource =
+            target.kind === 'remote'
+              ? pendingRemoteSource!
+              : readChunk === undefined
+                ? await readBytes!(filePath, controller.signal)
+                : {
+                    read: (offset, length, readSignal) =>
+                      readChunk(filePath, offset, length, readSignal ?? controller.signal),
+                  };
           throwIfReaderLoadCancelled(controller.signal);
           if (!isCurrent()) {
             return;
           }
           const content = await (deps.parseContent ?? parseReaderContent)(
-            filePath,
+            formatPath,
             source,
             controller.signal,
           );
+          if (pendingRemoteSource !== null) {
+            const ownedSource = pendingRemoteSource;
+            const disposeContent = content.dispose;
+            content.dispose = () => {
+              disposeContent?.();
+              void ownedSource.close().catch(() => undefined);
+            };
+            pendingRemoteSource = null;
+          }
           if (controller.signal.aborted) {
             content.dispose?.();
             throwIfReaderLoadCancelled(controller.signal);
@@ -2368,10 +2491,12 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           }
         }
 
-        await loadAnnotations(filePath, generation, controller.signal);
+        await loadAnnotations(target, generation, controller.signal);
         throwIfReaderLoadCancelled(controller.signal);
         if (isCurrent()) {
-          progressId = contentHash ?? filePath;
+          progressId =
+            contentHash ??
+            (target.kind === 'remote' ? readerIdentityKey(target.identity) : filePath);
           pendingRestore = loadReadingProgress(progressStorage, progressId);
           restoreAttempts = 0;
           setReaderPhase('ready');
@@ -2397,6 +2522,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         throw error;
       } finally {
         options.signal?.removeEventListener('abort', cancelFromCaller);
+        await pendingRemoteSource?.close().catch(() => undefined);
         if (activeLoadController === controller && !completed) {
           activeLoadController = null;
         }

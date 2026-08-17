@@ -15,7 +15,7 @@ import { bytesToBase64 } from '../../asset/asset-service.js';
 import { sanitizeHtml } from '../sanitize.js';
 import { sanitizeReaderCss } from '../sanitize-css.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
-import { openSafeArchive } from './safe-archive.js';
+import { openSafeArchive, type ArchiveInput } from './safe-archive.js';
 import {
   ParseError,
   ReaderLimitError,
@@ -93,10 +93,10 @@ function resolveArchiveReference(basePath: string, href: string): ArchiveReferen
  * Parse EPUB bytes into chapters. Missing/corrupt package data throws ParseError.
  */
 export async function parseEpub(
-  bytes: Uint8Array,
+  source: ArchiveInput,
   signal?: AbortSignal,
 ): Promise<ReaderContent> {
-  const archive = await openSafeArchive(bytes, 'EPUB', signal);
+  const archive = await openSafeArchive(source, 'EPUB', signal);
   // T8：包内图片不再 parse 期物化。materialized/pathByUrl 记录按章节窗口懒物化
   // 的 blob URL（path → { url, refs } 引用计数）；archive 存活至内容 dispose，
   // dispose 兜底 revoke 全部并关闭 archive。

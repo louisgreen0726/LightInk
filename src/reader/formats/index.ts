@@ -12,15 +12,22 @@ import { parseTxt, parseTxtFromSource } from './txt.js';
 import { ParseError, type ReaderByteSource, type ReaderContent } from './types.js';
 import { throwIfReaderLoadCancelled } from '../load-lifecycle.js';
 import { extOfPath } from '../../file/path-ext.js';
+import type { RandomAccessSource } from '../sources/types.js';
 
 /** epub/mobi/fb2 保持整读；只有 txt 走分块字节源（T8）。 */
-function isReaderByteSource(source: Uint8Array | ReaderByteSource): source is ReaderByteSource {
+export type ReaderInputSource = Uint8Array | ReaderByteSource | RandomAccessSource;
+
+function isReaderByteSource(source: ReaderInputSource): source is ReaderByteSource {
   // 结构化判定：跨 realm（jsdom/node）Uint8Array instanceof 不可靠。
   return typeof (source as ReaderByteSource).read === 'function';
 }
 
-function requireBytes(source: Uint8Array | ReaderByteSource, ext: string): Uint8Array {
-  if (!isReaderByteSource(source)) {
+function isRandomAccessSource(source: ReaderInputSource): source is RandomAccessSource {
+  return typeof (source as RandomAccessSource).readRange === 'function';
+}
+
+function requireBytes(source: ReaderInputSource, ext: string): Uint8Array {
+  if (!isReaderByteSource(source) && !isRandomAccessSource(source)) {
     return source;
   }
   throw new ParseError(`内部错误：.${ext} 解析需要整读字节`);
@@ -34,7 +41,7 @@ function requireBytes(source: Uint8Array | ReaderByteSource, ext: string): Uint8
  */
 export async function parseReaderContent(
   path: string,
-  source: Uint8Array | ReaderByteSource,
+  source: ReaderInputSource,
   signal?: AbortSignal,
 ): Promise<ReaderContent> {
   throwIfReaderLoadCancelled(signal);
@@ -42,15 +49,25 @@ export async function parseReaderContent(
   let content: ReaderContent;
   switch (ext) {
     case 'txt':
-      content = isReaderByteSource(source)
-        ? await parseTxtFromSource(source, signal)
-        : parseTxt(source);
+      if (isRandomAccessSource(source)) {
+        content = await parseTxtFromSource(
+          { read: (offset, length, readSignal) => source.readRange(offset, length, readSignal) },
+          signal,
+        );
+      } else {
+        content = isReaderByteSource(source)
+          ? await parseTxtFromSource(source, signal)
+          : parseTxt(source);
+      }
       break;
     case 'fb2':
       content = parseFb2(requireBytes(source, ext));
       break;
     case 'epub':
-      content = await parseEpub(requireBytes(source, ext), signal);
+      content = await parseEpub(
+        isRandomAccessSource(source) ? source : requireBytes(source, ext),
+        signal,
+      );
       break;
     case 'mobi':
       content = parseMobi(requireBytes(source, ext));

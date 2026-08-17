@@ -1,0 +1,1073 @@
+import type { AcquisitionLink, LibraryClient, LibraryItem } from './library-client.js';
+import type {
+  OpdsClient,
+  OpdsEntry,
+  OpdsFeed,
+  OpdsLink,
+  OpdsSource,
+  OpdsSourceInput,
+} from './opds-client.js';
+
+type Locale = 'en' | 'zh-CN';
+
+interface Labels {
+  library: string;
+  allBooks: string;
+  sources: string;
+  addSource: string;
+  editSource: string;
+  importLocal: string;
+  search: string;
+  searchPlaceholder: string;
+  clear: string;
+  empty: string;
+  loading: string;
+  retry: string;
+  close: string;
+  open: string;
+  cacheBook: string;
+  caching: string;
+  remove: string;
+  clearCache: string;
+  cacheUsage: string;
+  cacheLimit: string;
+  changeCacheLimit: string;
+  apply: string;
+  title: string;
+  url: string;
+  allowHttp: string;
+  auth: string;
+  none: string;
+  keepAuth: string;
+  basic: string;
+  bearer: string;
+  username: string;
+  password: string;
+  token: string;
+  save: string;
+  cancel: string;
+  deleteSource: string;
+  prev: string;
+  next: string;
+  noAcquisition: string;
+  offline: string;
+  details: string;
+  local: string;
+  series: string;
+  number: string;
+  volume: string;
+  pages: string;
+  direction: string;
+  directionLtr: string;
+  directionRtl: string;
+  coverPage: string;
+}
+
+const LABELS: Record<Locale, Labels> = {
+  en: {
+    library: 'Library',
+    allBooks: 'All books',
+    sources: 'Sources',
+    addSource: 'Add OPDS source',
+    editSource: 'Edit OPDS source',
+    importLocal: 'Import local book',
+    search: 'Search',
+    searchPlaceholder: 'Search this library',
+    clear: 'Clear',
+    empty: 'No books found',
+    loading: 'Loading…',
+    retry: 'Retry',
+    close: 'Close library',
+    open: 'Open',
+    cacheBook: 'Cache book',
+    caching: 'Caching…',
+    remove: 'Remove from library',
+    clearCache: 'Clear cache',
+    cacheUsage: '{used} of {limit}',
+    cacheLimit: 'Cache limit (GiB)',
+    changeCacheLimit: 'Change cache limit',
+    apply: 'Apply',
+    title: 'Name',
+    url: 'Catalog URL',
+    allowHttp: 'Allow HTTP/LAN source',
+    auth: 'Authentication',
+    none: 'None',
+    keepAuth: 'Keep current authentication',
+    basic: 'Basic',
+    bearer: 'Bearer',
+    username: 'Username',
+    password: 'Password',
+    token: 'Token',
+    save: 'Save',
+    cancel: 'Cancel',
+    deleteSource: 'Remove source',
+    prev: 'Previous',
+    next: 'Next',
+    noAcquisition: 'No supported acquisition link',
+    offline: 'Could not reach this source.',
+    details: 'Book details',
+    local: 'Local',
+    series: 'Series',
+    number: 'Number',
+    volume: 'Volume',
+    pages: 'Pages',
+    direction: 'Reading direction',
+    directionLtr: 'Left to right',
+    directionRtl: 'Right to left',
+    coverPage: 'Cover page',
+  },
+  'zh-CN': {
+    library: '书库',
+    allBooks: '全部作品',
+    sources: '书库源',
+    addSource: '添加 OPDS 源',
+    editSource: '编辑 OPDS 源',
+    importLocal: '导入本地书籍',
+    search: '搜索',
+    searchPlaceholder: '搜索当前书库',
+    clear: '清除',
+    empty: '暂无作品',
+    loading: '正在加载…',
+    retry: '重试',
+    close: '关闭书库',
+    open: '打开阅读',
+    cacheBook: '缓存整本',
+    caching: '正在缓存…',
+    remove: '移出书库',
+    clearCache: '清理缓存',
+    cacheUsage: '已用 {used} / {limit}',
+    cacheLimit: '缓存上限（GiB）',
+    changeCacheLimit: '调整缓存上限',
+    apply: '应用',
+    title: '名称',
+    url: '目录地址',
+    allowHttp: '允许 HTTP/LAN 源',
+    auth: '鉴权',
+    none: '无',
+    keepAuth: '保留现有鉴权',
+    basic: 'Basic',
+    bearer: 'Bearer',
+    username: '用户名',
+    password: '密码',
+    token: '令牌',
+    save: '保存',
+    cancel: '取消',
+    deleteSource: '删除源',
+    prev: '上一页',
+    next: '下一页',
+    noAcquisition: '没有可用的获取链接',
+    offline: '无法连接此书库源。',
+    details: '作品详情',
+    local: '本地',
+    series: '系列',
+    number: '序号',
+    volume: '卷',
+    pages: '页数',
+    direction: '阅读方向',
+    directionLtr: '从左到右',
+    directionRtl: '从右到左',
+    coverPage: '封面页',
+  },
+};
+
+export interface LibraryOpenRequest {
+  readonly item: LibraryItem;
+  readonly acquisition?: AcquisitionLink;
+  readonly source?: OpdsSource;
+}
+
+export interface LibraryViewDependencies {
+  readonly opds: Pick<
+    OpdsClient,
+    'addSource' | 'listSources' | 'removeSource' | 'browse' | 'search'
+  >;
+  readonly library: Pick<
+    LibraryClient,
+    | 'listItems'
+    | 'listAcquisitionLinks'
+    | 'removeItem'
+    | 'clearCache'
+    | 'setCacheLimit'
+    | 'cacheStats'
+  >;
+  readonly getLocale: () => Locale;
+  readonly onOpen: (request: LibraryOpenRequest, signal?: AbortSignal) => Promise<void>;
+  readonly onCache: (request: LibraryOpenRequest, signal?: AbortSignal) => Promise<void>;
+  readonly onImportLocal: () => Promise<LibraryItem | null>;
+  readonly notify: (message: string, kind?: 'error' | 'warning') => void;
+  readonly onVisibilityChange?: (visible: boolean) => void;
+}
+
+export interface LibraryView {
+  readonly element: HTMLElement;
+  readonly visible: boolean;
+  show(): Promise<void>;
+  hide(): void;
+  toggle(): Promise<void>;
+  refresh(): Promise<void>;
+  retranslate(): void;
+  destroy(): void;
+}
+
+interface DisplayItem {
+  readonly item: LibraryItem;
+  readonly entry?: OpdsEntry;
+  readonly links: readonly AcquisitionLink[];
+}
+
+function bytesLabel(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : value.toFixed(0)} ${units[unit]}`;
+}
+
+function acquisitionFromOpds(itemId: string, link: OpdsLink): AcquisitionLink {
+  return {
+    itemId,
+    href: link.href,
+    rel: link.rel,
+    mediaType: link.mediaType,
+    extension: link.extension,
+    size: link.size,
+  };
+}
+
+function itemFromEntry(sourceId: string, entry: OpdsEntry): DisplayItem {
+  const itemId = entry.itemId ?? `opds:${sourceId}:${entry.id}`;
+  const links = entry.links
+    .filter((link) => link.acquisition)
+    .map((link) => acquisitionFromOpds(itemId, link));
+  const primary = links[0];
+  return {
+    item: {
+      id: itemId,
+      sourceId,
+      sourceKind: 'opds',
+      title: entry.title,
+      authors: entry.authors,
+      coverUrl: entry.coverUrl,
+      acquisitionUrl: primary?.href,
+      mediaType: primary?.mediaType,
+      extension: primary?.extension,
+      size: primary?.size,
+      updatedAt: Date.now(),
+    },
+    entry,
+    links,
+  };
+}
+
+function safeCoverUrl(item: LibraryItem, sources: readonly OpdsSource[]): string | undefined {
+  if (item.coverUrl === undefined) return undefined;
+  try {
+    const url = new URL(item.coverUrl);
+    if (url.protocol === 'https:') return url.href;
+    const source = sources.find((candidate) => candidate.id === item.sourceId);
+    return url.protocol === 'http:' && source?.allowHttp === true ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function errorText(error: unknown, fallback: string): string {
+  if (error !== null && typeof error === 'object') {
+    const value = error as Record<string, unknown>;
+    if (typeof value['message'] === 'string' && value['message'].trim() !== '') {
+      return value['message'];
+    }
+  }
+  return error instanceof Error && error.message !== '' ? error.message : fallback;
+}
+
+function button(doc: Document, text: string, className = ''): HTMLButtonElement {
+  const element = doc.createElement('button');
+  element.type = 'button';
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+export function createLibraryView(
+  host: HTMLElement,
+  deps: LibraryViewDependencies,
+  doc: Document = document,
+): LibraryView {
+  const root = doc.createElement('section');
+  root.className = 'lightink-library';
+  root.hidden = true;
+  root.setAttribute('aria-label', LABELS[deps.getLocale()].library);
+
+  const header = doc.createElement('header');
+  header.className = 'lightink-library-header';
+  const heading = doc.createElement('h1');
+  const searchForm = doc.createElement('form');
+  searchForm.className = 'lightink-library-search';
+  searchForm.setAttribute('role', 'search');
+  const searchInput = doc.createElement('input');
+  searchInput.type = 'search';
+  const searchButton = button(doc, '', 'lightink-library-primary');
+  searchForm.append(searchInput, searchButton);
+  const toolbar = doc.createElement('div');
+  toolbar.className = 'lightink-library-toolbar';
+  const importButton = button(doc, '');
+  const clearCacheButton = button(doc, '');
+  const closeButton = button(doc, '×', 'lightink-library-icon-button');
+  closeButton.setAttribute('aria-label', LABELS[deps.getLocale()].close);
+  closeButton.title = LABELS[deps.getLocale()].close;
+  toolbar.append(importButton, clearCacheButton, closeButton);
+  header.append(heading, searchForm, toolbar);
+
+  const body = doc.createElement('div');
+  body.className = 'lightink-library-body';
+  const sourcePane = doc.createElement('aside');
+  sourcePane.className = 'lightink-library-sources';
+  const sourceHeader = doc.createElement('div');
+  sourceHeader.className = 'lightink-library-pane-heading';
+  const sourceTitle = doc.createElement('h2');
+  const addSourceButton = button(doc, '+', 'lightink-library-icon-button');
+  sourceHeader.append(sourceTitle, addSourceButton);
+  const sourceList = doc.createElement('nav');
+  sourceList.className = 'lightink-library-source-list';
+  const sourceForm = doc.createElement('form');
+  sourceForm.className = 'lightink-library-source-form';
+  sourceForm.hidden = true;
+  sourcePane.append(sourceHeader, sourceList, sourceForm);
+
+  const content = doc.createElement('main');
+  content.className = 'lightink-library-content';
+  const navigation = doc.createElement('div');
+  navigation.className = 'lightink-library-navigation';
+  const breadcrumbs = doc.createElement('nav');
+  breadcrumbs.className = 'lightink-library-breadcrumbs';
+  breadcrumbs.setAttribute('aria-label', 'Breadcrumb');
+  const pager = doc.createElement('div');
+  pager.className = 'lightink-library-pager';
+  const previousButton = button(doc, '');
+  const nextButton = button(doc, '');
+  pager.append(previousButton, nextButton);
+  navigation.append(breadcrumbs, pager);
+  const cacheSummary = doc.createElement('div');
+  cacheSummary.className = 'lightink-library-cache-summary';
+  const cacheUsage = doc.createElement('span');
+  const cacheLimitButton = button(doc, '⚙', 'lightink-library-icon-button');
+  const cacheLimitForm = doc.createElement('form');
+  cacheLimitForm.className = 'lightink-library-cache-limit-form';
+  cacheLimitForm.hidden = true;
+  const cacheLimitLabel = doc.createElement('label');
+  const cacheLimitLabelText = doc.createElement('span');
+  const cacheLimitInput = doc.createElement('input');
+  cacheLimitInput.type = 'number';
+  cacheLimitInput.name = 'cacheLimitGiB';
+  cacheLimitInput.min = '0.25';
+  cacheLimitInput.max = '1024';
+  cacheLimitInput.step = '0.25';
+  cacheLimitInput.required = true;
+  cacheLimitLabel.append(cacheLimitLabelText, cacheLimitInput);
+  const cacheLimitSave = button(doc, '', 'lightink-library-primary');
+  cacheLimitSave.type = 'submit';
+  cacheLimitForm.append(cacheLimitLabel, cacheLimitSave);
+  cacheSummary.append(cacheUsage, cacheLimitButton, cacheLimitForm);
+  const status = doc.createElement('div');
+  status.className = 'lightink-library-status';
+  status.setAttribute('role', 'status');
+  const retryButton = button(doc, '');
+  retryButton.hidden = true;
+  status.append(retryButton);
+  const workArea = doc.createElement('div');
+  workArea.className = 'lightink-library-workarea';
+  const itemList = doc.createElement('div');
+  itemList.className = 'lightink-library-items';
+  itemList.setAttribute('role', 'listbox');
+  itemList.tabIndex = 0;
+  const detail = doc.createElement('aside');
+  detail.className = 'lightink-library-detail';
+  detail.hidden = true;
+  workArea.append(itemList, detail);
+  content.append(navigation, cacheSummary, status, workArea);
+  body.append(sourcePane, content);
+  root.append(header, body);
+  host.appendChild(root);
+
+  let sources: OpdsSource[] = [];
+  let selectedSourceId: string | null = null;
+  let editingSourceId: string | null = null;
+  let selected: DisplayItem | null = null;
+  let items: DisplayItem[] = [];
+  let feed: OpdsFeed | null = null;
+  let currentUrl: string | undefined;
+  let lastAction: (() => Promise<void>) | null = null;
+  let requestGeneration = 0;
+  const activeOperations = new Set<AbortController>();
+  const trail: Array<{ title: string; url?: string }> = [];
+
+  const labels = (): Labels => LABELS[deps.getLocale()];
+  const selectedSource = (): OpdsSource | undefined =>
+    sources.find((source) => source.id === selectedSourceId);
+
+  function setStatus(message: string, retry = false): void {
+    status.replaceChildren();
+    if (message !== '') {
+      const text = doc.createElement('span');
+      text.textContent = message;
+      status.appendChild(text);
+    }
+    retryButton.textContent = labels().retry;
+    retryButton.hidden = !retry;
+    if (retry) status.appendChild(retryButton);
+    status.hidden = message === '' && !retry;
+  }
+
+  async function updateCacheSummary(): Promise<void> {
+    try {
+      const cache = await deps.library.cacheStats();
+      cacheUsage.textContent = labels()
+        .cacheUsage.replace('{used}', bytesLabel(cache.bytesCached))
+        .replace('{limit}', bytesLabel(cache.limitBytes));
+      if (doc.activeElement !== cacheLimitInput) {
+        cacheLimitInput.value = String(cache.limitBytes / 1024 ** 3);
+      }
+    } catch {
+      cacheUsage.textContent = '';
+    }
+  }
+
+  function renderSources(): void {
+    sourceList.replaceChildren();
+    const all = button(doc, labels().allBooks, 'lightink-library-source');
+    all.dataset.sourceId = '';
+    all.classList.toggle('is-active', selectedSourceId === null);
+    all.setAttribute('aria-current', selectedSourceId === null ? 'page' : 'false');
+    all.addEventListener('click', () => void selectSource(null));
+    sourceList.appendChild(all);
+    for (const source of sources) {
+      const row = doc.createElement('div');
+      row.className = 'lightink-library-source-row';
+      const choose = button(doc, source.title, 'lightink-library-source');
+      choose.dataset.sourceId = source.id;
+      choose.title = source.url;
+      choose.classList.toggle('is-active', selectedSourceId === source.id);
+      choose.setAttribute('aria-current', selectedSourceId === source.id ? 'page' : 'false');
+      choose.addEventListener('click', () => void selectSource(source.id));
+      const edit = button(doc, '✎', 'lightink-library-icon-button');
+      edit.title = labels().editSource;
+      edit.setAttribute('aria-label', `${labels().editSource}: ${source.title}`);
+      edit.addEventListener('click', () => openSourceForm(source));
+      const remove = button(doc, '×', 'lightink-library-icon-button');
+      remove.title = labels().deleteSource;
+      remove.setAttribute('aria-label', `${labels().deleteSource}: ${source.title}`);
+      remove.addEventListener('click', () => void removeSource(source));
+      row.append(choose, edit, remove);
+      sourceList.appendChild(row);
+    }
+  }
+
+  function renderBreadcrumbs(): void {
+    breadcrumbs.replaceChildren();
+    const source = selectedSource();
+    const rootCrumb = button(doc, source?.title ?? labels().allBooks);
+    rootCrumb.addEventListener('click', () => void selectSource(source?.id ?? null));
+    breadcrumbs.appendChild(rootCrumb);
+    for (const [index, crumb] of trail.entries()) {
+      const separator = doc.createElement('span');
+      separator.textContent = '/';
+      const crumbButton = button(doc, crumb.title);
+      crumbButton.addEventListener('click', () => {
+        trail.splice(index + 1);
+        void loadFeed(crumb.url, false);
+      });
+      breadcrumbs.append(separator, crumbButton);
+    }
+    previousButton.disabled = feed?.previousUrl === undefined;
+    nextButton.disabled = feed?.nextUrl === undefined;
+  }
+
+  function renderItems(): void {
+    itemList.replaceChildren();
+    if (items.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = 'lightink-library-empty';
+      empty.textContent = labels().empty;
+      itemList.appendChild(empty);
+      detail.hidden = true;
+      return;
+    }
+    for (const display of items) {
+      const row = button(doc, '', 'lightink-library-item');
+      row.dataset.itemId = display.item.id;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', selected?.item.id === display.item.id ? 'true' : 'false');
+      row.classList.toggle('is-selected', selected?.item.id === display.item.id);
+      const cover = doc.createElement('div');
+      cover.className = 'lightink-library-cover';
+      const coverUrl = safeCoverUrl(display.item, sources);
+      if (coverUrl !== undefined) {
+        const image = doc.createElement('img');
+        image.src = coverUrl;
+        image.alt = '';
+        image.loading = 'lazy';
+        image.referrerPolicy = 'no-referrer';
+        cover.appendChild(image);
+      } else {
+        cover.textContent = display.item.title.slice(0, 1).toUpperCase();
+      }
+      const text = doc.createElement('span');
+      text.className = 'lightink-library-item-text';
+      const title = doc.createElement('strong');
+      title.textContent = display.item.title;
+      const meta = doc.createElement('span');
+      meta.textContent = [
+        display.item.authors.join(', '),
+        display.item.series,
+        display.item.extension?.toUpperCase(),
+        display.item.size === undefined ? undefined : bytesLabel(display.item.size),
+      ]
+        .filter((part): part is string => part !== undefined && part !== '')
+        .join(' · ');
+      text.append(title, meta);
+      row.append(cover, text);
+      row.addEventListener('click', () => void selectItem(display));
+      row.addEventListener('dblclick', () => void openSelected(display));
+      itemList.appendChild(row);
+    }
+  }
+
+  async function ensureLinks(display: DisplayItem): Promise<DisplayItem> {
+    if (display.links.length > 0 || display.item.sourceKind === 'local') return display;
+    try {
+      const links = await deps.library.listAcquisitionLinks(display.item.id);
+      return { ...display, links };
+    } catch {
+      return display;
+    }
+  }
+
+  async function selectItem(display: DisplayItem): Promise<void> {
+    const restoreFocus =
+      doc.activeElement instanceof HTMLButtonElement && itemList.contains(doc.activeElement);
+    selected = await ensureLinks(display);
+    const index = items.findIndex((candidate) => candidate.item.id === selected?.item.id);
+    if (index >= 0) items[index] = selected;
+    renderItems();
+    renderDetail();
+    if (restoreFocus) {
+      Array.from(itemList.querySelectorAll<HTMLButtonElement>('.lightink-library-item'))
+        .find((row) => row.dataset.itemId === display.item.id)
+        ?.focus();
+    }
+  }
+
+  function selectedAcquisition(display: DisplayItem | null = selected): AcquisitionLink | undefined {
+    const select = detail.querySelector<HTMLSelectElement>('.lightink-library-acquisition');
+    const href = select?.value;
+    return display?.links.find((link) => link.href === href) ?? display?.links[0];
+  }
+
+  function requestFor(display: DisplayItem): LibraryOpenRequest {
+    return {
+      item: display.item,
+      acquisition: selectedAcquisition(display),
+      source: selectedSource() ?? sources.find((source) => source.id === display.item.sourceId),
+    };
+  }
+
+  async function openSelected(display = selected): Promise<void> {
+    if (display === null) return;
+    const request = requestFor(display);
+    if (display.item.sourceKind !== 'local' && request.acquisition === undefined) {
+      deps.notify(labels().noAcquisition, 'warning');
+      return;
+    }
+    const controller = new AbortController();
+    activeOperations.add(controller);
+    try {
+      await deps.onOpen(request, controller.signal);
+      if (controller.signal.aborted) return;
+      activeOperations.delete(controller);
+      hide();
+    } catch (error) {
+      if (!controller.signal.aborted) deps.notify(errorText(error, labels().offline), 'error');
+    } finally {
+      activeOperations.delete(controller);
+    }
+  }
+
+  function renderDetail(): void {
+    detail.replaceChildren();
+    if (selected === null) {
+      detail.hidden = true;
+      return;
+    }
+    detail.hidden = false;
+    const detailHeading = doc.createElement('h2');
+    detailHeading.textContent = labels().details;
+    const title = doc.createElement('h3');
+    title.textContent = selected.item.title;
+    const authors = doc.createElement('p');
+    authors.className = 'lightink-library-detail-authors';
+    authors.textContent = selected.item.authors.join(', ');
+    detail.append(detailHeading, title, authors);
+    const facts: Array<[string, string | undefined]> = [
+      [labels().series, selected.item.series],
+      [labels().number, selected.item.number],
+      [labels().volume, selected.item.volume],
+      [labels().pages, selected.item.pageCount?.toLocaleString()],
+      [
+        labels().direction,
+        selected.item.readingDirection === 'rtl'
+          ? labels().directionRtl
+          : selected.item.readingDirection === 'ltr'
+            ? labels().directionLtr
+            : undefined,
+      ],
+      [
+        labels().coverPage,
+        selected.item.coverPage === undefined
+          ? undefined
+          : String(selected.item.coverPage + 1),
+      ],
+    ];
+    const availableFacts = facts.filter(
+      (fact): fact is [string, string] => fact[1] !== undefined && fact[1] !== '',
+    );
+    if (availableFacts.length > 0) {
+      const metadata = doc.createElement('dl');
+      metadata.className = 'lightink-library-comic-metadata';
+      for (const [label, value] of availableFacts) {
+        const term = doc.createElement('dt');
+        term.textContent = label;
+        const description = doc.createElement('dd');
+        description.textContent = value;
+        metadata.append(term, description);
+      }
+      detail.appendChild(metadata);
+    }
+    if (selected.entry?.summary !== undefined && selected.entry.summary !== '') {
+      const summary = doc.createElement('p');
+      summary.className = 'lightink-library-summary';
+      summary.textContent = selected.entry.summary;
+      detail.appendChild(summary);
+    }
+    if (selected.links.length > 1) {
+      const acquisition = doc.createElement('select');
+      acquisition.className = 'lightink-library-acquisition';
+      acquisition.setAttribute('aria-label', labels().open);
+      for (const link of selected.links) {
+        const option = doc.createElement('option');
+        option.value = link.href;
+        option.textContent = [link.title ?? link.mediaType, link.extension?.toUpperCase(), link.size === undefined ? undefined : bytesLabel(link.size)]
+          .filter((part): part is string => part !== undefined && part !== '')
+          .join(' · ');
+        acquisition.appendChild(option);
+      }
+      detail.appendChild(acquisition);
+    }
+    const actions = doc.createElement('div');
+    actions.className = 'lightink-library-detail-actions';
+    const open = button(doc, labels().open, 'lightink-library-primary');
+    open.disabled = selected.item.sourceKind !== 'local' && selected.links.length === 0;
+    open.addEventListener('click', () => void openSelected());
+    actions.appendChild(open);
+    if (selected.item.sourceKind !== 'local') {
+      const cache = button(doc, labels().cacheBook);
+      cache.disabled = selected.links.length === 0;
+      cache.addEventListener('click', async () => {
+        if (selected === null) return;
+        cache.disabled = true;
+        cache.textContent = labels().caching;
+        const controller = new AbortController();
+        activeOperations.add(controller);
+        try {
+          await deps.onCache(requestFor(selected), controller.signal);
+          await updateCacheSummary();
+        } catch (error) {
+          if (!controller.signal.aborted) deps.notify(errorText(error, labels().offline), 'error');
+        } finally {
+          activeOperations.delete(controller);
+          cache.disabled = false;
+          cache.textContent = labels().cacheBook;
+        }
+      });
+      actions.appendChild(cache);
+    }
+    const remove = button(doc, labels().remove, 'lightink-library-danger');
+    remove.addEventListener('click', () => void removeItem(selected!.item));
+    actions.appendChild(remove);
+    detail.appendChild(actions);
+  }
+
+  async function loadPersistedItems(): Promise<void> {
+    const generation = ++requestGeneration;
+    setStatus(labels().loading);
+    lastAction = loadPersistedItems;
+    try {
+      const loaded = await deps.library.listItems();
+      if (generation !== requestGeneration) return;
+      items = loaded.map((item) => ({ item, links: [] }));
+      selected = null;
+      feed = null;
+      currentUrl = undefined;
+      trail.splice(0);
+      setStatus('');
+      renderBreadcrumbs();
+      renderItems();
+    } catch (error) {
+      if (generation !== requestGeneration) return;
+      items = [];
+      renderItems();
+      setStatus(errorText(error, labels().offline), true);
+    }
+  }
+
+  async function loadFeed(url?: string, pushTrail = false): Promise<void> {
+    const source = selectedSource();
+    if (source === undefined) return;
+    const generation = ++requestGeneration;
+    setStatus(labels().loading);
+    currentUrl = url;
+    lastAction = () => loadFeed(currentUrl, false);
+    try {
+      const loaded = await deps.opds.browse(source.id, url);
+      if (generation !== requestGeneration) return;
+      feed = loaded;
+      items = loaded.entries.map((entry) => itemFromEntry(source.id, entry));
+      selected = null;
+      if (pushTrail) trail.push({ title: loaded.title, url: loaded.sourceUrl });
+      setStatus('');
+      renderBreadcrumbs();
+      renderItems();
+    } catch (error) {
+      if (generation !== requestGeneration) return;
+      items = [];
+      renderItems();
+      setStatus(errorText(error, labels().offline), true);
+    }
+  }
+
+  async function selectSource(sourceId: string | null): Promise<void> {
+    selectedSourceId = sourceId;
+    searchInput.value = '';
+    trail.splice(0);
+    renderSources();
+    renderBreadcrumbs();
+    if (sourceId === null) await loadPersistedItems();
+    else await loadFeed(undefined, false);
+  }
+
+  async function search(): Promise<void> {
+    const query = searchInput.value.trim();
+    if (query === '') {
+      await selectSource(selectedSourceId);
+      return;
+    }
+    if (selectedSourceId === null) {
+      const lowered = query.toLocaleLowerCase();
+      const loaded = await deps.library.listItems();
+      items = loaded
+        .filter((item) => `${item.title}\n${item.authors.join('\n')}`.toLocaleLowerCase().includes(lowered))
+        .map((item) => ({ item, links: [] }));
+      selected = null;
+      renderItems();
+      return;
+    }
+    const generation = ++requestGeneration;
+    setStatus(labels().loading);
+    lastAction = search;
+    try {
+      const loaded = await deps.opds.search(selectedSourceId, query);
+      if (generation !== requestGeneration) return;
+      feed = loaded;
+      items = loaded.entries.map((entry) => itemFromEntry(selectedSourceId!, entry));
+      selected = null;
+      trail.splice(0, trail.length, { title: `${labels().search}: ${query}`, url: loaded.sourceUrl });
+      setStatus('');
+      renderBreadcrumbs();
+      renderItems();
+    } catch (error) {
+      if (generation !== requestGeneration) return;
+      setStatus(errorText(error, labels().offline), true);
+    }
+  }
+
+  function renderSourceForm(source?: OpdsSource): void {
+    sourceForm.replaceChildren();
+    const makeInput = (name: string, type = 'text'): HTMLInputElement => {
+      const input = doc.createElement('input');
+      input.name = name;
+      input.type = type;
+      input.required = true;
+      input.placeholder = labels()[name as keyof Labels] ?? name;
+      return input;
+    };
+    const title = makeInput('title');
+    const url = makeInput('url', 'url');
+    const auth = doc.createElement('select');
+    auth.name = 'auth';
+    if (source?.credentialRef !== undefined) {
+      const option = doc.createElement('option');
+      option.value = 'keep';
+      option.textContent = labels().keepAuth;
+      auth.appendChild(option);
+    }
+    for (const value of ['none', 'basic', 'bearer'] as const) {
+      const option = doc.createElement('option');
+      option.value = value;
+      option.textContent = labels()[value];
+      auth.appendChild(option);
+    }
+    const username = makeInput('username');
+    const password = makeInput('password', 'password');
+    const token = makeInput('token', 'password');
+    username.required = false;
+    password.required = false;
+    token.required = false;
+    username.hidden = password.hidden = token.hidden = true;
+    const allowLabel = doc.createElement('label');
+    const allow = doc.createElement('input');
+    allow.type = 'checkbox';
+    allow.name = 'allowHttp';
+    allowLabel.append(allow, doc.createTextNode(labels().allowHttp));
+    const actions = doc.createElement('div');
+    const save = button(doc, labels().save, 'lightink-library-primary');
+    save.type = 'submit';
+    const cancel = button(doc, labels().cancel);
+    cancel.addEventListener('click', () => {
+      closeSourceForm();
+    });
+    actions.append(save, cancel);
+    sourceForm.append(title, url, auth, username, password, token, allowLabel, actions);
+    auth.addEventListener('change', () => {
+      username.hidden = password.hidden = auth.value !== 'basic';
+      token.hidden = auth.value !== 'bearer';
+      username.required = password.required = auth.value === 'basic';
+      token.required = auth.value === 'bearer';
+    });
+    title.value = source?.title ?? '';
+    url.value = source?.url ?? '';
+    allow.checked = source?.allowHttp ?? false;
+    auth.value = source?.credentialRef === undefined ? 'none' : 'keep';
+  }
+
+  function closeSourceForm(): void {
+    editingSourceId = null;
+    sourceForm.reset();
+    sourceForm.hidden = true;
+    addSourceButton.focus();
+  }
+
+  function openSourceForm(source?: OpdsSource): void {
+    editingSourceId = source?.id ?? null;
+    renderSourceForm(source);
+    sourceForm.hidden = false;
+    sourceForm.querySelector<HTMLInputElement>('input')?.focus();
+  }
+
+  async function saveSource(): Promise<void> {
+    const data = new FormData(sourceForm);
+    const auth = String(data.get('auth') ?? 'none');
+    const editing = sources.find((source) => source.id === editingSourceId);
+    const input: OpdsSourceInput = {
+      id: editing?.id,
+      title: String(data.get('title') ?? ''),
+      url: String(data.get('url') ?? ''),
+      allowHttp: data.get('allowHttp') === 'on',
+      credentialRef: auth === 'keep' ? editing?.credentialRef : undefined,
+      clearCredential:
+        editing?.credentialRef !== undefined && auth === 'none' ? true : undefined,
+      credential:
+        auth === 'basic'
+          ? {
+              kind: 'basic',
+              username: String(data.get('username') ?? ''),
+              password: String(data.get('password') ?? ''),
+            }
+          : auth === 'bearer'
+            ? { kind: 'bearer', token: String(data.get('token') ?? '') }
+            : undefined,
+    };
+    try {
+      const source = await deps.opds.addSource(input);
+      sources = await deps.opds.listSources();
+      closeSourceForm();
+      await selectSource(source.id);
+    } catch (error) {
+      deps.notify(errorText(error, labels().offline), 'error');
+    }
+  }
+
+  async function removeSource(source: OpdsSource): Promise<void> {
+    try {
+      await deps.opds.removeSource(source.id);
+      sources = sources.filter((candidate) => candidate.id !== source.id);
+      if (editingSourceId === source.id) closeSourceForm();
+      if (selectedSourceId === source.id) await selectSource(null);
+      else renderSources();
+    } catch (error) {
+      deps.notify(errorText(error, labels().offline), 'error');
+    }
+  }
+
+  async function removeItem(item: LibraryItem): Promise<void> {
+    try {
+      await deps.library.removeItem(item.id);
+      items = items.filter((candidate) => candidate.item.id !== item.id);
+      selected = null;
+      renderItems();
+      renderDetail();
+    } catch (error) {
+      deps.notify(errorText(error, labels().offline), 'error');
+    }
+  }
+
+  async function initialLoad(): Promise<void> {
+    const generation = ++requestGeneration;
+    setStatus(labels().loading);
+    try {
+      sources = await deps.opds.listSources();
+      if (generation !== requestGeneration) return;
+      renderSources();
+      await loadPersistedItems();
+      await updateCacheSummary();
+    } catch (error) {
+      if (generation !== requestGeneration) return;
+      setStatus(errorText(error, labels().offline), true);
+    }
+  }
+
+  function retranslate(): void {
+    const l = labels();
+    root.setAttribute('aria-label', l.library);
+    heading.textContent = l.library;
+    sourceTitle.textContent = l.sources;
+    searchInput.placeholder = l.searchPlaceholder;
+    searchInput.setAttribute('aria-label', l.searchPlaceholder);
+    searchButton.textContent = l.search;
+    importButton.textContent = l.importLocal;
+    clearCacheButton.textContent = l.clearCache;
+    cacheLimitButton.title = l.changeCacheLimit;
+    cacheLimitButton.setAttribute('aria-label', l.changeCacheLimit);
+    cacheLimitLabelText.textContent = l.cacheLimit;
+    cacheLimitSave.textContent = l.apply;
+    closeButton.title = l.close;
+    closeButton.setAttribute('aria-label', l.close);
+    addSourceButton.title = l.addSource;
+    addSourceButton.setAttribute('aria-label', l.addSource);
+    previousButton.textContent = l.prev;
+    nextButton.textContent = l.next;
+    renderSources();
+    renderBreadcrumbs();
+    renderItems();
+    renderDetail();
+    renderSourceForm(sources.find((source) => source.id === editingSourceId));
+    void updateCacheSummary();
+  }
+
+  searchForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void search();
+  });
+  closeButton.addEventListener('click', hide);
+  addSourceButton.addEventListener('click', () => {
+    if (sourceForm.hidden || editingSourceId !== null) openSourceForm();
+    else closeSourceForm();
+  });
+  sourceForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void saveSource();
+  });
+  importButton.addEventListener('click', async () => {
+    const item = await deps.onImportLocal();
+    if (item !== null && selectedSourceId === null) await loadPersistedItems();
+  });
+  clearCacheButton.addEventListener('click', async () => {
+    try {
+      await deps.library.clearCache();
+      await updateCacheSummary();
+    } catch (error) {
+      deps.notify(errorText(error, labels().offline), 'error');
+    }
+  });
+  cacheLimitButton.addEventListener('click', () => {
+    cacheLimitForm.hidden = !cacheLimitForm.hidden;
+    if (!cacheLimitForm.hidden) cacheLimitInput.focus();
+  });
+  cacheLimitForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const gibibytes = cacheLimitInput.valueAsNumber;
+    if (!Number.isFinite(gibibytes) || gibibytes <= 0) return;
+    try {
+      await deps.library.setCacheLimit(Math.round(gibibytes * 1024 ** 3));
+      cacheLimitForm.hidden = true;
+      await updateCacheSummary();
+      cacheLimitButton.focus();
+    } catch (error) {
+      deps.notify(errorText(error, labels().offline), 'error');
+    }
+  });
+  retryButton.addEventListener('click', () => void lastAction?.());
+  previousButton.addEventListener('click', () => {
+    if (feed?.previousUrl !== undefined) void loadFeed(feed.previousUrl, false);
+  });
+  nextButton.addEventListener('click', () => {
+    if (feed?.nextUrl !== undefined) void loadFeed(feed.nextUrl, false);
+  });
+  itemList.addEventListener('keydown', (event) => {
+    const rows = Array.from(itemList.querySelectorAll<HTMLButtonElement>('.lightink-library-item'));
+    if (rows.length === 0) return;
+    const current = doc.activeElement instanceof HTMLButtonElement ? rows.indexOf(doc.activeElement) : -1;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const next = Math.max(0, Math.min(rows.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1)));
+      rows[next]?.focus();
+      const display = items[next];
+      if (display !== undefined) void selectItem(display);
+    } else if (event.key === 'Enter' && current >= 0) {
+      event.preventDefault();
+      void openSelected(items[current] ?? null);
+    }
+  });
+
+  renderSourceForm();
+  retranslate();
+
+  function hide(): void {
+    requestGeneration += 1;
+    for (const controller of activeOperations) controller.abort();
+    activeOperations.clear();
+    root.hidden = true;
+    deps.onVisibilityChange?.(false);
+  }
+
+  return {
+    element: root,
+    get visible() {
+      return !root.hidden;
+    },
+    async show() {
+      root.hidden = false;
+      deps.onVisibilityChange?.(true);
+      await initialLoad();
+      searchInput.focus();
+    },
+    hide,
+    async toggle() {
+      if (root.hidden) await this.show();
+      else hide();
+    },
+    refresh: initialLoad,
+    retranslate,
+    destroy() {
+      requestGeneration += 1;
+      for (const controller of activeOperations) controller.abort();
+      activeOperations.clear();
+      root.remove();
+    },
+  };
+}
+
+export const libraryViewInternals = { bytesLabel, itemFromEntry };

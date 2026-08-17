@@ -117,8 +117,8 @@ html[data-display='xuhd'] .lightink-reader-pages[data-reader-format='pdf'] .ligh
   margin: 0;
 }
 
-/* CBZ 是位图，字号缩放仍用 CSS zoom；PDF 由栅格化倍率承担。 */
-.lightink-reader-pages[data-reader-format='cbz'] {
+/* 漫画是位图，字号缩放只作用于页面，不放大工具栏。 */
+.lightink-reader-pages[data-comic-reader='true'] .lightink-reader-comic-pages {
   zoom: var(--lightink-font-scale, 1);
 }
 
@@ -291,6 +291,168 @@ html[data-display='xuhd'] .lightink-reader-pages[data-reader-format='pdf'] .ligh
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.lightink-reader-nested-archive {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: 24px;
+  color: var(--lightink-muted);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.lightink-reader-pages[data-comic-reader='true'][data-reader-active='true'] {
+  align-items: stretch;
+  padding-top: 0;
+}
+
+.lightink-reader-comic-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 42px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--lightink-border);
+  background: var(--lightink-bg-elevated);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  direction: ltr;
+}
+
+.lightink-reader-comic-tool-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.lightink-reader-comic-tool {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--lightink-border);
+  border-radius: 0;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  font: 600 14px/1 var(--lightink-font-ui);
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.lightink-reader-comic-tool:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.lightink-reader-comic-tool:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.lightink-reader-comic-tool + .lightink-reader-comic-tool {
+  margin-left: -1px;
+}
+
+.lightink-reader-comic-tool:hover:not(:disabled),
+.lightink-reader-comic-tool:focus-visible,
+.lightink-reader-comic-tool[aria-pressed='true'] {
+  position: relative;
+  border-color: var(--lightink-accent);
+  background: var(--lightink-accent-soft);
+  color: var(--lightink-accent);
+}
+
+.lightink-reader-comic-tool:focus-visible {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
+}
+
+.lightink-reader-comic-tool:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.lightink-reader-comic-pages {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  padding-top: var(--lightink-page-pad-y, 24px);
+}
+
+.lightink-reader-pages[data-comic-spread='double'][data-comic-mode='vertical']
+  .lightink-reader-comic-pages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 1rem;
+}
+
+.lightink-reader-pages[data-comic-mode='paged'] .lightink-reader-comic-pages {
+  display: flex;
+  min-height: max(32rem, calc(100vh - 8rem));
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.lightink-reader-pages[data-comic-mode='paged'] .lightink-reader-cbz-slot {
+  width: min(100%, 64rem);
+  max-height: calc(100vh - 10rem);
+  margin: 0;
+}
+
+.lightink-reader-pages[data-comic-mode='paged'][data-comic-spread='double']
+  .lightink-reader-cbz-slot {
+  width: min(calc(50% - 0.5rem), 40rem);
+}
+
+.lightink-reader-pages[data-comic-direction='rtl'] .lightink-reader-cbz-slot {
+  direction: ltr;
+}
+
+.lightink-reader-pages[data-comic-fit-width='false'] .lightink-reader-cbz-slot {
+  width: var(--lightink-comic-natural-width, min(100%, 64rem));
+  max-width: none;
+}
+
+.lightink-reader-pages[data-comic-fit-width='false']
+  .lightink-reader-cbz-slot > .lightink-reader-page {
+  width: auto;
+  max-width: none;
+}
+
+.lightink-reader-comic-error {
+  display: flex;
+  min-height: 12rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  color: var(--lightink-muted);
+  text-align: center;
+}
+
+.lightink-reader-comic-error button {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 4px;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  font: inherit;
+  letter-spacing: 0;
+  cursor: pointer;
 }
 
 /* 空态占位：T4/T5 填充内容前的默认显示。 */

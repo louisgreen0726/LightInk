@@ -12,6 +12,7 @@
 import type { EditorInstance } from '../editor/types.js';
 import type { FileStat } from '../file/file-service.js';
 import type { ReaderInstance } from '../reader/types.js';
+import type { ReaderTarget } from '../reader/sources/types.js';
 
 /** markdown 与 reader 标签共享的基础会话状态。 */
 interface TabBase {
@@ -54,13 +55,15 @@ export interface MarkdownTabState extends TabBase {
 }
 
 /**
- * 只读阅读标签（PDF/EPUB/MOBI/FB2/CBZ/TXT）。不挂编辑器，
+ * 只读阅读标签（PDF/EPUB/MOBI/FB2/CBZ/CBR/CB7/RAR/7z/TXT）。不挂编辑器，
  * dirty 恒为 false，永不进入保存/快照/外部变更检测等可写路径
  * （见 tab-manager 各方法的 kind 守卫）。持有一个 ReaderInstance，
  * 生命周期由 TabManager 管理。
  */
 export interface ReaderTabState extends TabBase {
   readonly kind: 'reader';
+  /** Local or remote source descriptor used to load and deduplicate the tab. */
+  readonly target: ReaderTarget;
   /** 该标签独占的阅读视图实例。 */
   readonly reader: ReaderInstance;
 }

@@ -15,6 +15,7 @@ import { parseFb2 } from '../formats/fb2.js';
 import { parseMobi } from '../formats/mobi.js';
 import { parseTxt, parseTxtFromSource } from '../formats/txt.js';
 import type { ReaderByteSource } from '../formats/types.js';
+import type { RandomAccessSource } from '../sources/types.js';
 import { ParseError, ReaderCapabilityError } from '../formats/types.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -281,7 +282,7 @@ describe('parseFb2', () => {
 });
 
 describe('parseEpub', () => {
-  async function buildEpub(withResources = false): Promise<Uint8Array> {
+  async function buildEpub(withResources = false, withPadding = false): Promise<Uint8Array> {
     const zip = new ZipWriter(new Uint8ArrayWriter());
     await zip.add(
       'META-INF/container.xml',
@@ -347,6 +348,13 @@ describe('parseEpub', () => {
         ),
       );
     }
+    if (withPadding) {
+      await zip.add(
+        'OEBPS/unreferenced.bin',
+        new Uint8ArrayReader(new Uint8Array(256 * 1024)),
+        { level: 0 },
+      );
+    }
     return zip.close();
   }
 
@@ -405,6 +413,28 @@ describe('parseEpub', () => {
     expect(content.chapters[0]!.html).toContain('<h1>一</h1>');
     expect(content.chapters[1]!.title).toBe('第二章');
     expect(content.chapters[1]!.html).toContain('<p>乙</p>');
+  });
+
+  it('通过随机读取源解析 EPUB，不先复制完整压缩包', async () => {
+    const bytes = await buildEpub(true, true);
+    const reads: Array<{ offset: number; length: number }> = [];
+    const source: RandomAccessSource = {
+      size: bytes.length,
+      identity: { id: 'epub-range' },
+      readRange: async (offset, length) => {
+        reads.push({ offset, length });
+        return bytes.slice(offset, offset + length);
+      },
+      close: async () => undefined,
+    };
+    const content = await parseEpub(source);
+    expect(content.chapters).toHaveLength(2);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((read) => read.length < bytes.length)).toBe(true);
+    expect(reads.every((read) => read.offset >= 0 && read.offset + read.length <= bytes.length)).toBe(
+      true,
+    );
+    content.dispose?.();
   });
 
   it('损坏 zip 抛 ParseError', async () => {

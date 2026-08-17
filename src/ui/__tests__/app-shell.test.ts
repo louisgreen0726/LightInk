@@ -539,6 +539,9 @@ describe('buildMenus 生产结构', () => {
   it('打开对话框过滤只剩单一「所有支持格式」条目 + 所有文件（T1）', () => {
     expect(OPEN_FILTERS).toHaveLength(2);
     expect([...OPEN_FILTERS[0]!.extensions].sort()).toEqual([
+      '7z',
+      'cb7',
+      'cbr',
       'cbz',
       'epub',
       'fb2',
@@ -546,6 +549,7 @@ describe('buildMenus 生产结构', () => {
       'md',
       'mobi',
       'pdf',
+      'rar',
       'txt',
     ]);
     expect(OPEN_FILTERS[1]!.extensions).toEqual(['*']);
