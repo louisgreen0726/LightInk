@@ -100,6 +100,17 @@ html[data-reading-layout='paginated'] .lightink-reader-chapter-frame {
     calc(var(--lightink-page-pad-y, 24px) * 2.2);
 }
 
+/* 翻页布局下阅读壳 overflow:hidden；PDF 连续页改由页宿主滚动，避免被裁成空白。 */
+html[data-reading-layout='paginated'] .lightink-reader:has(.lightink-reader-pages[data-reader-active='true']) {
+  overflow: auto;
+}
+
+html[data-reading-layout='paginated'] .lightink-reader-pages[data-reader-active='true'] {
+  overflow: visible;
+  height: auto;
+  min-height: 100%;
+}
+
 html[data-display='qhd'] .lightink-reader-pages[data-reader-format='pdf'][data-reader-active='true'],
 html[data-display='uhd'] .lightink-reader-pages[data-reader-format='pdf'][data-reader-active='true'],
 html[data-display='xuhd'] .lightink-reader-pages[data-reader-format='pdf'][data-reader-active='true'] {

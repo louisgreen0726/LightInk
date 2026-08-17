@@ -533,10 +533,35 @@ export async function renderPdfInto(
     slots[index]?.replaceChildren();
   };
 
-  const scroller =
-    typeof document !== 'undefined'
-      ? (document.getElementById('lightink-editor-area') ?? container)
-      : container;
+  const editorArea =
+    typeof document !== 'undefined' ? document.getElementById('lightink-editor-area') : null;
+  const paginated =
+    typeof document !== 'undefined' &&
+    document.documentElement.getAttribute('data-reading-layout') === 'paginated';
+  // 翻页布局下 editor-area overflow:hidden，PDF 必须在页宿主自己滚动。
+  const scroller = paginated ? container : (editorArea ?? container);
+
+  const paintVisibleBuffer = async (generation: number): Promise<void> => {
+    const visible = scroller.getBoundingClientRect();
+    if (visible.height <= 0) {
+      if (slots[0] !== undefined) {
+        await renderSlot(0, generation);
+      }
+      return;
+    }
+    const buffer = visible.height * 2;
+    for (let i = 0; i < total; i += 1) {
+      const rect = slots[i]!.getBoundingClientRect();
+      const strictlyVisible = rect.bottom >= visible.top && rect.top <= visible.bottom;
+      const buffered =
+        rect.bottom >= visible.top - buffer && rect.top <= visible.bottom + buffer;
+      if (strictlyVisible) {
+        await renderSlot(i, generation);
+      } else if (buffered) {
+        queueRender(i);
+      }
+    }
+  };
 
   // 懒渲染：视口附近（上下各 ~2 屏缓冲）的页栅格化，离屏过远的清画布。
   observer =
@@ -564,6 +589,20 @@ export async function renderPdfInto(
     for (let i = 0; i < total; i += 1) {
       queueRender(i);
     }
+  }
+
+  // 首屏不把出页只交给 IntersectionObserver（root 不对或首帧未相交时会空白）。
+  // 放到 rAF：调用方若立刻 rerender/destroy，世代变化后这次会自动作废。
+  const born = renderGeneration;
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      if (destroyed || isAborted() || born !== renderGeneration) {
+        return;
+      }
+      void paintVisibleBuffer(born);
+    });
+  } else {
+    void paintVisibleBuffer(born);
   }
 
   // 滚动时把视口顶部最近的页回写 controller.page（供书签/笔记定位与侧栏跳转）。
@@ -633,20 +672,7 @@ export async function renderPdfInto(
     // 重渲染范围与 IntersectionObserver 的懒加载缓冲（rootMargin 200% ≈ 上下各 2 屏）
     // 对齐：observer 只在相交状态变化时派发事件，仍在缓冲区内的页被 clearSlot 清掉后
     // 不会再收到通知，必须由 rerender 主动补画，否则缩放后滚动会出现空白页。
-    // 严格可见页串行优先渲染（尽快出画）；缓冲区其余页异步补画（下次缩放会整体取消重来）。
-    const visible = scroller.getBoundingClientRect();
-    const buffer = visible.height * 2;
-    for (let i = 0; i < total; i += 1) {
-      const rect = slots[i]!.getBoundingClientRect();
-      const strictlyVisible = rect.bottom >= visible.top && rect.top <= visible.bottom;
-      const buffered =
-        rect.bottom >= visible.top - buffer && rect.top <= visible.bottom + buffer;
-      if (strictlyVisible) {
-        await renderSlot(i, generation);
-      } else if (buffered) {
-        queueRender(i);
-      }
-    }
+    await paintVisibleBuffer(generation);
     onScroll();
   };
 

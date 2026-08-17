@@ -294,6 +294,24 @@ describe('PDF render lifecycle', () => {
     await handle.destroy();
   });
 
+  it('paints the first screen after slots exist without waiting for IntersectionObserver', async () => {
+    const runtime = mockMultiPagePdf(3);
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const handle = await renderPdfInto(new Uint8Array([1]), container);
+    layoutRects(container, 0, [0, 700, 1400]);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    await waitForTask(runtime.tasks, 1);
+    runtime.tasks[0]!.resolve();
+    await vi.waitFor(() => {
+      const first = container.children[0] as HTMLElement;
+      expect(first.querySelector('canvas')).not.toBeNull();
+    });
+    await handle.destroy();
+  });
+
   it('re-renders pages inside the lazy-render buffer, not only the strict viewport', async () => {
     // 回归：缩放后 rerender 清掉所有画布；IntersectionObserver 只在相交状态变化时
     // 派发事件，仍在 ±2 屏缓冲区内的页不会收到通知。rerender 必须把这些页一并重画，

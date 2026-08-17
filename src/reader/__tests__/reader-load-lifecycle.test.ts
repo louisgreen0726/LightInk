@@ -545,6 +545,22 @@ describe('Reader load lifecycle', () => {
     );
   });
 
+  it('does not commit an empty PDF page host when renderPdfInto fails', async () => {
+    pdfMock.renderPdfInto.mockRejectedValue(new Error('PDF 文件损坏或无法解析'));
+    const host = document.createElement('div');
+    const view = createReaderView(host, {
+      readBytes: async () => new Uint8Array([1, 2, 3]),
+    });
+
+    await expect(view.load('broken.pdf')).rejects.toThrow('PDF 文件损坏或无法解析');
+    const root = host.querySelector<HTMLElement>('.lightink-reader')!;
+    const pageHost = host.querySelector<HTMLElement>('.lightink-reader-pages');
+    expect(root.dataset.readerState).toBe('error');
+    expect(pageHost?.hidden).toBe(true);
+    expect(pageHost?.dataset.readerActive).toBeUndefined();
+    expect(pageHost?.querySelector('canvas')).toBeNull();
+  });
+
   it('disposes parser-owned resources on replacement and destroy', async () => {
     const disposeA = vi.fn();
     const disposeB = vi.fn();
