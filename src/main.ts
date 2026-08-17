@@ -67,7 +67,7 @@ import {
   type MarkdownAnnotationHost,
 } from './reader/markdown-annotations.js';
 import type { RemoteOpenResult } from './reader/sources/remote-source.js';
-import type { RemoteReaderTarget } from './reader/sources/types.js';
+import type { ReaderTarget, RemoteReaderTarget } from './reader/sources/types.js';
 import { readerLoadErrorDetail } from './reader/error-message.js';
 import { TabManager, fileNameOf, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
@@ -116,8 +116,13 @@ import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
 import { libraryClient } from './library/library-client.js';
 import {
+  projectLibraryProgress,
+  saveLibraryProgressAlias,
+} from './library/library-progress.js';
+import {
   createLibraryView,
   type LibraryOpenRequest,
+  type LibraryShelfProgress,
   type LibraryView,
 } from './library/library-view.js';
 import { credentialRefForResource, opdsClient } from './library/opds-client.js';
@@ -567,6 +572,27 @@ workspace.subscribe((state) => {
   applyWorkspaceState(state);
   shell?.rebuildMenus();
 });
+
+function libraryItemIdForTarget(target: ReaderTarget): string {
+  return target.kind === 'remote' ? target.itemId : target.identity.id;
+}
+
+function bindOpenedBookProgress(progressId: string, target: ReaderTarget): void {
+  saveLibraryProgressAlias(window.localStorage, libraryItemIdForTarget(target), progressId);
+}
+
+function shelfProgressForItem(item: LibraryOpenRequest['item']): LibraryShelfProgress | null {
+  const projected = projectLibraryProgress(window.localStorage, item);
+  if (projected === null || projected.status !== 'in-progress') {
+    return projected === null ? null : { status: 'not-started' };
+  }
+  return {
+    status: 'in-progress',
+    locationKind: projected.unit,
+    current: projected.unit === 'chapter' ? projected.index + 1 : projected.index,
+    ...(projected.percent === undefined ? {} : { percent: projected.percent }),
+  };
+}
 
 function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
   if (acquisition.extension !== undefined && acquisition.extension !== '') return acquisition.extension;
@@ -1611,6 +1637,7 @@ manager = new TabManager({
             coverPage: metadata.coverPage,
           },
         ),
+      onProgressBound: bindOpenedBookProgress,
     });
     reader.subscribeState(() => {
       const active = manager?.activeTab;
@@ -1851,6 +1878,7 @@ libraryView = createLibraryView(shell.editorArea, {
   opds: opdsClient,
   library: libraryClient,
   getLocale: () => i18n.locale,
+  getProgress: shelfProgressForItem,
   onOpen: openLibraryItem,
   onCache: cacheLibraryItem,
   onImportLocal: importLocalLibraryItem,

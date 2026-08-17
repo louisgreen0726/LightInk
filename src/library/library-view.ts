@@ -1,5 +1,10 @@
 import type { AcquisitionLink, LibraryClient, LibraryItem } from './library-client.js';
 import type {
+  LibraryProgress,
+  LibraryProgressQuery,
+  ProjectLibraryProgressOptions,
+} from './library-progress.js';
+import type {
   OpdsClient,
   OpdsEntry,
   OpdsFeed,
@@ -61,6 +66,11 @@ interface Labels {
   directionLtr: string;
   directionRtl: string;
   coverPage: string;
+  notStarted: string;
+  continueReading: string;
+  readPercent: string;
+  pageProgress: string;
+  chapterProgress: string;
 }
 
 const LABELS: Record<Locale, Labels> = {
@@ -115,6 +125,11 @@ const LABELS: Record<Locale, Labels> = {
     directionLtr: 'Left to right',
     directionRtl: 'Right to left',
     coverPage: 'Cover page',
+    notStarted: 'Not started',
+    continueReading: 'Continue reading',
+    readPercent: '{percent}% read',
+    pageProgress: 'Page {current}',
+    chapterProgress: 'Chapter {current}',
   },
   'zh-CN': {
     library: '书库',
@@ -167,6 +182,11 @@ const LABELS: Record<Locale, Labels> = {
     directionLtr: '从左到右',
     directionRtl: '从右到左',
     coverPage: '封面页',
+    notStarted: '未开始',
+    continueReading: '继续阅读',
+    readPercent: '已读 {percent}%',
+    pageProgress: '第 {current} 页',
+    chapterProgress: '第 {current} 章',
   },
 };
 
@@ -196,6 +216,11 @@ export interface LibraryViewDependencies {
   readonly onImportLocal: () => Promise<LibraryItem | null>;
   readonly notify: (message: string, kind?: 'error' | 'warning') => void;
   readonly onVisibilityChange?: (visible: boolean) => void;
+  /** Shelf projection. Catalog rows pass `{ catalogEntry: true }`. */
+  readonly getProgress?: (
+    item: LibraryProgressQuery,
+    options?: ProjectLibraryProgressOptions,
+  ) => LibraryProgress | null;
 }
 
 export interface LibraryHideOptions {
@@ -278,6 +303,23 @@ function safeCoverUrl(item: LibraryItem, sources: readonly OpdsSource[]): string
   } catch {
     return undefined;
   }
+}
+
+function isDisplayablePercent(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value > 0;
+}
+
+function displayLocation(progress: Extract<LibraryProgress, { status: 'in-progress' }>): {
+  readonly kind: 'page' | 'chapter';
+  readonly current: number;
+} | null {
+  if (!Number.isSafeInteger(progress.index) || progress.index < 0) {
+    return null;
+  }
+  if (progress.unit === 'chapter') {
+    return { kind: 'chapter', current: progress.index + 1 };
+  }
+  return { kind: 'page', current: progress.index < 1 ? 1 : progress.index };
 }
 
 function errorText(error: unknown, fallback: string): string {
@@ -416,6 +458,41 @@ export function createLibraryView(
   const selectedSource = (): OpdsSource | undefined =>
     sources.find((source) => source.id === selectedSourceId);
 
+  function progressFor(display: DisplayItem): LibraryProgress | null {
+    const catalogEntry = display.entry !== undefined;
+    try {
+      const projected = catalogEntry
+        ? deps.getProgress?.(display.item, { catalogEntry: true })
+        : deps.getProgress?.(display.item);
+      if (projected == null || projected.status !== 'in-progress') {
+        return catalogEntry ? null : { status: 'not-started' };
+      }
+      return projected;
+    } catch {
+      return catalogEntry ? null : { status: 'not-started' };
+    }
+  }
+
+  function progressLabel(progress: LibraryProgress): string {
+    if (progress.status !== 'in-progress') return labels().notStarted;
+    const parts: string[] = [];
+    const location = displayLocation(progress);
+    if (location?.kind === 'page') {
+      parts.push(labels().pageProgress.replace('{current}', String(location.current)));
+    } else if (location?.kind === 'chapter') {
+      parts.push(labels().chapterProgress.replace('{current}', String(location.current)));
+    }
+    if (isDisplayablePercent(progress.percent)) {
+      parts.push(
+        labels().readPercent.replace(
+          '{percent}',
+          String(Math.min(100, Math.round(progress.percent))),
+        ),
+      );
+    }
+    return parts.length > 0 ? parts.join(' · ') : labels().continueReading;
+  }
+
   function setStatus(message: string, retry = false): void {
     status.replaceChildren();
     if (message !== '') {
@@ -536,6 +613,14 @@ export function createLibraryView(
         .filter((part): part is string => part !== undefined && part !== '')
         .join(' · ');
       text.append(title, meta);
+      const shelfProgress = progressFor(display);
+      if (shelfProgress !== null) {
+        row.dataset.progressStatus = shelfProgress.status;
+        const progress = doc.createElement('span');
+        progress.className = 'lightink-library-item-progress';
+        progress.textContent = progressLabel(shelfProgress);
+        text.appendChild(progress);
+      }
       row.append(cover, text);
       row.addEventListener('click', () => void selectItem(display));
       row.addEventListener('dblclick', () => void openSelected(display));
@@ -675,7 +760,12 @@ export function createLibraryView(
     }
     const actions = doc.createElement('div');
     actions.className = 'lightink-library-detail-actions';
-    const open = button(doc, labels().open, 'lightink-library-primary');
+    const selectedProgress = progressFor(selected);
+    const open = button(
+      doc,
+      selectedProgress?.status === 'in-progress' ? labels().continueReading : labels().open,
+      'lightink-library-primary',
+    );
     open.disabled = selected.item.sourceKind !== 'local' && selected.links.length === 0;
     open.addEventListener('click', () => void openSelected());
     actions.appendChild(open);

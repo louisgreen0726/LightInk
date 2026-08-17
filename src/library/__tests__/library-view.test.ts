@@ -309,4 +309,188 @@ describe('LibraryView', () => {
     expect(metadata.textContent).toContain('封面页1');
     view.destroy();
   });
+
+  it('distinguishes not-started and in-progress imported books without rendering 0%', async () => {
+    const unread = localItem();
+    const comic: LibraryItem = {
+      ...localItem(),
+      id: 'local:/books/b.cbz',
+      title: '本地漫画',
+      extension: 'cbz',
+      localPath: '/books/b.cbz',
+    };
+    const novel: LibraryItem = {
+      ...localItem(),
+      id: 'local:/books/c.epub',
+      title: '续读小说',
+      localPath: '/books/c.epub',
+    };
+    const getProgress = vi.fn((item: LibraryItem) => {
+      if (item.id === comic.id) {
+        return { status: 'in-progress' as const, unit: 'page' as const, index: 12, ratio: 0, percent: 37 };
+      }
+      if (item.id === novel.id) {
+        return { status: 'in-progress' as const, unit: 'chapter' as const, index: 2, ratio: 0.4, percent: 21 };
+      }
+      return { status: 'not-started' as const };
+    });
+    const base = dependencies();
+    const deps = dependencies({
+      getProgress,
+      library: {
+        ...base.library,
+        listItems: vi.fn(async () => [unread, comic, novel]),
+      },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const unreadRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${unread.id}"]`)!;
+    const comicRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${comic.id}"]`)!;
+    const novelRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${novel.id}"]`)!;
+    expect(unreadRow.dataset.progressStatus).toBe('not-started');
+    expect(unreadRow.textContent).toContain('未开始');
+    expect(unreadRow.textContent).not.toContain('0%');
+    expect(comicRow.dataset.progressStatus).toBe('in-progress');
+    expect(comicRow.textContent).toContain('第 12 页');
+    expect(comicRow.textContent).toContain('已读 37%');
+    expect(novelRow.dataset.progressStatus).toBe('in-progress');
+    expect(novelRow.textContent).toContain('第 3 章');
+    expect(novelRow.textContent).toContain('已读 21%');
+    expect(getProgress).toHaveBeenCalledWith(expect.objectContaining({ id: unread.id }));
+    expect(getProgress).toHaveBeenCalledWith(expect.objectContaining({ id: comic.id }));
+    expect(getProgress).toHaveBeenCalledWith(expect.objectContaining({ id: novel.id }));
+    view.destroy();
+  });
+
+  it('offers continue reading for in-progress books and hides a zero percent', async () => {
+    const getProgress = vi.fn(() => ({
+      status: 'in-progress' as const,
+      unit: 'chapter' as const,
+      index: 3,
+      ratio: 0,
+      percent: 0,
+    }));
+    const deps = dependencies({ getProgress });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    host.querySelector<HTMLButtonElement>('.lightink-library-item')!.click();
+    await settle();
+    expect(host.textContent).toContain('第 4 章');
+    expect(host.textContent).not.toContain('0%');
+    buttonWithText(host, '继续阅读').click();
+    await settle();
+    expect(deps.onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ item: expect.objectContaining({ id: localItem().id }) }),
+      expect.anything(),
+    );
+    view.destroy();
+  });
+
+  it('labels a first comic page without rendering 0%', async () => {
+    const comic: LibraryItem = {
+      ...localItem(),
+      id: 'local:/comics/a.cbz',
+      title: '首页漫画',
+      extension: 'cbz',
+      localPath: '/comics/a.cbz',
+    };
+    const getProgress = vi.fn(() => ({
+      status: 'in-progress' as const,
+      unit: 'page' as const,
+      index: 0,
+      ratio: 0,
+    }));
+    const base = dependencies();
+    const deps = dependencies({
+      getProgress,
+      library: {
+        ...base.library,
+        listItems: vi.fn(async () => [comic]),
+      },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const row = host.querySelector<HTMLButtonElement>('.lightink-library-item')!;
+    expect(row.dataset.progressStatus).toBe('in-progress');
+    expect(row.textContent).toContain('第 1 页');
+    expect(row.textContent).not.toContain('0%');
+    view.destroy();
+  });
+
+  it('treats missing or unreadable progress as not started without 0%', async () => {
+    const getProgress = vi.fn(() => null);
+    const deps = dependencies({ getProgress });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const row = host.querySelector<HTMLButtonElement>('.lightink-library-item')!;
+    expect(row.dataset.progressStatus).toBe('not-started');
+    expect(row.textContent).toContain('未开始');
+    expect(row.textContent).not.toContain('0%');
+    expect(row.textContent).not.toContain('已读');
+    view.destroy();
+  });
+
+  it('does not project progress onto unopened OPDS catalog entries', async () => {
+    const getProgress = vi.fn((_item, options) =>
+      options?.catalogEntry === true
+        ? null
+        : { status: 'in-progress' as const, unit: 'page' as const, index: 9, ratio: 0, percent: 88 },
+    );
+    const deps = dependencies({ getProgress });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    getProgress.mockClear();
+    buttonWithText(host, '测试书库').click();
+    await settle();
+
+    expect(getProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'item-1' }),
+      { catalogEntry: true },
+    );
+    expect(host.textContent).toContain('远程漫画');
+    expect(host.textContent).not.toContain('已读');
+    expect(host.textContent).not.toContain('%');
+    expect(host.querySelector('[data-progress-status]')).toBeNull();
+    expect(host.querySelector('.lightink-library-item-progress')).toBeNull();
+    view.destroy();
+  });
+
+  it('shows real catalog progress only when the projection returns in-progress', async () => {
+    const getProgress = vi.fn(() => ({
+      status: 'in-progress' as const,
+      unit: 'page' as const,
+      index: 12,
+      ratio: 0,
+      percent: 30,
+    }));
+    const deps = dependencies({ getProgress });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    buttonWithText(host, '测试书库').click();
+    await settle();
+
+    const row = host.querySelector<HTMLButtonElement>('[data-item-id="item-1"]')!;
+    expect(row.dataset.progressStatus).toBe('in-progress');
+    expect(row.textContent).toContain('第 12 页');
+    expect(row.textContent).toContain('已读 30%');
+    view.destroy();
+  });
 });

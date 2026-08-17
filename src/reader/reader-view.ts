@@ -214,6 +214,12 @@ export interface ReaderViewDeps {
   progressStorage?: ProgressStorage | null;
   /** Persist normalized ComicInfo metadata for an existing library item. */
   onComicMetadata?: (target: ReaderTarget, metadata: ComicMetadata) => void | Promise<void>;
+  /**
+   * After a successful load, report the storage id used for this work so the
+   * open-book path can write the shelf `item.id → progressId` alias. Failed or
+   * cancelled loads must not fire this (unopened OPDS rows stay alias-free).
+   */
+  onProgressBound?: (progressId: string, target: ReaderTarget) => void;
 }
 
 /**
@@ -2505,6 +2511,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
             syncPageState();
           } else {
             syncFlowState();
+          }
+          if (progressId !== '') {
+            try {
+              deps.onProgressBound?.(progressId, target);
+            } catch {
+              // Shelf alias must not interrupt reading.
+            }
           }
           completed = true;
         }
