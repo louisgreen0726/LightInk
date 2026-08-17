@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const pdfRuntime = vi.hoisted(() => ({
@@ -116,6 +118,7 @@ afterEach(() => {
   pdfRuntime.getDocument.mockReset();
   pdfRuntime.textLayerInstances.length = 0;
   globalThis.IntersectionObserver = originalIntersectionObserver;
+  delete document.documentElement.dataset.readingLayout;
   document.body.replaceChildren();
 });
 
@@ -310,6 +313,93 @@ describe('PDF render lifecycle', () => {
       expect(first.querySelector('canvas')).not.toBeNull();
     });
     await handle.destroy();
+  });
+
+  it('in paginated layout paints later pages from the page-host scroller, not an ancestor', async () => {
+    document.documentElement.dataset.readingLayout = 'paginated';
+    const observedRoots: Array<Element | Document | null> = [];
+    class CapturingObserver {
+      constructor(_callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        observedRoots.push((options?.root as Element | Document | null) ?? null);
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+      readonly root = null;
+      readonly rootMargin = '0px';
+      readonly thresholds = [0];
+    }
+    globalThis.IntersectionObserver = CapturingObserver as unknown as typeof IntersectionObserver;
+
+    const runtime = mockMultiPagePdf(4);
+    const reader = document.createElement('div');
+    reader.className = 'lightink-reader';
+    const container = document.createElement('div');
+    container.className = 'lightink-reader-pages';
+    container.dataset.readerFormat = 'pdf';
+    reader.appendChild(container);
+    document.body.appendChild(reader);
+
+    const handle = await renderPdfInto(new Uint8Array([1]), container);
+    expect(observedRoots[0]).toBe(container);
+
+    // 页宿主视口 [0,600]；第 4 页 top=2800 在 ±2 屏缓冲外。
+    layoutRects(container, 0, [0, 700, 1400, 2800]);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    await waitForTask(runtime.tasks, 1);
+    runtime.tasks[0]!.resolve();
+    await vi.waitFor(() => expect(runtime.tasks).toHaveLength(3));
+    for (const task of runtime.tasks) task.resolve();
+    await vi.waitFor(() => {
+      expect((container.children[0] as HTMLElement).querySelector('canvas')).not.toBeNull();
+    });
+    expect((container.children[3] as HTMLElement).querySelector('canvas')).toBeNull();
+
+    // 祖先滚动不改变页宿主视口：rerender 仍不画第 4 页。
+    reader.getBoundingClientRect = () =>
+      ({
+        top: -2100,
+        bottom: -1500,
+        left: 0,
+        right: 800,
+        width: 800,
+        height: 600,
+        x: 0,
+        y: -2100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const afterAncestor = handle.rerender();
+    await waitForTask(runtime.tasks, 4);
+    runtime.tasks[3]!.resolve();
+    await vi.waitFor(() => expect(runtime.tasks).toHaveLength(6));
+    for (const task of runtime.tasks.slice(3)) task.resolve();
+    await afterAncestor;
+    expect((container.children[3] as HTMLElement).querySelector('canvas')).toBeNull();
+
+    // 页宿主视口滚到第 4 页后必须画出该页。
+    layoutRects(container, 0, [-2100, -1400, -700, 0]);
+    const afterHost = handle.rerender();
+    await vi.waitFor(() => {
+      expect((container.children[3] as HTMLElement).querySelector('canvas')).not.toBeNull();
+    });
+    for (const task of runtime.tasks.slice(6)) task.resolve();
+    await afterHost;
+    await handle.destroy();
+  });
+
+  it('keeps paginated PDF overflow on the page host so IntersectionObserver can see later slots', () => {
+    const css = readFileSync(path.join(process.cwd(), 'src/reader/reader.css'), 'utf-8');
+    expect(css).toMatch(
+      /html\[data-reading-layout='paginated'\] \.lightink-reader-pages\[data-reader-format='pdf'\]\[data-reader-active='true'\]\s*\{[^}]*overflow:\s*auto/,
+    );
+    expect(css).not.toMatch(
+      /html\[data-reading-layout='paginated'\] \.lightink-reader:has\([^)]*\)\s*\{[^}]*overflow:\s*auto/,
+    );
   });
 
   it('re-renders pages inside the lazy-render buffer, not only the strict viewport', async () => {
