@@ -1,13 +1,9 @@
 /**
- * `search-panel` — 阅读器搜索面板（PDF / 流式共用）。
+ * `search-panel` — 阅读器搜索纯函数（PDF / 流式共用）。
  *
- * 参照编辑器 find-replace 的分层模式：`findTextHits`/`findPdfMatches`/`nextMatchIndex`
- * 为纯函数（node 可测），面板外观对齐 Markdown 查找浮层，但不提供替换。Enter 下一处 /
- * Shift+Enter 上一处 / Escape 关闭。命中高亮 overlay 的幂等渲染由 search-overlay
- * 共享引擎完成（PDF 文本层 / 流式正文同引擎）。
+ * `findTextHits`/`findPdfMatches`/`nextMatchIndex`/`snippetAround` 为 node 可测算法。
+ * 命中高亮 overlay 由 search-overlay 共享引擎完成；查找 UI 在标注侧栏，不在此装配。
  */
-
-import type { MessageKey } from '../i18n/messages.js';
 
 export interface PdfSearchMatch {
   /** 1-based 页码。 */
@@ -15,6 +11,29 @@ export interface PdfSearchMatch {
   /** 命中在该页拼接文本中的 [start, end) 偏移（与文本层 anchor 同一坐标系）。 */
   start: number;
   end: number;
+  /** 命中附近有界上下文，供侧栏片段列表使用。 */
+  snippet: string;
+}
+
+/** Characters of context kept on each side of a hit when building a snippet. */
+export const SEARCH_SNIPPET_RADIUS = 40;
+
+/** Bounded context around [start, end) in the same concatenated text used for matching. */
+export function snippetAround(
+  text: string,
+  start: number,
+  end: number,
+  radius = SEARCH_SNIPPET_RADIUS,
+): string {
+  const safeStart = Math.max(0, Math.min(start, text.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, text.length));
+  const from = Math.max(0, safeStart - radius);
+  const to = Math.min(text.length, safeEnd + radius);
+  const core = text.slice(from, to).replace(/\s+/g, ' ').trim();
+  if (core === '') {
+    return '';
+  }
+  return `${from > 0 ? '…' : ''}${core}${to < text.length ? '…' : ''}`;
 }
 
 export interface TextSearchHit {
@@ -67,7 +86,11 @@ export function findPdfMatches(
   const matches: PdfSearchMatch[] = [];
   for (let index = 0; index < pageTexts.length; index += 1) {
     for (const hit of findTextHits(pageTexts[index]!, trimmed)) {
-      matches.push({ page: index + 1, ...hit });
+      matches.push({
+        page: index + 1,
+        ...hit,
+        snippet: snippetAround(pageTexts[index]!, hit.start, hit.end),
+      });
     }
   }
   return matches;
@@ -106,28 +129,6 @@ export function nextMatchIndex(total: number, active: number, direction: 1 | -1)
   return (active + direction + total) % total;
 }
 
-export interface SearchPanelDeps {
-  t: (key: MessageKey) => string;
-  /** 输入变化（去抖由调用方决定）。 */
-  onQuery: (query: string) => void;
-  onNext: () => void;
-  onPrev: () => void;
-  onClose: () => void;
-}
-
-export interface SearchPanel {
-  readonly element: HTMLElement;
-  open(): void;
-  close(): void;
-  isOpen(): boolean;
-  focus(): void;
-  getQuery(): string;
-  setQuery(query: string): void;
-  destroy(): void;
-  /** 更新命中计数（aria-live）；无结果显示空态文案。 */
-  setStatus(total: number, active: number): void;
-}
-
 /** First line, trimmed, capped — same seed rules as Markdown Ctrl+F. */
 export function sanitizeSearchQuery(raw: string | null | undefined): string {
   const firstLine = (raw ?? '').split(/\r?\n/, 1)[0] ?? '';
@@ -136,148 +137,6 @@ export function sanitizeSearchQuery(raw: string | null | undefined): string {
     return '';
   }
   return trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed;
-}
-
-const FIND_ICON_SEARCH =
-  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-  '<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>' +
-  '<path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
-  '</svg>';
-const FIND_ICON_PREV =
-  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-  '<path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
-  '</svg>';
-const FIND_ICON_NEXT =
-  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-  '<path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
-  '</svg>';
-const FIND_ICON_CLOSE =
-  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-  '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
-  '</svg>';
-
-function iconButton(className: string, svg: string, label: string): HTMLButtonElement {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = `lightink-find-icon-btn ${className}`;
-  button.innerHTML = svg;
-  button.title = label;
-  button.setAttribute('aria-label', label);
-  return button;
-}
-
-/** 创建搜索面板。element 挂到 reader 视图；open/close 控制显隐。 */
-export function createSearchPanel(deps: SearchPanelDeps): SearchPanel {
-  const root = document.createElement('div');
-  root.className = 'lightink-find-panel lightink-reader-search-panel';
-  root.setAttribute('role', 'search');
-  root.setAttribute('aria-label', deps.t('reader.search.title'));
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'lightink-find-input';
-  input.setAttribute('aria-label', deps.t('reader.search.title'));
-  input.placeholder = deps.t('reader.search.placeholder');
-  input.autocomplete = 'off';
-  input.spellcheck = false;
-  input.addEventListener('input', () => deps.onQuery(input.value));
-
-  const status = document.createElement('span');
-  status.className = 'lightink-find-status lightink-reader-search-status';
-  status.setAttribute('aria-live', 'polite');
-
-  const glyph = document.createElement('span');
-  glyph.className = 'lightink-find-panel__glyph lightink-find-panel__glyph--search';
-  glyph.innerHTML = FIND_ICON_SEARCH;
-  glyph.setAttribute('aria-hidden', 'true');
-
-  const field = document.createElement('div');
-  field.className = 'lightink-find-panel__field';
-  field.append(glyph, input, status);
-
-  const prev = iconButton(
-    'lightink-reader-search-prev lightink-find-prev',
-    FIND_ICON_PREV,
-    deps.t('reader.search.prev'),
-  );
-  const next = iconButton(
-    'lightink-reader-search-next lightink-find-next',
-    FIND_ICON_NEXT,
-    deps.t('reader.search.next'),
-  );
-  const close = iconButton(
-    'lightink-reader-search-close lightink-find-close',
-    FIND_ICON_CLOSE,
-    deps.t('reader.search.close'),
-  );
-  prev.addEventListener('click', () => deps.onPrev());
-  next.addEventListener('click', () => deps.onNext());
-  close.addEventListener('click', () => deps.onClose());
-
-  const row = document.createElement('div');
-  row.className = 'lightink-find-panel__row lightink-find-panel__row--find';
-  row.append(field, prev, next, close);
-  root.append(row);
-
-  // 键位挂面板容器：焦点落在按钮上时 Enter 走原生 click、Escape 仍可关闭。
-  root.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      if (event.target instanceof HTMLButtonElement) {
-        return;
-      }
-      event.preventDefault();
-      if (event.shiftKey) {
-        deps.onPrev();
-      } else {
-        deps.onNext();
-      }
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      deps.onClose();
-    }
-  });
-
-  return {
-    element: root,
-    open() {
-      root.classList.add('is-open');
-      input.focus({ preventScroll: true });
-      input.select();
-    },
-    close() {
-      root.classList.remove('is-open');
-    },
-    isOpen() {
-      return root.classList.contains('is-open');
-    },
-    focus() {
-      input.focus({ preventScroll: true });
-    },
-    getQuery() {
-      return input.value;
-    },
-    setQuery(query) {
-      input.value = query;
-    },
-    destroy() {
-      root.remove();
-    },
-    setStatus(total, active) {
-      const hasQuery = input.value !== '';
-      const empty = hasQuery && total === 0;
-      status.dataset.searchTotal = String(total);
-      status.dataset.searchEmpty = empty ? 'true' : 'false';
-      root.classList.toggle('is-empty', empty);
-      status.textContent = empty
-        ? deps.t('reader.search.empty')
-        : total > 0
-          ? `${active + 1}/${total}`
-          : '';
-      prev.disabled = total === 0;
-      next.disabled = total === 0;
-    },
-  };
 }
 
 /** 把 range 覆盖的文本片段包进带类名的 span（搜索命中 overlay，非持久标注）。可选 key 戳记用于幂等复检。 */

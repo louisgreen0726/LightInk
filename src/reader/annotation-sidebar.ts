@@ -18,6 +18,21 @@ function filterLabelKey(filter: AnnotationFilter): MessageKey {
   return filter === 'all' ? 'annotation.filter.all' : `annotation.kind.${filter}`;
 }
 
+export interface SearchHitView {
+  key: string;
+  snippet: string;
+  location: string | null;
+  current: boolean;
+}
+
+export interface AnnotationSidebarSearch {
+  onQuery: (query: string) => void;
+  onJump: (key: string) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onClear: () => void;
+}
+
 export interface AnnotationSidebarDeps {
   t: (key: MessageKey, vars?: Readonly<Record<string, string>>) => string;
   /** 点击某条标注时跳转到其位置（由 reader-view 实现滚动/翻页）。 */
@@ -28,11 +43,17 @@ export interface AnnotationSidebarDeps {
   onEditNote?: (annotation: Annotation) => void;
   /** Close the sidebar from its narrow-window drawer control. */
   onClose?: () => void;
+  /** Reader-only document search. Markdown hosts omit this. */
+  search?: AnnotationSidebarSearch;
 }
 
 export interface AnnotationSidebar {
   readonly element: HTMLElement;
   render(annotations: readonly Annotation[]): void;
+  renderHits(hits: readonly SearchHitView[]): void;
+  setSearchQuery(query: string): void;
+  getSearchQuery(): string;
+  focusSearch(): void;
   destroy(): void;
 }
 
@@ -109,7 +130,51 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     filters.appendChild(button);
   }
 
-  root.append(header, filters, list);
+  const search = deps.search;
+  let searchInput: HTMLInputElement | null = null;
+  let searchStatus: HTMLElement | null = null;
+  if (search !== undefined) {
+    const field = document.createElement('div');
+    field.className = 'lightink-reader-sidebar-search';
+    field.setAttribute('role', 'search');
+    searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.className = 'lightink-reader-sidebar-search-input';
+    searchInput.setAttribute('aria-label', deps.t('reader.search.title'));
+    searchInput.placeholder = deps.t('reader.search.placeholder');
+    searchInput.autocomplete = 'off';
+    searchInput.spellcheck = false;
+    searchInput.addEventListener('input', () => search.onQuery(searchInput!.value));
+    searchStatus = document.createElement('span');
+    searchStatus.className = 'lightink-reader-sidebar-search-status';
+    searchStatus.setAttribute('aria-live', 'polite');
+    field.append(searchInput, searchStatus);
+    root.append(header, field, filters, list);
+    root.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        if (event.target instanceof HTMLButtonElement) {
+          return;
+        }
+        event.preventDefault();
+        if (event.shiftKey) {
+          search.onPrev();
+        } else {
+          search.onNext();
+        }
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (searchInput !== null && searchInput.value !== '') {
+          searchInput.value = '';
+          search.onClear();
+          return;
+        }
+        deps.onClose?.();
+      }
+    });
+  } else {
+    root.append(header, filters, list);
+  }
 
   const renderItem = (annotation: Annotation): HTMLLIElement => {
     const li = document.createElement('li');
@@ -203,6 +268,11 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
 
   const renderList = (annotations: readonly Annotation[]): void => {
     lastAnnotations = annotations;
+    root.classList.remove('is-searching');
+    if (searchStatus !== null) {
+      searchStatus.textContent = '';
+      searchStatus.dataset.searchEmpty = 'false';
+    }
     list.replaceChildren();
     const visible =
       currentFilter === 'all'
@@ -224,9 +294,62 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     }
   };
 
+  const renderHits = (hits: readonly SearchHitView[]): void => {
+    root.classList.add('is-searching');
+    list.replaceChildren();
+    const empty = hits.length === 0;
+    if (searchStatus !== null) {
+      const current = hits.findIndex((hit) => hit.current);
+      searchStatus.dataset.searchEmpty = empty ? 'true' : 'false';
+      searchStatus.textContent = empty
+        ? deps.t('reader.search.empty')
+        : current >= 0
+          ? `${current + 1}/${hits.length}`
+          : String(hits.length);
+    }
+    if (empty) {
+      const emptyItem = document.createElement('li');
+      emptyItem.className = 'lightink-reader-sidebar-empty';
+      emptyItem.textContent = deps.t('reader.search.empty');
+      list.appendChild(emptyItem);
+      return;
+    }
+    for (const hit of hits) {
+      const li = document.createElement('li');
+      li.className = 'lightink-reader-sidebar-item lightink-reader-sidebar-hit';
+      li.classList.toggle('is-current', hit.current);
+      li.dataset.searchKey = hit.key;
+      if (hit.location !== null) {
+        const where = document.createElement('span');
+        where.className = 'lightink-reader-sidebar-location';
+        where.textContent = hit.location;
+        li.appendChild(where);
+      }
+      const snippet = document.createElement('span');
+      snippet.className = 'lightink-reader-sidebar-text';
+      snippet.textContent = hit.snippet;
+      li.appendChild(snippet);
+      li.addEventListener('click', () => search?.onJump(hit.key));
+      list.appendChild(li);
+    }
+  };
+
   return {
     element: root,
     render: renderList,
+    renderHits,
+    setSearchQuery(query) {
+      if (searchInput !== null) {
+        searchInput.value = query;
+      }
+    },
+    getSearchQuery() {
+      return searchInput?.value ?? '';
+    },
+    focusSearch() {
+      searchInput?.focus({ preventScroll: true });
+      searchInput?.select();
+    },
     destroy() {
       root.remove();
     },

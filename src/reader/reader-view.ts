@@ -36,7 +36,11 @@ import {
   removeAnnotationMarks,
   type AnnotationMarkSpec,
 } from './annotation-render.js';
-import { createAnnotationSidebar, type AnnotationSidebar } from './annotation-sidebar.js';
+import {
+  createAnnotationSidebar,
+  type AnnotationSidebar,
+  type SearchHitView,
+} from './annotation-sidebar.js';
 import {
   createSelectionToolbar,
   type SelectionToolbar,
@@ -45,14 +49,13 @@ import { showNoteDialog } from './note-dialog.js';
 import { outlineFromEntries } from './outline.js';
 import type { OutlineItem } from '../outline/outline-model.js';
 import {
-  createSearchPanel,
   findTextHits,
   nearestMatchIndex,
   nextMatchIndex,
   preserveMatchIndex,
   sanitizeSearchQuery,
+  snippetAround,
   type PdfSearchMatch,
-  type SearchPanel,
 } from './search-panel.js';
 import {
   clearSearchMarks,
@@ -257,8 +260,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   let activeLoadController: AbortController | null = null;
   let destroyed = false;
   let flowContentDispose: (() => void) | null = null;
-  /** PDF 搜索面板与当前搜索状态（R2；查询/命中/活动命中索引）。 */
-  let searchPanel: SearchPanel | null = null;
+  /** PDF 搜索状态（查询/命中/活动命中索引）；UI 在标注侧栏。 */
   let pdfSearch: { query: string; matches: PdfSearchMatch[]; active: number } | null = null;
   let flowSearch: {
     query: string;
@@ -619,7 +621,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     for (const layer of pageHost.querySelectorAll('.lightink-reader-text-layer')) {
       removeAnnotationMarks(layer, id);
     }
-    sidebar?.render(annotations);
+    renderSidebarAnnotations();
     void saveAnnotations();
   };
 
@@ -646,7 +648,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       annotations = annotations.map((item) =>
         item.id === annotation.id ? { ...item, note: input } : item,
       );
-      sidebar?.render(annotations);
+      renderSidebarAnnotations();
       void saveAnnotations();
     })();
   };
@@ -896,7 +898,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       },
     ];
     renderHighlights();
-    sidebar?.render(annotations);
+    renderSidebarAnnotations();
     void saveAnnotations();
   };
 
@@ -932,7 +934,27 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     sidebarBackdrop.addEventListener('click', () => setSidebarVisible(false));
     sidebar = createAnnotationSidebar({
       t,
-      onClose: () => setSidebarVisible(false),
+      onClose: () => {
+        clearSearchSession();
+        setSidebarVisible(false);
+      },
+      search: {
+        onQuery: (nextQuery) => {
+          if (nextQuery.trim() === '') {
+            clearSearchSession();
+            sidebar?.render(annotations);
+            return;
+          }
+          runReaderSearch(nextQuery);
+        },
+        onJump: (key) => jumpToSearchKey(key),
+        onNext: () => jumpReaderMatch(1),
+        onPrev: () => jumpReaderMatch(-1),
+        onClear: () => {
+          clearSearchSession();
+          sidebar?.render(annotations);
+        },
+      },
       onJump: (annotation) => {
         const loc = annotation.locator;
         if (loc.format === 'pdf' && pdfHandle !== null) {
@@ -1001,7 +1023,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     sidebar.element.setAttribute('aria-hidden', sidebarVisible ? 'false' : 'true');
     sidebar.element.hidden = !tabActive || !sidebarVisible;
     chromeHost().append(sidebarBackdrop, sidebar.element);
-    sidebar.render(annotations);
+    renderSidebarAnnotations();
+  }
+
+  function renderSidebarAnnotations(): void {
+    if ((sidebar?.getSearchQuery() ?? '').trim() !== '') {
+      return;
+    }
+    sidebar?.render(annotations);
   }
 
   /** 侧栏覆盖层（含 portal 到共享 chrome 的部分）与当前显隐状态同步。 */
@@ -1059,9 +1088,6 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     tabActive = active;
     syncSidebarOverlayDom();
-    if (searchPanel !== null) {
-      searchPanel.element.hidden = !active;
-    }
     if (!active) {
       hideSelectionToolbar();
     }
@@ -1286,8 +1312,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         const firstAtOrAfter = matches.findIndex((match) => match.page >= currentPage);
         const active = nearestMatchIndex(matches.length, firstAtOrAfter);
         pdfSearch = { query, matches, active };
-        searchPanel?.setStatus(matches.length, active);
         renderPdfSearchMarks();
+        syncSearchHits();
         // Opening Find or typing a query should not yank the reader back to page 1.
       })();
     }, 200);
@@ -1309,10 +1335,24 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     pdfHandle.scrollToPage(match.page);
     syncPageState();
     renderPdfSearchMarks();
-    searchPanel?.setStatus(state.matches.length, index);
+    syncSearchHits();
   };
 
-  const closePdfSearch = (): void => {
+  const activatePdfMatchAt = (index: number): void => {
+    const state = pdfSearch;
+    if (state === null || pdfHandle === null || index < 0 || index >= state.matches.length) {
+      return;
+    }
+    state.active = index;
+    const match = state.matches[index]!;
+    pendingSearchScrollKey = `${match.page}:${match.start}:${match.end}`;
+    pdfHandle.scrollToPage(match.page);
+    syncPageState();
+    renderPdfSearchMarks();
+    syncSearchHits();
+  };
+
+  const clearSearchSession = (): void => {
     searchGeneration += 1;
     if (searchDebounce !== null) {
       clearTimeout(searchDebounce);
@@ -1322,7 +1362,11 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     pdfSearch = null;
     clearReaderSearchMarks();
     flowSearch = null;
-    searchPanel?.close();
+  };
+
+  const closePdfSearch = (): void => {
+    clearSearchSession();
+    sidebar?.setSearchQuery('');
   };
 
   /**
@@ -1345,7 +1389,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       for (const doc of flowDocuments()) {
         clearSearchMarks(doc.body);
       }
-      searchPanel?.setStatus(0, -1);
+      syncSearchHits();
       return;
     }
     const byChapter = new Map<number, SearchMarkSpec[]>();
@@ -1385,7 +1429,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       renderFlowSearchMarks(byChapter, currentKey); // 幂等：仅校正当前类名
     }
     flowSearch = { query: trimmed, byChapter, marks, active };
-    searchPanel?.setStatus(marks.length, active);
+    syncSearchHits();
   };
 
   const revealFlowMark = (mark: HTMLElement | undefined): void => {
@@ -1433,7 +1477,74 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       renderFlowSearchMarks(state.byChapter, currentKey);
     }
     revealFlowMark(state.marks[index]);
-    searchPanel?.setStatus(state.marks.length, index);
+    syncSearchHits();
+  };
+
+  const activateFlowMatchAt = (index: number): void => {
+    const state = flowSearch;
+    if (state === null || index < 0 || index >= state.marks.length) {
+      return;
+    }
+    state.active = index;
+    const currentKey = state.marks[index]?.dataset.searchKey ?? null;
+    if (currentKey !== null) {
+      renderFlowSearchMarks(state.byChapter, currentKey);
+    }
+    revealFlowMark(state.marks[index]);
+    syncSearchHits();
+  };
+
+  const pdfMatchKey = (match: PdfSearchMatch): string =>
+    `${match.page}:${match.start}:${match.end}`;
+
+  const syncSearchHits = (): void => {
+    if (sidebar === null) {
+      return;
+    }
+    const query = sidebar.getSearchQuery().trim();
+    if (query === '') {
+      sidebar.render(annotations);
+      return;
+    }
+    const hits: SearchHitView[] = [];
+    if (pdfSearch !== null) {
+      for (const [index, match] of pdfSearch.matches.entries()) {
+        hits.push({
+          key: pdfMatchKey(match),
+          snippet: match.snippet,
+          location: t('annotation.location.page', { page: String(match.page) }),
+          current: index === pdfSearch.active,
+        });
+      }
+    } else if (flowSearch !== null) {
+      flowDocuments().forEach((doc, chapter) => {
+        const text = doc.body.textContent ?? '';
+        for (const spec of flowSearch?.byChapter.get(chapter) ?? []) {
+          const markIndex = flowSearch!.marks.findIndex(
+            (mark) => mark.dataset.searchKey === spec.key,
+          );
+          hits.push({
+            key: spec.key,
+            snippet: snippetAround(text, spec.start, spec.end),
+            location: t('reader.chapter', { n: String(chapter + 1) }),
+            current: markIndex === flowSearch!.active,
+          });
+        }
+      });
+    }
+    sidebar.renderHits(hits);
+  };
+
+  const jumpToSearchKey = (key: string): void => {
+    if (pdfSearch !== null) {
+      activatePdfMatchAt(pdfSearch.matches.findIndex((match) => pdfMatchKey(match) === key));
+      return;
+    }
+    if (flowSearch !== null) {
+      activateFlowMatchAt(
+        flowSearch.marks.findIndex((mark) => mark.dataset.searchKey === key),
+      );
+    }
   };
 
   const runReaderSearch = (query: string): void => {
@@ -1470,36 +1581,24 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     return sanitizeSearchQuery(typeof window !== 'undefined' ? window.getSelection()?.toString() : '');
   };
 
-  /** 打开阅读器搜索面板（PDF / 流式；CBZ 无文本则空结果）。 */
+  /** 打开标注弹出框并聚焦搜索（PDF / 流式；CBZ 无文本则空结果）。 */
   const openSearch = (query?: string): void => {
-    if (searchPanel === null) {
-      searchPanel = createSearchPanel({
-        t,
-        onQuery: (nextQuery) => runReaderSearch(nextQuery),
-        onNext: () => jumpReaderMatch(1),
-        onPrev: () => jumpReaderMatch(-1),
-        onClose: () => closePdfSearch(),
-      });
-      chromeHost().appendChild(searchPanel.element);
-    }
-    const seed = sanitizeSearchQuery(query) || currentSearchSelection();
-    if (seed !== '') {
-      searchPanel.setQuery(seed);
-    }
     const scroller = flowScrollContainer();
     const left = scroller.scrollLeft;
     const top = scroller.scrollTop;
-    searchPanel.open();
+    setSidebarVisible(true);
+    const seed = sanitizeSearchQuery(query) || currentSearchSelection();
+    if (seed !== '') {
+      sidebar?.setSearchQuery(seed);
+      runReaderSearch(seed);
+    } else if ((sidebar?.getSearchQuery() ?? '').trim() === '') {
+      sidebar?.render(annotations);
+    } else {
+      syncSearchHits();
+    }
+    sidebar?.focusSearch();
     scroller.scrollLeft = left;
     scroller.scrollTop = top;
-    if (seed !== '') {
-      runReaderSearch(seed);
-    } else {
-      searchPanel.setStatus(
-        flowSearch?.marks.length ?? pdfSearch?.matches.length ?? 0,
-        flowSearch?.active ?? pdfSearch?.active ?? -1,
-      );
-    }
   };
 
   /** 在 sandbox 正文文本节点中包裹高亮 quote（flow/txt，共享幂等引擎）；PDF 走文本层渲染。 */
@@ -1965,10 +2064,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   }
 
   const refreshOpenSearch = (): void => {
-    if (searchPanel?.isOpen() !== true) {
+    if (!sidebarVisible || !tabActive || sidebar === null) {
       return;
     }
-    const query = (searchPanel.getQuery() || flowSearch?.query || pdfSearch?.query || '').trim();
+    const query = (sidebar.getSearchQuery() || flowSearch?.query || pdfSearch?.query || '').trim();
     if (query === '') {
       return;
     }
@@ -2341,8 +2440,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       }
       pendingSearchScrollKey = null;
       pdfSearch = null;
-      searchPanel?.destroy();
-      searchPanel = null;
+      flowSearch = null;
       scrollHost.removeEventListener('scroll', scheduleFlowScroll);
       paneScroller?.removeEventListener('scroll', scheduleFlowScroll);
       pageHost.removeEventListener('scroll', schedulePageScroll);

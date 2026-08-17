@@ -303,7 +303,7 @@ describe('Reader load lifecycle', () => {
     );
   });
 
-  it('opens a Markdown-styled find panel for flow documents and highlights matches', async () => {
+  it('opens the annotation sidebar search for flow documents and lists snippets', async () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
     const view = createReaderView(host, {
@@ -321,21 +321,22 @@ describe('Reader load lifecycle', () => {
     }
 
     view.openSearch?.('keyword');
-    const panel = host.querySelector<HTMLElement>('.lightink-reader-search-panel')!;
-    expect(panel.classList.contains('lightink-find-panel')).toBe(true);
-    expect(panel.classList.contains('is-open')).toBe(true);
-    expect(panel.querySelector('.lightink-replace-input')).toBeNull();
-    expect(panel.querySelector('input')?.value).toBe('keyword');
-
-    const status = panel.querySelector<HTMLElement>('.lightink-reader-search-status');
-    expect(status).not.toBeNull();
-    expect(panel.querySelector('.lightink-find-prev')).not.toBeNull();
-    expect(panel.querySelector('.lightink-find-next')).not.toBeNull();
+    expect(host.querySelector('.lightink-reader-search-panel')).toBeNull();
+    const sidebar = host.querySelector<HTMLElement>('.lightink-reader-sidebar')!;
+    expect(sidebar.hidden).toBe(false);
+    expect(sidebar.querySelector('.lightink-replace-input')).toBeNull();
+    expect(
+      sidebar.querySelector<HTMLInputElement>('.lightink-reader-sidebar-search-input')?.value,
+    ).toBe('keyword');
+    expect(sidebar.classList.contains('is-searching')).toBe(true);
+    expect(sidebar.querySelector('.lightink-reader-sidebar-search-status')?.textContent).toBeTruthy();
 
     document.documentElement.dataset.readingLayout = 'paginated';
     document.documentElement.dataset.readingLayout = 'scroll';
-    expect(panel.classList.contains('is-open')).toBe(true);
-    expect(panel.querySelector('input')?.value).toBe('keyword');
+    expect(sidebar.hidden).toBe(false);
+    expect(
+      sidebar.querySelector<HTMLInputElement>('.lightink-reader-sidebar-search-input')?.value,
+    ).toBe('keyword');
     await view.destroy();
   });
 

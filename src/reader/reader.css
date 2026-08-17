@@ -452,6 +452,39 @@ html[data-display='xuhd'] .lightink-reader-pages[data-reader-format='pdf'] .ligh
   outline: 2px solid var(--lightink-accent);
   outline-offset: 2px;
 }
+.lightink-reader-sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--lightink-border);
+}
+.lightink-reader-sidebar-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--lightink-border);
+  border-radius: 4px;
+  padding: 0.3rem 0.45rem;
+  background: var(--lightink-bg);
+  color: var(--lightink-fg);
+  font: inherit;
+}
+.lightink-reader-sidebar-search-input:focus {
+  outline: 2px solid var(--lightink-accent);
+  outline-offset: 1px;
+}
+.lightink-reader-sidebar-search-status {
+  flex: 0 0 auto;
+  color: var(--lightink-muted);
+  font-size: 0.8rem;
+}
+.lightink-reader-sidebar.is-searching .lightink-reader-sidebar-filters {
+  display: none;
+}
+.lightink-reader-sidebar-hit.is-current {
+  background: var(--lightink-accent-soft);
+}
 .lightink-reader-sidebar-backdrop {
   display: none;
 }

@@ -171,6 +171,67 @@ describe('annotation-sidebar 重做', () => {
     expect(jumps).toEqual(['h1', 'b1', 'n1']);
     expect(edits).toEqual(['n1', 'n1']);
   });
+
+  it('reader search surface lists hits and Escape clears before close', () => {
+    const queries: string[] = [];
+    const jumps: string[] = [];
+    const nav: string[] = [];
+    let cleared = 0;
+    let closed = 0;
+    const sidebar = createAnnotationSidebar({
+      t: t as never,
+      onJump: () => undefined,
+      onClose: () => {
+        closed += 1;
+      },
+      search: {
+        onQuery: (query) => queries.push(query),
+        onJump: (key) => jumps.push(key),
+        onNext: () => nav.push('next'),
+        onPrev: () => nav.push('prev'),
+        onClear: () => {
+          cleared += 1;
+        },
+      },
+    });
+    document.body.appendChild(sidebar.element);
+    sidebar.render(annotations);
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-input')).not.toBeNull();
+    expect(sidebar.element.querySelectorAll('.lightink-reader-sidebar-item')).toHaveLength(3);
+
+    sidebar.setSearchQuery('keyword');
+    sidebar.renderHits([
+      { key: '1:0:7', snippet: 'alpha keyword', location: 'page 1', current: true },
+      { key: '2:0:7', snippet: 'keyword again', location: 'page 2', current: false },
+    ]);
+    expect(sidebar.element.classList.contains('is-searching')).toBe(true);
+    expect(sidebar.element.querySelectorAll('.lightink-reader-sidebar-hit')).toHaveLength(2);
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-status')?.textContent).toBe(
+      '1/2',
+    );
+    (sidebar.element.querySelector('[data-search-key="2:0:7"]') as HTMLElement).click();
+    expect(jumps).toEqual(['2:0:7']);
+
+    sidebar.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    sidebar.element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }),
+    );
+    expect(nav).toEqual(['next', 'prev']);
+
+    sidebar.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(cleared).toBe(1);
+    expect(closed).toBe(0);
+    expect(sidebar.getSearchQuery()).toBe('');
+
+    sidebar.render(annotations);
+    sidebar.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(closed).toBe(1);
+  });
+
+  it('omits the document search box when search is not enabled', () => {
+    const { sidebar } = mount();
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-input')).toBeNull();
+  });
 });
 
 describe('note-dialog', () => {
