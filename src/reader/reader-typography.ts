@@ -213,6 +213,24 @@ export function readerFontScaleSteps(): readonly FontScaleStep[] {
   return FONT_SCALE_STEPS;
 }
 
+/** Next discrete reader size step; does not read or write `lightink.fontScale`. */
+export function stepReaderFontScale(current: number, direction: 1 | -1): FontScaleStep {
+  const snapped = snapFontScale(current);
+  const idx = FONT_SCALE_STEPS.indexOf(snapped);
+  const next = Math.min(FONT_SCALE_STEPS.length - 1, Math.max(0, idx + direction));
+  return FONT_SCALE_STEPS[next]!;
+}
+
+export function nextReaderFontScaleStep(
+  current: number,
+  action: 'in' | 'out' | 'reset',
+): FontScaleStep {
+  if (action === 'reset') {
+    return DEFAULT_FONT_SCALE;
+  }
+  return stepReaderFontScale(current, action === 'in' ? 1 : -1);
+}
+
 function normalizeFontFamily(raw: string | undefined, fallback: string): string {
   if (raw === undefined || raw === '') {
     return fallback;

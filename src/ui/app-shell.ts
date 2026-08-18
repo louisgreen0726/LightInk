@@ -23,6 +23,7 @@ import {
   applyReaderTypography,
   defaultReaderTypography,
   loadReaderTypography,
+  nextReaderFontScaleStep,
   normalizeReaderTypography,
   READER_FONT_FAMILY_PRESETS,
   saveReaderTypography,
@@ -37,12 +38,7 @@ import {
   type ChromePinPrefs,
   type StorageLike,
 } from './chrome-prefs.js';
-import {
-  DEFAULT_FONT_SCALE,
-  FONT_SCALE_STEPS,
-  formatFontScaleLabel,
-  snapFontScale,
-} from './font-scale.js';
+import { DEFAULT_FONT_SCALE, formatFontScaleLabel } from './font-scale.js';
 import { renderCheatsheet, type CheatBinding } from './help-cheatsheet.js';
 import { createMenuBar, type Menu, type MenuItem } from './menus.js';
 import { labelModal, mountModalFocus } from './modal-focus.js';
@@ -59,13 +55,6 @@ const READER_FONT_PRESETS = Object.keys(
 
 const READER_LINE_HEIGHTS = [1.5, 1.65, 1.8, 2] as const;
 const READER_MEASURE_REMS = [16, 18, 22, 26, 32] as const;
-
-function stepReaderFontScale(current: number, direction: 1 | -1): number {
-  const snapped = snapFontScale(current);
-  const idx = FONT_SCALE_STEPS.indexOf(snapped);
-  const next = Math.min(FONT_SCALE_STEPS.length - 1, Math.max(0, idx + direction));
-  return FONT_SCALE_STEPS[next]!;
-}
 
 function dispatchReaderPrefEvent(name: string, detail: unknown): void {
   if (typeof document === 'undefined' || typeof CustomEvent !== 'function') {
@@ -293,6 +282,12 @@ export interface AppShell {
   toggleChromePinned(): boolean;
   /** Rebuild menu bar labels/items after language switch. */
   rebuildMenus(): void;
+  /**
+   * Persist reader typography (`lightink.reader.typography`) and restamp
+   * reader hosts. Used by the view menu and by host zoom shortcuts/wheel
+   * so those paths never write `lightink.fontScale`.
+   */
+  setReaderTypography(patch: Partial<ReaderTypography>): void;
   /** Stamp workspace mode/surface on the shell root (dataset + class). */
   applyWorkspace(snapshot: Pick<WorkspaceSnapshot, 'mode' | 'surface'>): void;
   /** 按当前标签状态重绘标签栏。 */
@@ -529,7 +524,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         const fontScaleStep =
           direction === 0
             ? DEFAULT_FONT_SCALE
-            : stepReaderFontScale(typography.fontScaleStep, direction);
+            : nextReaderFontScaleStep(typography.fontScaleStep, direction > 0 ? 'in' : 'out');
         actions.onSetReaderTypography({ fontScaleStep });
         return;
       }
@@ -1340,6 +1335,9 @@ export function createAppShell(
     setChromePinned,
     toggleChromePinned,
     rebuildMenus,
+    setReaderTypography: (patch) => {
+      menuActions.onSetReaderTypography?.(patch);
+    },
     applyWorkspace,
     renderTabBar,
     destroy: () => {

@@ -40,6 +40,7 @@ import {
   resolveTextQuoteRange,
 } from './annotation-locator.js';
 import {
+  annotationMarkSpec,
   renderAnnotationMarks,
   removeAnnotationMarks,
   type AnnotationMarkSpec,
@@ -1148,7 +1149,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       if (locator.format !== 'pdf' || locator.anchor === undefined) {
         continue;
       }
-      const spec: AnnotationMarkSpec = { id: hl.id, kind: hl.kind, anchor: locator.anchor };
+      const spec: AnnotationMarkSpec = annotationMarkSpec(hl, locator.anchor);
       const list = byPage.get(locator.page);
       if (list === undefined) {
         byPage.set(locator.page, [spec]);
@@ -1658,7 +1659,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         continue;
       }
       const chapter = locator.format === 'flow' ? locator.chapter : 0;
-      const spec: AnnotationMarkSpec = { id: hl.id, kind: hl.kind, anchor: locator };
+      const spec: AnnotationMarkSpec = annotationMarkSpec(hl, locator);
       const list = byChapter.get(chapter);
       if (list === undefined) {
         byChapter.set(chapter, [spec]);

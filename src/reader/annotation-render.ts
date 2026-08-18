@@ -25,6 +25,19 @@ export interface AnnotationMarkSpec {
   color?: string;
 }
 
+/** Build a mark spec, including any stored highlight color. */
+export function annotationMarkSpec(
+  annotation: { id: string; kind: string; color?: string },
+  anchor: TextQuoteAnchor,
+): AnnotationMarkSpec {
+  return {
+    id: annotation.id,
+    kind: annotation.kind,
+    anchor,
+    color: annotation.color,
+  };
+}
+
 function cssEscape(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
 }

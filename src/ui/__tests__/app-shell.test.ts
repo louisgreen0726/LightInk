@@ -10,7 +10,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { InsertElementId } from '../../editor/insert-commands.js';
 import { OPEN_FILTERS } from '../../file/file-dialog.js';
 import { translate, type MessageKey } from '../../i18n/messages.js';
+import {
+  defaultReaderTypography,
+  READER_TYPOGRAPHY_STORAGE_KEY,
+  type ReaderTypography,
+} from '../../reader/reader-typography.js';
 import type { BuiltinThemeId } from '../../theme/theme-service.js';
+import { FONT_SCALE_STORAGE_KEY } from '../font-scale.js';
 import {
   abbreviatePath,
   buildMenus,
@@ -371,6 +377,27 @@ describe('createAppShell immersive chrome', () => {
     expect(shell.chrome.isRevealed('menu')).toBe(true);
     expect(shell.chrome.isRevealed('tabs')).toBe(true);
   });
+
+  it('setReaderTypography persists reader scale without writing lightink.fontScale', () => {
+    installFakeDocument();
+    const storage = {
+      store: {} as Record<string, string>,
+      getItem(key: string) {
+        return this.store[key] ?? null;
+      },
+      setItem(key: string, value: string) {
+        this.store[key] = value;
+      },
+    };
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(root, stubActions(), {
+      shortcutBindings: () => [],
+      storage,
+    });
+    shell.setReaderTypography({ fontScaleStep: 1.25 });
+    expect(storage.store[FONT_SCALE_STORAGE_KEY]).toBeUndefined();
+    expect(JSON.parse(storage.store[READER_TYPOGRAPHY_STORAGE_KEY]!).fontScaleStep).toBe(1.25);
+  });
 });
 
 describe('buildMenus 生产结构', () => {
@@ -505,6 +532,28 @@ describe('buildMenus 生产结构', () => {
     expect(toggles).toBe(0);
     items.find((i) => i.id === 'view-layout-paginated')!.action();
     expect(toggles).toBe(1);
+  });
+
+  it('阅读工作区缩放写入阅读排版，不调用编辑器 onZoomIn', () => {
+    let zoomIns = 0;
+    let patch: Partial<ReaderTypography> | undefined;
+    const view = buildMenus({
+      ...stubActions(),
+      getWorkspaceMode: () => 'reader',
+      getReaderTypography: () => defaultReaderTypography(),
+      onSetReaderTypography: (next) => {
+        patch = next;
+      },
+      onZoomIn: () => {
+        zoomIns += 1;
+      },
+    }).find((m) => m.id === 'view');
+    const items = (
+      view!.items.find((i) => i.id === 'view-font-layout')!.submenu!() as import('../menus.js').MenuItem[]
+    ).filter((i) => i.separator !== true);
+    items.find((i) => i.id === 'view-zoom-in')!.action();
+    expect(zoomIns).toBe(0);
+    expect(patch?.fontScaleStep).toBe(1.125);
   });
 
   it('「字体布局」子菜单在 zh/en 双语下标签齐备（语言切换重建，T1）', () => {

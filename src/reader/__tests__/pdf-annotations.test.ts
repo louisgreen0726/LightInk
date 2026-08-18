@@ -13,11 +13,17 @@ import {
   resolveTextQuoteRange,
 } from '../annotation-locator.js';
 import {
+  annotationMarkSpec,
   renderAnnotationMarks,
   removeAnnotationMarks,
   type AnnotationMarkSpec,
 } from '../annotation-render.js';
-import { parseAnnotations, serializeAnnotations, type Annotation } from '../annotations.js';
+import {
+  DEFAULT_ANNOTATION_COLOR,
+  parseAnnotations,
+  serializeAnnotations,
+  type Annotation,
+} from '../annotations.js';
 import { isTextLayerMutation } from '../reader-view.js';
 
 /** 模拟 pdfjs 文本层：绝对定位 span 承载每段文字（结构同 pdfjs TextLayer 输出）。 */
@@ -141,6 +147,38 @@ describe('PDF 文字级标注闭环', () => {
     removeAnnotationMarks(layer, 'p1');
     expect(layer.querySelector('mark[data-annotation-id="p1"]')).toBeNull();
     expect(layer.textContent).toBe('第一章 开端正文内容甲正文内容乙');
+  });
+
+  it('书内 mark 带上标注已存颜色，缺省仍落默认黄', () => {
+    const layer = textLayer('第一章 开端', '正文内容甲', '正文内容乙');
+    const anchor = {
+      start: 6,
+      end: 11,
+      quote: '正文内容甲',
+      prefix: '第一章 开端',
+      suffix: '正文内容乙',
+    };
+    const colored = annotationMarkSpec(
+      { id: 'green', kind: 'highlight', color: '#86c28b' },
+      anchor,
+    );
+    expect(colored.color).toBe('#86c28b');
+    renderAnnotationMarks(layer, [colored]);
+    const mark = layer.querySelector<HTMLElement>('mark[data-annotation-id="green"]');
+    expect(mark?.dataset.annotationColor).toBe('#86c28b');
+    expect(mark?.style.getPropertyValue('--lightink-annotation-color')).toBe('#86c28b');
+
+    const fallback = annotationMarkSpec({ id: 'plain', kind: 'highlight' }, {
+      start: 0,
+      end: 3,
+      quote: '第一章',
+      prefix: '',
+      suffix: ' 开端正文内容甲正文内容乙',
+    });
+    expect(fallback.color).toBeUndefined();
+    renderAnnotationMarks(layer, [fallback]);
+    const plain = layer.querySelector<HTMLElement>('mark[data-annotation-id="plain"]');
+    expect(plain?.dataset.annotationColor).toBe(DEFAULT_ANNOTATION_COLOR);
   });
 
   it('旧页码级 PdfLocator（无 anchor）与文字级数据可共存解析', () => {

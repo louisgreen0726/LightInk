@@ -69,6 +69,7 @@ import {
 import type { RemoteOpenResult } from './reader/sources/remote-source.js';
 import type { ReaderTarget, RemoteReaderTarget } from './reader/sources/types.js';
 import { readerLoadErrorDetail } from './reader/error-message.js';
+import { loadReaderTypography, nextReaderFontScaleStep } from './reader/reader-typography.js';
 import { TabManager, fileNameOf, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
@@ -92,7 +93,7 @@ import {
 } from './ui/status-bar.js';
 import { createI18n } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
-import { installFontScale } from './ui/font-scale.js';
+import { installFontScale, type FontScaleHandle } from './ui/font-scale.js';
 import { installWheelZoom } from './ui/wheel-zoom.js';
 import {
   advancePagedScroller,
@@ -145,8 +146,21 @@ const displayScale = installDisplayScale(document.documentElement, window);
 // Reading font zoom (body/code) over tier baselines; persists lightink.fontScale.
 const fontScale = installFontScale(document.documentElement, window.localStorage);
 
-// R5：Ctrl/Cmd + 滚轮字号缩放（与 Ctrl+=/- 同档位、同持久化）；capture 阶段拦截。
-const wheelZoom = installWheelZoom(document, fontScale);
+// R5：Ctrl/Cmd + 滚轮字号缩放（与 Ctrl+=/- 同档位）。阅读工作区走阅读排版键。
+const readingZoomHandle: FontScaleHandle = {
+  get scale() {
+    return fontScale.scale;
+  },
+  get label() {
+    return fontScale.label;
+  },
+  zoomIn: () => changeReadingScale('in'),
+  zoomOut: () => changeReadingScale('out'),
+  reset: () => changeReadingScale('reset'),
+  setScale: (value) => fontScale.setScale(value),
+  dispose: () => fontScale.dispose(),
+};
+const wheelZoom = installWheelZoom(document, readingZoomHandle);
 
 let readingLayout = loadReadingLayout(window.localStorage);
 applyReadingLayout(document.documentElement, readingLayout);
@@ -1886,7 +1900,8 @@ function getActiveStatusSnapshot(): StatusBarSnapshot {
     return {
       kind: 'reader',
       state: tab.reader.state,
-      displayScale: tab.reader.state.scale * fontScale.scale,
+      displayScale:
+        tab.reader.state.scale * loadReaderTypography(window.localStorage).fontScaleStep,
     };
   }
   try {
@@ -1922,16 +1937,29 @@ function getActiveStatusSnapshot(): StatusBarSnapshot {
   }
 }
 
-function changeReadingScale(action: 'in' | 'out' | 'reset'): void {
-  if (action === 'in') {
-    fontScale.zoomIn();
-  } else if (action === 'out') {
-    fontScale.zoomOut();
-  } else {
-    fontScale.reset();
+function isReaderZoomContext(): boolean {
+  return workspace.mode === 'reader' || manager?.activeTab?.kind === 'reader';
+}
+
+function changeReadingScale(action: 'in' | 'out' | 'reset'): number {
+  if (isReaderZoomContext()) {
+    const fontScaleStep = nextReaderFontScaleStep(
+      loadReaderTypography(window.localStorage).fontScaleStep,
+      action,
+    );
+    shell?.setReaderTypography({ fontScaleStep });
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('lightink:font-scale', { detail: fontScaleStep }));
+    }
+    syncReadingColumns();
+    statusBar?.refresh(getActiveStatusSnapshot);
+    return fontScaleStep;
   }
+  const next =
+    action === 'in' ? fontScale.zoomIn() : action === 'out' ? fontScale.zoomOut() : fontScale.reset();
   syncReadingColumns();
   statusBar?.refresh(getActiveStatusSnapshot);
+  return next;
 }
 
 // 启动即渲染一次（可见偏好恢复时显示当前文档口径，不等首次编辑）。

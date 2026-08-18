@@ -19,9 +19,11 @@ import {
   READER_TYPOGRAPHY_STORAGE_KEY,
   applyReaderTypography,
   loadReaderTypography,
+  nextReaderFontScaleStep,
   parseReaderTypography,
   resolveReaderFontFamily,
   saveReaderTypography,
+  stepReaderFontScale,
 } from '../reader-typography.js';
 
 function memoryStorage(initial: Record<string, string> = {}): {
@@ -137,6 +139,23 @@ describe('resolveReaderFontFamily', () => {
     expect(resolveReaderFontFamily('serif')).toBe(READER_FONT_FAMILY_PRESETS.serif);
     expect(resolveReaderFontFamily('Georgia, serif')).toBe('Georgia, serif');
     expect(resolveReaderFontFamily('evil; background:red')).toBe(READER_FONT_FAMILY_PRESETS.body);
+  });
+});
+
+describe('stepReaderFontScale', () => {
+  it('steps along FONT_SCALE_STEPS and clamps at the ends without writing the editor key', () => {
+    const { store, storage } = memoryStorage();
+    expect(stepReaderFontScale(1, 1)).toBe(1.125);
+    expect(stepReaderFontScale(1.1, -1)).toBe(1);
+    expect(nextReaderFontScaleStep(1, 'in')).toBe(1.125);
+    expect(nextReaderFontScaleStep(1.25, 'out')).toBe(1.125);
+    expect(nextReaderFontScaleStep(1.25, 'reset')).toBe(DEFAULT_FONT_SCALE);
+    expect(stepReaderFontScale(FONT_SCALE_STEPS[0]!, -1)).toBe(FONT_SCALE_STEPS[0]);
+    expect(stepReaderFontScale(FONT_SCALE_STEPS[FONT_SCALE_STEPS.length - 1]!, 1)).toBe(
+      FONT_SCALE_STEPS[FONT_SCALE_STEPS.length - 1],
+    );
+    expect(store[FONT_SCALE_STORAGE_KEY]).toBeUndefined();
+    expect(storage.getItem(FONT_SCALE_STORAGE_KEY)).toBeNull();
   });
 });
 
