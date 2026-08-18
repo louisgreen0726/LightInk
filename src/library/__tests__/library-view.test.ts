@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { bindLibraryProgress, saveLibraryProgressAlias } from '../library-progress.js';
@@ -673,6 +675,35 @@ describe('LibraryView manage and catalog', () => {
     await settle();
     expect(browse).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain('远程漫画');
+  });
+
+  it('gives catalog a full-width body instead of the source sidebar column', async () => {
+    const deps = dependencies();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    await openCatalog(host);
+    const root = libraryRoot(host);
+    const body = root.querySelector('.lightink-library-body');
+    expect(root.dataset.libraryPage).toBe('catalog');
+    expect(root.classList.contains('lightink-library--catalog')).toBe(true);
+    expect(body?.children).toHaveLength(1);
+    expect(body?.firstElementChild?.classList.contains('lightink-library-content')).toBe(true);
+    expect(body?.querySelector('.lightink-library-sources')).toBeNull();
+    expect(body?.querySelector('.lightink-library-groups')).toBeNull();
+    expect(host.textContent).toContain('远程漫画');
+
+    const css = readFileSync(resolve(process.cwd(), 'src/library/library.css'), 'utf-8');
+    const [baseCss, narrowCss = ''] = css.split('@media (max-width: 760px)');
+    expect(baseCss).toMatch(
+      /\[data-library-page='catalog'\] \.lightink-library-body[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    );
+    expect(narrowCss).toMatch(
+      /\[data-library-page='catalog'\] \.lightink-library-body[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    );
+    view.destroy();
   });
 
   it('does not project progress onto unopened OPDS catalog entries', async () => {

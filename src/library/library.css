@@ -542,7 +542,9 @@
 }
 
 .lightink-library[data-library-page='my-books'] .lightink-library-body:not(:has(> .lightink-library-groups)),
-.lightink-library--my-books .lightink-library-body:not(:has(> .lightink-library-groups)) {
+.lightink-library--my-books .lightink-library-body:not(:has(> .lightink-library-groups)),
+.lightink-library[data-library-page='catalog'] .lightink-library-body,
+.lightink-library--catalog .lightink-library-body {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -599,6 +601,11 @@
   .lightink-library[data-library-page='my-books'] .lightink-library-body,
   .lightink-library--my-books .lightink-library-body {
     grid-template-columns: 112px minmax(0, 1fr);
+  }
+
+  .lightink-library[data-library-page='catalog'] .lightink-library-body,
+  .lightink-library--catalog .lightink-library-body {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .lightink-library-workarea,
