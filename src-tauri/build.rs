@@ -1,6 +1,23 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+const WINDOWS_TEST_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
+
 fn main() {
     tauri_build::build();
     compile_windows_test_manifest_lib();
@@ -15,21 +32,20 @@ fn compile_windows_test_manifest_lib() {
         return;
     }
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let rc_file = manifest_dir.join("windows-test.rc");
-    let manifest = manifest_dir.join("windows-test.manifest");
-    println!("cargo:rerun-if-changed={}", rc_file.display());
-    println!("cargo:rerun-if-changed={}", manifest.display());
-
     let Some(rc) = embed_resource::find_windows_sdk_tool("rc.exe") else {
         println!("cargo:warning=rc.exe not found; Windows cargo test may fail to start");
         return;
     };
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    let manifest = out_dir.join("windows-test.manifest");
+    let rc_file = out_dir.join("windows-test.rc");
     let lib_file = out_dir.join("lightink_windows_test_manifest.lib");
+    std::fs::write(&manifest, WINDOWS_TEST_MANIFEST).expect("write windows-test.manifest");
+    std::fs::write(&rc_file, "1 24 \"windows-test.manifest\"\n").expect("write windows-test.rc");
+
     let status = Command::new(&rc)
-        .current_dir(&manifest_dir)
+        .current_dir(&out_dir)
         .args(["/nologo", "/fo"])
         .arg(&lib_file)
         .arg(&rc_file)
