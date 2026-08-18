@@ -2,20 +2,26 @@
  * Session-level editor/reader workspace (R1).
  *
  * Owns `editor | reader` for the current process only. Never writes
- * localStorage so cold start and module init are always the Markdown
- * editor (R6). `main.ts` and `app-shell` consume snapshots and apply
+ * localStorage, so cold start and module init are always the reader
+ * shelf. `main.ts` and `app-shell` consume snapshots and apply
  * visibility; this module does not touch tab-manager or LibraryView.
  *
  * Surfaces:
  *   - editor: Markdown editor and existing markdown tabs
  *   - shelf:  library as the reader-mode home (a workspace panel, not an overlay)
  *   - reader: an opened book; return-to-shelf stays in reader mode
+ *
+ * Round-trip is only `enterEditor()` (labeled 编辑) and
+ * `enterReaderHome()` (labeled 阅读/书架). `toggleLibraryEntry` must
+ * not send the shelf to the editor.
  */
 
 export type WorkspaceMode = 'editor' | 'reader';
 export type WorkspaceSurface = 'editor' | 'shelf' | 'reader';
+/** Two exclusive chrome sets: editor menus/tabs vs reader shell. */
+export type WorkspaceChrome = 'editor' | 'reader';
 
-export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = 'editor';
+export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = 'reader';
 
 export interface WorkspaceSnapshot {
   readonly mode: WorkspaceMode;
@@ -29,6 +35,10 @@ export interface WorkspaceVisibility {
   readonly readerVisible: boolean;
   /** Markdown outline is hidden while the reader workspace is showing. */
   readonly outlineHidden: boolean;
+  /** File/Edit/Insert/View menus and the Markdown tab bar. */
+  readonly editorChromeVisible: boolean;
+  /** Reader shell (shelf cover wall or open book). Exclusive with editor chrome. */
+  readonly readerChromeVisible: boolean;
 }
 
 export interface WorkspaceSurfaceRoots {
@@ -44,6 +54,7 @@ export interface WorkspaceModeController {
   readonly surface: WorkspaceSurface;
   /** Switch workspace. Does not change whether a book is open. */
   setMode(mode: WorkspaceMode): WorkspaceSnapshot;
+  /** Labeled 编辑: show the editor shell. Does not change the open-book flag. */
   enterEditor(): WorkspaceSnapshot;
   enterReader(): WorkspaceSnapshot;
   /** View-menu editor ↔ reader. Preserves the open-book flag. */
@@ -58,13 +69,19 @@ export interface WorkspaceModeController {
    * to the shelf without leaving the reader workspace.
    */
   returnToShelf(): WorkspaceSnapshot;
-  /** Reader home: reader mode with the shelf as the main surface. */
+  /** Labeled 阅读/书架: reader mode with the shelf as the main surface. */
   enterReaderHome(): WorkspaceSnapshot;
   /**
-   * File→书库 / shelf close:
-   * editor → shelf, shelf → editor, open book → shelf (stay in reader).
+   * Retired File→书库 mapping. Never leaves the reader workspace for
+   * the editor: any call lands on the shelf.
    */
   toggleLibraryEntry(): WorkspaceSnapshot;
+  /**
+   * Reader-mode close-tab. With an open book, same as closing the book
+   * (return to shelf). On the shelf, stay there — do not enter the
+   * editor and do not imply a window close.
+   */
+  closeReaderTab(): WorkspaceSnapshot;
   subscribe(listener: (state: WorkspaceSnapshot) => void): () => void;
 }
 
@@ -82,12 +99,19 @@ export function resolveWorkspaceSurface(
   return hasOpenBook ? 'reader' : 'shelf';
 }
 
+export function workspaceChrome(surface: WorkspaceSurface): WorkspaceChrome {
+  return surface === 'editor' ? 'editor' : 'reader';
+}
+
 export function workspaceVisibility(surface: WorkspaceSurface): WorkspaceVisibility {
+  const editorChromeVisible = surface === 'editor';
   return {
     editorVisible: surface === 'editor',
     shelfVisible: surface === 'shelf',
     readerVisible: surface === 'reader',
     outlineHidden: surface !== 'editor',
+    editorChromeVisible,
+    readerChromeVisible: !editorChromeVisible,
   };
 }
 
@@ -181,13 +205,13 @@ export function createWorkspaceMode(): WorkspaceModeController {
       return commit('reader', false);
     },
     toggleLibraryEntry() {
-      if (mode === 'editor') {
-        return commit('reader', false);
+      return commit('reader', false);
+    },
+    closeReaderTab() {
+      if (mode !== 'reader') {
+        return snapshot();
       }
-      if (hasOpenBook) {
-        return commit('reader', false);
-      }
-      return commit('editor', hasOpenBook);
+      return commit('reader', false);
     },
     subscribe(listener) {
       listeners.add(listener);

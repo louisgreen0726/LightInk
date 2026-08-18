@@ -1,5 +1,6 @@
 /**
- * Session-level editor/reader workspace: cold start, round-trip, shelf home.
+ * Session-level editor/reader workspace: cold-start shelf, two chrome
+ * sets, labeled 编辑 / 阅读/书架 round-trip.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +11,7 @@ import {
   DEFAULT_WORKSPACE_MODE,
   parseWorkspaceMode,
   resolveWorkspaceSurface,
+  workspaceChrome,
   workspaceVisibility,
 } from '../workspace-mode.js';
 
@@ -36,6 +38,14 @@ describe('resolveWorkspaceSurface', () => {
   });
 });
 
+describe('workspaceChrome', () => {
+  it('gives the editor and the reader two exclusive chrome sets', () => {
+    expect(workspaceChrome('editor')).toBe('editor');
+    expect(workspaceChrome('shelf')).toBe('reader');
+    expect(workspaceChrome('reader')).toBe('reader');
+  });
+});
+
 describe('workspaceVisibility', () => {
   it('shows one peer surface and hides the markdown outline outside the editor', () => {
     expect(workspaceVisibility('editor')).toEqual({
@@ -43,47 +53,54 @@ describe('workspaceVisibility', () => {
       shelfVisible: false,
       readerVisible: false,
       outlineHidden: false,
+      editorChromeVisible: true,
+      readerChromeVisible: false,
     });
     expect(workspaceVisibility('shelf')).toEqual({
       editorVisible: false,
       shelfVisible: true,
       readerVisible: false,
       outlineHidden: true,
+      editorChromeVisible: false,
+      readerChromeVisible: true,
     });
     expect(workspaceVisibility('reader')).toEqual({
       editorVisible: false,
       shelfVisible: false,
       readerVisible: true,
       outlineHidden: true,
+      editorChromeVisible: false,
+      readerChromeVisible: true,
     });
   });
 });
 
 describe('createWorkspaceMode', () => {
-  it('cold-starts as the editor workspace, never a shelf overlay', () => {
-    expect(DEFAULT_WORKSPACE_MODE).toBe('editor');
+  it('cold-starts as the reader shelf, never the editor', () => {
+    expect(DEFAULT_WORKSPACE_MODE).toBe('reader');
     const workspace = createWorkspaceMode();
-    expect(workspace.mode).toBe('editor');
+    expect(workspace.mode).toBe('reader');
     expect(workspace.hasOpenBook).toBe(false);
-    expect(workspace.surface).toBe('editor');
+    expect(workspace.surface).toBe('shelf');
     expect(workspace.snapshot()).toEqual({
-      mode: 'editor',
+      mode: 'reader',
       hasOpenBook: false,
-      surface: 'editor',
+      surface: 'shelf',
     });
   });
 
-  it('round-trips editor → reader home → editor as distinct main surfaces', () => {
+  it('round-trips only through labeled 编辑 and 阅读/书架', () => {
     const workspace = createWorkspaceMode();
-    expect(workspace.enterReader().surface).toBe('shelf');
-    expect(workspace.mode).toBe('reader');
+    expect(workspace.surface).toBe('shelf');
     expect(workspace.enterEditor().surface).toBe('editor');
     expect(workspace.mode).toBe('editor');
+    expect(workspace.enterReaderHome().surface).toBe('shelf');
+    expect(workspace.mode).toBe('reader');
+    expect(workspace.hasOpenBook).toBe(false);
   });
 
   it('keeps the shelf as the reader home when no book is open', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     expect(workspace.surface).toBe('shelf');
     expect(workspace.surface).not.toBe('reader');
     expect(workspace.surface).not.toBe('editor');
@@ -91,7 +108,6 @@ describe('createWorkspaceMode', () => {
 
   it('opens a book and returns to the shelf without leaving reader mode', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     expect(workspace.openBook()).toEqual({
       mode: 'reader',
       hasOpenBook: true,
@@ -106,7 +122,6 @@ describe('createWorkspaceMode', () => {
 
   it('preserves the open-book flag when returning to the editor', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     workspace.openBook();
     expect(workspace.enterEditor()).toEqual({
       mode: 'editor',
@@ -118,6 +133,7 @@ describe('createWorkspaceMode', () => {
 
   it('does not force the reader workspace when a book opens from the editor', () => {
     const workspace = createWorkspaceMode();
+    workspace.enterEditor();
     expect(workspace.openBook()).toEqual({
       mode: 'editor',
       hasOpenBook: true,
@@ -127,7 +143,6 @@ describe('createWorkspaceMode', () => {
 
   it('reveals the reader surface when a book opens while the shelf is showing', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     expect(workspace.surface).toBe('shelf');
     expect(workspace.openBook()).toEqual({
       mode: 'reader',
@@ -138,7 +153,6 @@ describe('createWorkspaceMode', () => {
 
   it('toggleMode preserves the open-book flag', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     workspace.openBook();
     expect(workspace.toggleMode().surface).toBe('editor');
     expect(workspace.hasOpenBook).toBe(true);
@@ -147,7 +161,6 @@ describe('createWorkspaceMode', () => {
 
   it('enterReaderHome always lands on the shelf, even if a book was open', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     workspace.openBook();
     workspace.enterEditor();
     expect(workspace.enterReaderHome()).toEqual({
@@ -157,12 +170,17 @@ describe('createWorkspaceMode', () => {
     });
   });
 
-  it('toggleLibraryEntry maps File→书库 and shelf close onto workspace switches', () => {
+  it('toggleLibraryEntry never sends the shelf to the editor', () => {
     const workspace = createWorkspaceMode();
+    expect(workspace.surface).toBe('shelf');
+    expect(workspace.toggleLibraryEntry()).toEqual({
+      mode: 'reader',
+      hasOpenBook: false,
+      surface: 'shelf',
+    });
+    workspace.enterEditor();
     expect(workspace.toggleLibraryEntry().surface).toBe('shelf');
     expect(workspace.mode).toBe('reader');
-    expect(workspace.toggleLibraryEntry().surface).toBe('editor');
-    workspace.toggleLibraryEntry();
     workspace.openBook();
     expect(workspace.toggleLibraryEntry()).toEqual({
       mode: 'reader',
@@ -171,9 +189,30 @@ describe('createWorkspaceMode', () => {
     });
   });
 
+  it('closeReaderTab returns to the shelf and never enters the editor', () => {
+    const workspace = createWorkspaceMode();
+    expect(workspace.closeReaderTab()).toEqual({
+      mode: 'reader',
+      hasOpenBook: false,
+      surface: 'shelf',
+    });
+    workspace.openBook();
+    expect(workspace.closeReaderTab()).toEqual({
+      mode: 'reader',
+      hasOpenBook: false,
+      surface: 'shelf',
+    });
+    workspace.enterEditor();
+    workspace.openBook();
+    expect(workspace.closeReaderTab()).toEqual({
+      mode: 'editor',
+      hasOpenBook: true,
+      surface: 'editor',
+    });
+  });
+
   it('rejects unknown setMode values as editor', () => {
     const workspace = createWorkspaceMode();
-    workspace.enterReader();
     expect(workspace.setMode('shelf' as 'editor').mode).toBe('editor');
   });
 
@@ -181,28 +220,29 @@ describe('createWorkspaceMode', () => {
     const workspace = createWorkspaceMode();
     const listener = vi.fn();
     const unsubscribe = workspace.subscribe(listener);
-    workspace.setMode('editor');
+    workspace.setMode('reader');
     expect(listener).not.toHaveBeenCalled();
-    workspace.enterReader();
+    workspace.enterEditor();
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener.mock.calls[0]?.[0]).toEqual({
-      mode: 'reader',
+      mode: 'editor',
       hasOpenBook: false,
-      surface: 'shelf',
+      surface: 'editor',
     });
     unsubscribe();
-    workspace.enterEditor();
+    workspace.enterReaderHome();
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it('keeps independent session instances and never writes localStorage', () => {
     const first = createWorkspaceMode();
     const second = createWorkspaceMode();
-    first.enterReader();
-    expect(second.mode).toBe('editor');
+    first.enterEditor();
+    expect(second.mode).toBe('reader');
+    expect(second.surface).toBe('shelf');
 
     const storage = {
-      getItem: vi.fn(() => 'reader'),
+      getItem: vi.fn(() => 'editor'),
       setItem: vi.fn(),
     };
     const original = (globalThis as { localStorage?: typeof storage }).localStorage;
@@ -212,10 +252,11 @@ describe('createWorkspaceMode', () => {
     });
     try {
       const workspace = createWorkspaceMode();
-      workspace.enterReader();
-      workspace.openBook();
       workspace.enterEditor();
-      expect(workspace.mode).toBe('editor');
+      workspace.openBook();
+      workspace.enterReaderHome();
+      expect(workspace.mode).toBe('reader');
+      expect(workspace.surface).toBe('shelf');
       expect(storage.setItem).not.toHaveBeenCalled();
       expect(storage.getItem).not.toHaveBeenCalled();
     } finally {

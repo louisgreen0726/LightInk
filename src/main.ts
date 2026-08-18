@@ -338,6 +338,8 @@ const markdownAnnotations = new Map<string, MarkdownAnnotationHost>();
 let autosave: AutosaveController;
 let libraryView: LibraryView | undefined;
 const workspace = createWorkspaceMode();
+// Cold start is the reader cover wall, not the Markdown editor.
+workspace.enterReaderHome();
 let applyingWorkspaceSurfaces = false;
 // R6：外部变更秒级轮询句柄（退出时清理）。
 let externalChangeTimer: number | null = null;
@@ -473,9 +475,11 @@ async function openPathByKind(path: string): Promise<TabState | null> {
   });
   // File→Open / recents / drop share this helper. A reader tab opened while
   // the shelf is showing must flip hasOpenBook so the book is not left under
-  // the library. Editor mode stays the main surface (openBook does not switch).
+  // the library. Markdown opened from the shelf must enter the editor.
   if (tab?.kind === 'reader') {
     workspace.openBook();
+  } else if (tab !== null && isMarkdownTab(tab)) {
+    workspace.enterEditor();
   }
   return tab;
 }
@@ -558,12 +562,12 @@ function applyWorkspaceState(state: WorkspaceSnapshot = workspace.snapshot()): v
 }
 
 function onLibraryMenu(): void {
-  workspace.toggleLibraryEntry();
+  workspace.enterReaderHome();
 }
 
 function onSetWorkspaceMode(mode: WorkspaceMode): void {
   if (mode === 'reader') {
-    workspace.enterReader();
+    workspace.enterReaderHome();
     return;
   }
   workspace.enterEditor();
@@ -574,8 +578,12 @@ function onLibraryVisibilityChange(visible: boolean): void {
     setLibraryVisibility(visible);
     return;
   }
-  if (!visible && workspace.mode === 'reader' && workspace.surface === 'shelf') {
-    workspace.enterEditor();
+  // Shelf hide is not an editor entry. Keep the cover wall if we are on it.
+  if (!visible && workspace.surface === 'shelf') {
+    if (libraryView !== undefined) {
+      applyWorkspaceVisibility({ shelf: libraryView.element }, 'shelf');
+    }
+    setLibraryVisibility(true);
     return;
   }
   setLibraryVisibility(visible);
@@ -944,6 +952,7 @@ async function insertImageFromFile(): Promise<void> {
  */
 async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
   const plan = planDroppedFiles(paths);
+  let openedMarkdown = false;
   for (const path of plan.markdown) {
     const opened = await manager.openFile(path);
     if (opened === null) {
@@ -951,7 +960,12 @@ async function handleOsFileDrop(paths: readonly string[]): Promise<void> {
         title: i18n.t('app.name'),
         kind: 'warning',
       });
+    } else {
+      openedMarkdown = true;
     }
+  }
+  if (openedMarkdown) {
+    workspace.enterEditor();
   }
   for (const path of plan.reader) {
     await openPathByKind(path);
@@ -1250,6 +1264,8 @@ shell = createAppShell(
     getWorkspaceMode: () => workspace.mode,
     getWorkspaceSnapshot: () => workspace.snapshot(),
     onSetWorkspaceMode,
+    onEnterEditor: () => workspace.enterEditor(),
+    onEnterReaderHome: () => workspace.enterReaderHome(),
     isReaderBookOpen: () => workspace.mode === 'reader' && workspace.hasOpenBook,
     listRecents: () => invoke<string[]>('list_recents'),
     openRecent: async (path) => {
@@ -2543,11 +2559,16 @@ document.addEventListener(
 const shortcuts = new ShortcutRegistry({
   new: () => void manager.newTab(),
   open: () => void manager.openFile(),
-  // T6/R9：关闭活动标签，复用 closeTab 的未保存确认（与点标签关闭按钮同路径：
-  // 先提交源码态编辑，再 closeTab——干净标签直关，脏标签弹三选一确认）。
-  // 无活动标签时空操作。注：WebView2 可能由外壳吞掉 Ctrl+W，需真机确认；
-  // 若被吞，备选组合键 Ctrl+Shift+W / Alt+W（见 task-run concerns）。
+  // T6/R9：编辑器关闭活动标签，复用 closeTab 的未保存确认（与点标签关闭按钮
+  // 同路径：先提交源码态编辑，再 closeTab）。阅读器态：无打开书时空操作；
+  // 有打开书时与合书一样只回书架。注：WebView2 可能由外壳吞掉 Ctrl+W。
   'close-tab': () => {
+    if (workspace.mode === 'reader') {
+      if (workspace.hasOpenBook) {
+        workspace.returnToShelf();
+      }
+      return;
+    }
     const id = manager.activeTabId;
     if (id !== null) {
       commitSourceMode(id);
@@ -2592,6 +2613,21 @@ const shortcuts = new ShortcutRegistry({
   'toggle-reading-layout': () => toggleReadingLayoutMode(),
 });
 shortcuts.attach(document);
+
+// Reader-owned Escape: overlay handlers preventDefault first; leftover Escape
+// on an open book returns to the shelf. Shelf Escape is a no-op.
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented) {
+    return;
+  }
+  if (workspace.mode !== 'reader') {
+    return;
+  }
+  if (workspace.hasOpenBook) {
+    workspace.returnToShelf();
+    event.preventDefault();
+  }
+});
 
 const gateMarkdownPagedWheel = createPagedWheelGate();
 

@@ -45,6 +45,7 @@ import { labelModal, mountModalFocus } from './modal-focus.js';
 import { matchEvent } from './shortcuts.js';
 import {
   applyWorkspaceSurface,
+  resolveWorkspaceSurface,
   type WorkspaceMode,
   type WorkspaceSnapshot,
 } from './workspace-mode.js';
@@ -120,16 +121,20 @@ export interface AppShellActions {
   onNew(): void;
   onOpen(): void;
   /**
-   * File → Library: enter reader workspace (shelf). In reader mode with a book
-   * open, return to the shelf without leaving reader mode.
+   * File → Library fallback. Must not toggle the shelf back to the editor;
+   * prefer `onEnterReaderHome` (always lands on the cover wall).
    */
   onToggleLibrary?(): void;
   /** Session workspace; defaults to editor. Owned by workspace-mode. */
   getWorkspaceMode?(): WorkspaceMode;
   /** Current mode + surface snapshot for chrome dataset. */
   getWorkspaceSnapshot?(): Pick<WorkspaceSnapshot, 'mode' | 'surface'>;
-  /** View menu: switch the editor / reader workspace. */
+  /** View menu fallback when the dedicated travel actions are omitted. */
   onSetWorkspaceMode?(mode: WorkspaceMode): void;
+  /** Shelf labeled「编辑」: enter the editor workspace. */
+  onEnterEditor?(): void;
+  /** Editor labeled「阅读/书架」: always land on the shelf cover wall. */
+  onEnterReaderHome?(): void;
   /** True when reader workspace is showing an open book, not the shelf. */
   isReaderBookOpen?(): boolean;
   /** R12：列出最近打开文件路径（MRU 序）。 */
@@ -411,6 +416,56 @@ function isReaderTypographyContext(actions: AppShellActions): boolean {
   return actions.getWorkspaceMode?.() === 'reader' || actions.activeTabKind?.() === 'reader';
 }
 
+function workspaceTravelLabel(
+  kind: 'editor' | 'readerHome',
+  locale: 'en' | 'zh-CN',
+): string {
+  if (kind === 'editor') {
+    return locale === 'en' ? 'Edit' : '编辑';
+  }
+  return locale === 'en' ? 'Reading / Shelf' : '阅读/书架';
+}
+
+/** Shelf「编辑」— never a close/return-to-shelf control. */
+function enterEditorWorkspace(actions: AppShellActions): void {
+  actions.onEnterEditor?.() ?? actions.onSetWorkspaceMode?.('editor');
+}
+
+/**
+ * Editor「阅读/书架」and File→书库: always the cover wall.
+ * Does not call a toggle that would leave the shelf for the editor.
+ */
+function enterReaderHomeWorkspace(actions: AppShellActions): void {
+  if (actions.onEnterReaderHome !== undefined) {
+    actions.onEnterReaderHome();
+    return;
+  }
+  if (actions.getWorkspaceMode?.() === 'reader' && actions.isReaderBookOpen?.() !== true) {
+    return;
+  }
+  actions.onToggleLibrary?.();
+}
+
+function resolveShellSnapshot(
+  actions: AppShellActions,
+): Pick<WorkspaceSnapshot, 'mode' | 'surface'> {
+  const provided = actions.getWorkspaceSnapshot?.();
+  if (provided !== undefined) {
+    return { mode: provided.mode, surface: provided.surface };
+  }
+  const mode = actions.getWorkspaceMode?.() ?? 'editor';
+  return {
+    mode,
+    surface: resolveWorkspaceSurface(mode, actions.isReaderBookOpen?.() ?? false),
+  };
+}
+
+function setChromeSetVisible(host: HTMLElement, visible: boolean): void {
+  host.hidden = !visible;
+  host.inert = !visible;
+  host.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
 function readerTypographyOrDefault(actions: AppShellActions): ReaderTypography {
   return actions.getReaderTypography?.() ?? defaultReaderTypography();
 }
@@ -671,7 +726,7 @@ export function buildMenus(actions: AppShellActions): Menu[] {
             }
             return en ? 'Library' : '书库';
           },
-          () => actions.onToggleLibrary?.(),
+          () => enterReaderHomeWorkspace(actions),
         ),
         // R12：VS Code 式「最近打开」子菜单——悬停展开列表（打开时现取，
         // 读取失败按空列表处理），不再弹模态层。
@@ -760,21 +815,15 @@ export function buildMenus(actions: AppShellActions): Menu[] {
       items: [
         menuItem(
           'view-workspace-editor',
-          () => {
-            const label = ll('Editor Mode', '编辑模式');
-            return actions.getWorkspaceMode?.() === 'reader' ? label : `✓ ${label}`;
-          },
-          () => actions.onSetWorkspaceMode?.('editor'),
+          () => workspaceTravelLabel('editor', actions.getLocale()),
+          () => enterEditorWorkspace(actions),
           '',
           () => actions.getWorkspaceMode?.() === 'reader',
         ),
         menuItem(
           'view-workspace-reader',
-          () => {
-            const label = ll('Reading Mode', '阅读模式');
-            return actions.getWorkspaceMode?.() === 'reader' ? `✓ ${label}` : label;
-          },
-          () => actions.onSetWorkspaceMode?.('reader'),
+          () => workspaceTravelLabel('readerHome', actions.getLocale()),
+          () => enterReaderHomeWorkspace(actions),
           '',
           () => actions.getWorkspaceMode?.() !== 'reader',
         ),
@@ -1006,6 +1055,32 @@ export function createAppShell(
   tabBar.setAttribute('role', 'tablist');
   tabBar.setAttribute('aria-label', actions.t('chrome.showTabs'));
 
+  const enterReaderHomeBtn = document.createElement('button');
+  enterReaderHomeBtn.type = 'button';
+  enterReaderHomeBtn.id = 'lightink-enter-reader-home';
+  enterReaderHomeBtn.className = 'lightink-workspace-travel';
+  enterReaderHomeBtn.addEventListener('click', () => enterReaderHomeWorkspace(actions));
+
+  const readerShell = document.createElement('div');
+  readerShell.id = 'lightink-reader-shell';
+  readerShell.className = 'lightink-reader-shell';
+
+  const enterEditorBtn = document.createElement('button');
+  enterEditorBtn.type = 'button';
+  enterEditorBtn.id = 'lightink-enter-editor';
+  enterEditorBtn.className = 'lightink-workspace-travel';
+  enterEditorBtn.addEventListener('click', () => enterEditorWorkspace(actions));
+  readerShell.appendChild(enterEditorBtn);
+
+  function syncTravelLabels(): void {
+    const locale = actions.getLocale();
+    const editorLabel = workspaceTravelLabel('editor', locale);
+    const readerHomeLabel = workspaceTravelLabel('readerHome', locale);
+    enterEditorBtn.textContent = editorLabel;
+    enterReaderHomeBtn.textContent = readerHomeLabel;
+  }
+  syncTravelLabels();
+
   const editorArea = document.createElement('div');
   editorArea.id = 'lightink-editor-area';
   const outlineSidebar = document.createElement('div');
@@ -1045,7 +1120,7 @@ export function createAppShell(
       }
     },
   });
-  toolbar.appendChild(menuBar.element);
+  toolbar.append(menuBar.element, enterReaderHomeBtn);
 
   function rebuildMenus(): void {
     const next = buildMenus(menuActions);
@@ -1054,27 +1129,31 @@ export function createAppShell(
       loadingLabel: () => actions.t('menu.loading'),
       overflowLabel: () => actions.t('menu.more'),
     });
+    syncTravelLabels();
   }
   rebuildMenusRef = rebuildMenus;
 
   chromeHost.replaceChildren(menuTrigger, toolbar);
   tabsHost.replaceChildren(tabsTrigger, tabBar);
-  root.replaceChildren(chromeHost, tabsHost, mainRow, statusBarHost);
+  root.replaceChildren(chromeHost, tabsHost, readerShell, mainRow, statusBarHost);
   root.classList.add('lightink-immersive');
 
   function applyWorkspace(snapshot: Pick<WorkspaceSnapshot, 'mode' | 'surface'>): void {
     applyWorkspaceSurface(root, snapshot);
     applyWorkspaceSurface(mainRow, snapshot);
     applyWorkspaceSurface(editorArea, snapshot);
+    const editorChrome = snapshot.surface === 'editor';
+    const shelfChrome = snapshot.surface === 'shelf';
+    setChromeSetVisible(chromeHost, editorChrome);
+    setChromeSetVisible(tabsHost, editorChrome);
+    setChromeSetVisible(readerShell, shelfChrome);
+    if (!editorChrome) {
+      menuBar.closeAll();
+    }
     applyReaderChrome();
   }
 
-  applyWorkspace(
-    actions.getWorkspaceSnapshot?.() ?? {
-      mode: actions.getWorkspaceMode?.() ?? 'editor',
-      surface: 'editor',
-    },
-  );
+  applyWorkspace(resolveShellSnapshot(actions));
 
   function syncMenuChrome(): void {
     const revealed = chrome.isRevealed('menu');

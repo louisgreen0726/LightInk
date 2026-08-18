@@ -80,6 +80,7 @@ class FakeEl {
   tabIndex = 0;
   type = '';
   hidden = false;
+  inert = false;
   disabled = false;
   private ownText = '';
   children: FakeEl[] = [];
@@ -171,6 +172,12 @@ class FakeEl {
 
   focus(): void {
     /* no-op */
+  }
+
+  click(): void {
+    for (const fn of this.listeners.get('click') ?? []) {
+      fn({ type: 'click', preventDefault() {}, stopPropagation() {} });
+    }
   }
 
   querySelector(selector: string): FakeEl | null {
@@ -378,6 +385,83 @@ describe('createAppShell immersive chrome', () => {
     expect(shell.chrome.isRevealed('tabs')).toBe(true);
   });
 
+  it('hides editor menu and tab chrome on shelf and reader; shows them in the editor', () => {
+    installFakeDocument();
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(
+      root,
+      {
+        ...stubActions(),
+        getWorkspaceSnapshot: () => ({ mode: 'reader', surface: 'shelf' }),
+        getWorkspaceMode: () => 'reader',
+      },
+      { shortcutBindings: () => [], storage: null },
+    );
+    const fakeRoot = root as unknown as FakeEl;
+    const chromeHost = fakeRoot.querySelector('#lightink-chrome-host');
+    const tabsHost = fakeRoot.querySelector('#lightink-tabs-host');
+    const readerShell = fakeRoot.querySelector('#lightink-reader-shell');
+
+    expect(chromeHost?.hidden).toBe(true);
+    expect(chromeHost?.inert).toBe(true);
+    expect(tabsHost?.hidden).toBe(true);
+    expect(tabsHost?.inert).toBe(true);
+    expect(readerShell?.hidden).toBe(false);
+    expect(readerShell?.inert).toBe(false);
+
+    shell.applyWorkspace({ mode: 'editor', surface: 'editor' });
+    expect(chromeHost?.hidden).toBe(false);
+    expect(chromeHost?.inert).toBe(false);
+    expect(tabsHost?.hidden).toBe(false);
+    expect(readerShell?.hidden).toBe(true);
+
+    shell.applyWorkspace({ mode: 'reader', surface: 'reader' });
+    expect(chromeHost?.hidden).toBe(true);
+    expect(tabsHost?.hidden).toBe(true);
+    expect(readerShell?.hidden).toBe(true);
+  });
+
+  it('round-trips via labeled 编辑 and 阅读/书架 without sharing one chrome set', () => {
+    installFakeDocument();
+    const calls: string[] = [];
+    const root = document.createElement('div') as unknown as HTMLElement;
+    const shell = createAppShell(
+      root,
+      {
+        ...stubActions(),
+        getWorkspaceSnapshot: () => ({ mode: 'reader', surface: 'shelf' }),
+        getWorkspaceMode: () => 'reader',
+        onEnterEditor: () => {
+          calls.push('editor');
+        },
+        onEnterReaderHome: () => {
+          calls.push('shelf');
+        },
+        onToggleLibrary: () => {
+          calls.push('toggle');
+        },
+      },
+      { shortcutBindings: () => [], storage: null },
+    );
+    const fakeRoot = root as unknown as FakeEl;
+    const editBtn = fakeRoot.querySelector('#lightink-enter-editor');
+    const readBtn = fakeRoot.querySelector('#lightink-enter-reader-home');
+
+    expect(editBtn?.textContent).toBe('编辑');
+    expect(editBtn?.hidden).toBe(false);
+    expect(fakeRoot.querySelector('#lightink-chrome-host')?.hidden).toBe(true);
+    editBtn?.click();
+    expect(calls).toEqual(['editor']);
+
+    shell.applyWorkspace({ mode: 'editor', surface: 'editor' });
+    expect(fakeRoot.querySelector('#lightink-chrome-host')?.hidden).toBe(false);
+    expect(fakeRoot.querySelector('#lightink-tabs-host')?.hidden).toBe(false);
+    expect(fakeRoot.querySelector('#lightink-reader-shell')?.hidden).toBe(true);
+    expect(readBtn?.textContent).toBe('阅读/书架');
+    readBtn?.click();
+    expect(calls).toEqual(['editor', 'shelf']);
+  });
+
   it('setReaderTypography persists reader scale without writing lightink.fontScale', () => {
     installFakeDocument();
     const storage = {
@@ -583,6 +667,62 @@ describe('buildMenus 生产结构', () => {
       }).find((m) => m.id === 'view');
       expect(readerView?.items.some((i) => i.id === 'view-source-mode')).toBe(false);
     }
+  });
+
+  it('视图往返项是带文字的「编辑」与「阅读/书架」，不是编辑/阅读模式勾选', () => {
+    const view = buildMenus({
+      ...stubActions(),
+      getWorkspaceMode: () => 'editor',
+    }).find((m) => m.id === 'view');
+    const editorItem = view?.items.find((i) => i.id === 'view-workspace-editor');
+    const readerItem = view?.items.find((i) => i.id === 'view-workspace-reader');
+    const editorLabel = typeof editorItem?.label === 'function' ? editorItem.label() : editorItem?.label;
+    const readerLabel = typeof readerItem?.label === 'function' ? readerItem.label() : readerItem?.label;
+    expect(editorLabel).toBe('编辑');
+    expect(readerLabel).toBe('阅读/书架');
+    expect(editorLabel).not.toMatch(/模式/);
+    expect(readerLabel).not.toMatch(/模式/);
+  });
+
+  it('File→书库在书架上不把工作区切去编辑器', () => {
+    let enteredEditor = 0;
+    let enteredHome = 0;
+    let toggled = 0;
+    const file = buildMenus({
+      ...stubActions(),
+      getWorkspaceMode: () => 'reader',
+      isReaderBookOpen: () => false,
+      onEnterEditor: () => {
+        enteredEditor += 1;
+      },
+      onEnterReaderHome: () => {
+        enteredHome += 1;
+      },
+      onToggleLibrary: () => {
+        toggled += 1;
+      },
+      onSetWorkspaceMode: (mode) => {
+        if (mode === 'editor') enteredEditor += 1;
+      },
+    }).find((m) => m.id === 'file');
+    file?.items.find((i) => i.id === 'file-library')?.action();
+    expect(enteredHome).toBe(1);
+    expect(enteredEditor).toBe(0);
+    expect(toggled).toBe(0);
+  });
+
+  it('File→书库在缺少 onEnterReaderHome 时也不会从书架 toggle 进编辑器', () => {
+    let toggled = 0;
+    const file = buildMenus({
+      ...stubActions(),
+      getWorkspaceMode: () => 'reader',
+      isReaderBookOpen: () => false,
+      onToggleLibrary: () => {
+        toggled += 1;
+      },
+    }).find((m) => m.id === 'file');
+    file?.items.find((i) => i.id === 'file-library')?.action();
+    expect(toggled).toBe(0);
   });
 
   it('打开对话框过滤只剩单一「所有支持格式」条目 + 所有文件（T1）', () => {
