@@ -416,7 +416,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         applySavedProgress();
       }
     },
-    renderHighlights: () => renderHighlights(),
+    renderHighlights: () => {
+      bindFlowFrameLeftoverEscape();
+      renderHighlights();
+    },
     handleNoteMarkClick: (event) => {
       const annotation = annotationFromMark(event.target);
       if (annotation !== null && annotation.kind === 'note') {
@@ -1366,11 +1369,47 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     const annotation = annotationFromMark(event.target);
     if (annotation !== null && annotation.kind === 'note') {
       event.preventDefault();
+      event.stopPropagation();
       openNote(annotation);
-      return;
     }
-    readerChrome?.handleSurfaceClick(event);
-    syncChromeRevealAttr();
+    // Page-host clicks bubble once to root; createReaderChrome owns reveal/dismiss.
+    // Iframe clicks never bubble, so handleNoteMarkClick still forwards those.
+  };
+
+  /**
+   * Flow chapter Escape stays in-frame. Overlay dismiss is already handled by
+   * flow-renderer; leftover Escape is forwarded to the parent document so the
+   * window-level 合书 listener can returnToShelf.
+   */
+  const flowFrameEscapeDocs = new WeakSet<Document>();
+  const bindFlowFrameLeftoverEscape = (): void => {
+    for (const frame of scrollHost.querySelectorAll<HTMLIFrameElement>(
+      '.lightink-reader-chapter-frame',
+    )) {
+      const frameDocument = frame.contentDocument;
+      if (frameDocument === null || flowFrameEscapeDocs.has(frameDocument)) {
+        continue;
+      }
+      flowFrameEscapeDocs.add(frameDocument);
+      frameDocument.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented || destroyed) {
+          return;
+        }
+        const parentWindow = frameDocument.defaultView?.parent;
+        const parentDoc = parentWindow?.document;
+        if (parentDoc === undefined || parentDoc === frameDocument) {
+          return;
+        }
+        event.preventDefault();
+        parentDoc.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    }
   };
 
   /** 关闭可能打开中的笔记弹层（切换/销毁时经 Escape 走正规 release，恢复背景 inert）。 */

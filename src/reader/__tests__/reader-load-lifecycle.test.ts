@@ -789,6 +789,69 @@ describe('Reader immersive chrome lifecycle', () => {
     closeWindow.mockRestore();
     await view.destroy();
   });
+
+  it('reveals chrome from a single PDF page click instead of reveal-then-dismiss', async () => {
+    pdfMock.renderPdfInto.mockImplementation(async (_source, stagedHost: HTMLElement) => {
+      const slot = document.createElement('div');
+      slot.className = 'lightink-reader-page-slot';
+      slot.dataset.pageIndex = '0';
+      slot.textContent = 'page body';
+      stagedHost.appendChild(slot);
+      return fakePdfHandle(1, 3);
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, {
+      readBytes: async () => new Uint8Array([1, 2, 3]),
+    });
+    await view.load('book.pdf');
+
+    expect(isReaderChromeRevealed(host)).toBe(false);
+    const page = host.querySelector<HTMLElement>('.lightink-reader-page-slot')!;
+    page.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(isReaderChromeRevealed(host)).toBe(true);
+    expect(chromeControlByLabel(host, '返回书架')?.textContent).toContain('返回书架');
+    await view.destroy();
+  });
+
+  it('forwards leftover flow-frame Escape to the parent document for window-level 合书', async () => {
+    const onReturnToShelf = vi.fn();
+    const parentEscapes: KeyboardEvent[] = [];
+    const onParentKey = (event: Event): void => {
+      if ((event as KeyboardEvent).key === 'Escape') {
+        parentEscapes.push(event as KeyboardEvent);
+      }
+    };
+    document.addEventListener('keydown', onParentKey);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, readerViewDeps({ onReturnToShelf }));
+    await view.load('book.epub');
+
+    const frame = host.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame');
+    expect(frame).not.toBeNull();
+    if (frame!.dataset.frameReady !== 'true') {
+      await new Promise<void>((resolve) => {
+        frame!.addEventListener('load', () => resolve(), { once: true });
+      });
+    }
+    const frameDocument = frame!.contentDocument;
+    expect(frameDocument).not.toBeNull();
+
+    const leftover = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+    frameDocument!.dispatchEvent(leftover);
+
+    expect(onReturnToShelf).not.toHaveBeenCalled();
+    expect(parentEscapes.length).toBeGreaterThan(0);
+    expect(view.state.phase).toBe('ready');
+    expect(host.querySelector('.lightink-reader')).not.toBeNull();
+    document.removeEventListener('keydown', onParentKey);
+    await view.destroy();
+  });
 });
 
 describe('Reader R7 memory regressions', () => {
