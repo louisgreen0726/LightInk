@@ -1,0 +1,292 @@
+// @vitest-environment jsdom
+
+/**
+ * Contract for `src/reader/reader-chrome.ts` (T3 / R4 / R5):
+ *
+ * `createReaderChrome(host, deps)` mounts an overlay on the reading host.
+ * First paint is hidden. A page click (center or upper) or a pointer near
+ * the top/bottom edge reveals four text-labeled actions:
+ *   返回书架 · 目录 · 排版 · 本书标注
+ * 「返回书架」 is the first control (start of the top bar). It is the only
+ * path that calls injected `returnToShelf`. 目录 / 排版 / 本书标注 call
+ * `openOutline` / `openTypography` / `toggleSidebar`.
+ *
+ * The bar is out of document flow (`position: absolute|fixed`) so
+ * reveal/dismiss does not change the reading area's top or height.
+ * Idle auto-hide is 2500ms unless `isOverlayOpen()` is true.
+ *
+ * `handleEscape()` closes one layer and never calls `returnToShelf`
+ * (window-level leftover Escape owns 合书). Order:
+ *   selection toolbar → annotation sidebar → dismissOverlay() → chrome bar.
+ * Return true when a layer closed; false when nothing is open.
+ *
+ * Deps: `returnToShelf`, `openOutline`, `openTypography`, `toggleSidebar`,
+ * optional `isOverlayOpen`, `dismissOverlay`, `isSidebarVisible`,
+ * `isSelectionToolbarVisible`, `hideSelectionToolbar`.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { createReaderChrome } from '../reader-chrome.js';
+
+const LABELS = ['返回书架', '目录', '排版', '本书标注'] as const;
+const AUTO_HIDE_MS = 2500;
+
+function stubRect(
+  el: HTMLElement,
+  box: { width: number; height: number; top?: number; left?: number },
+): void {
+  const top = box.top ?? 0;
+  const left = box.left ?? 0;
+  el.getBoundingClientRect = () =>
+    ({
+      x: left,
+      y: top,
+      top,
+      left,
+      width: box.width,
+      height: box.height,
+      right: left + box.width,
+      bottom: top + box.height,
+      toJSON() {
+        return {};
+      },
+    }) as DOMRect;
+}
+
+function labeledButtons(root: ParentNode): HTMLButtonElement[] {
+  return [...root.querySelectorAll('button')].filter((button) =>
+    LABELS.some((label) => button.textContent?.includes(label)),
+  );
+}
+
+function buttonByLabel(root: ParentNode, label: string): HTMLButtonElement {
+  const match = labeledButtons(root).find((button) => button.textContent?.includes(label));
+  expect(match, `missing labeled control "${label}"`).toBeTruthy();
+  return match!;
+}
+
+function mount(overrides: Record<string, unknown> = {}) {
+  const host = document.createElement('div');
+  host.className = 'lightink-reader';
+  const page = document.createElement('div');
+  page.className = 'lightink-reader-page';
+  page.style.height = '400px';
+  host.append(page);
+  document.body.append(host);
+  stubRect(host, { width: 720, height: 400 });
+  stubRect(page, { width: 720, height: 400 });
+
+  const deps = {
+    returnToShelf: vi.fn(),
+    openOutline: vi.fn(),
+    openTypography: vi.fn(),
+    toggleSidebar: vi.fn(),
+    isOverlayOpen: vi.fn(() => false),
+    dismissOverlay: vi.fn(() => false),
+    hideSelectionToolbar: vi.fn(),
+    isSelectionToolbarVisible: vi.fn(() => false),
+    isSidebarVisible: vi.fn(() => false),
+    ...overrides,
+  };
+  const chrome = createReaderChrome(host, deps);
+  return { host, page, chrome, deps };
+}
+
+function clickPage(target: HTMLElement, clientY: number): void {
+  target.dispatchEvent(
+    new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 200, clientY }),
+  );
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  document.body.replaceChildren();
+});
+
+describe('createReaderChrome first paint', () => {
+  it('starts hidden with no editor menus or markdown tab bar', () => {
+    const { host, chrome } = mount();
+
+    expect(chrome.isRevealed()).toBe(false);
+    expect(host.querySelector('#lightink-toolbar')).toBeNull();
+    expect(host.querySelector('#lightink-tabbar')).toBeNull();
+    expect(host.querySelector('#lightink-chrome-host')).toBeNull();
+    expect(host.textContent).not.toContain('文件');
+    expect(host.textContent).not.toContain('插入');
+    expect(labeledButtons(host).some((button) => !button.hidden && button.offsetParent !== null)).toBe(
+      false,
+    );
+  });
+});
+
+describe('createReaderChrome reveal', () => {
+  it('reveals four text-labeled controls with 返回书架 first after a page click', () => {
+    const { host, page, chrome } = mount();
+
+    clickPage(page, 120);
+    expect(chrome.isRevealed()).toBe(true);
+
+    const buttons = labeledButtons(host);
+    expect(buttons).toHaveLength(4);
+    expect(buttons[0]!.textContent?.trim()).toBe('返回书架');
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual([...LABELS]);
+    for (const button of buttons) {
+      expect(button.hidden).toBe(false);
+      expect((button.textContent ?? '').trim().length).toBeGreaterThan(0);
+      expect(button.textContent?.trim()).not.toBe('×');
+      expect(button.textContent?.trim()).not.toBe('编辑');
+    }
+  });
+
+  it('reveals when the pointer rests near the top or bottom edge', () => {
+    const { host, chrome } = mount();
+
+    host.dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, clientX: 80, clientY: 6 }),
+    );
+    expect(chrome.isRevealed()).toBe(true);
+
+    chrome.dismiss();
+    expect(chrome.isRevealed()).toBe(false);
+
+    host.dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, clientX: 80, clientY: 394 }),
+    );
+    expect(chrome.isRevealed()).toBe(true);
+  });
+});
+
+describe('createReaderChrome overlay layout', () => {
+  it('stacks over the page and does not shift reading-area top or height', () => {
+    const { page, chrome } = mount();
+    const before = page.getBoundingClientRect();
+
+    chrome.reveal();
+    const shown = page.getBoundingClientRect();
+    expect(shown.top).toBe(before.top);
+    expect(shown.height).toBe(before.height);
+
+    chrome.dismiss();
+    const hidden = page.getBoundingClientRect();
+    expect(hidden.top).toBe(before.top);
+    expect(hidden.height).toBe(before.height);
+
+    const overlay = chrome.element;
+    const position = overlay.style.position || getComputedStyle(overlay).position;
+    expect(['absolute', 'fixed']).toContain(position);
+  });
+});
+
+describe('createReaderChrome actions', () => {
+  it('返回书架 is the only control that returns to the shelf', () => {
+    const { host, chrome, deps } = mount();
+    chrome.reveal();
+
+    buttonByLabel(host, '目录').click();
+    buttonByLabel(host, '排版').click();
+    buttonByLabel(host, '本书标注').click();
+    expect(deps.openOutline).toHaveBeenCalledTimes(1);
+    expect(deps.openTypography).toHaveBeenCalledTimes(1);
+    expect(deps.toggleSidebar).toHaveBeenCalledTimes(1);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+
+    buttonByLabel(host, '返回书架').click();
+    expect(deps.returnToShelf).toHaveBeenCalledTimes(1);
+    expect(deps.openOutline).toHaveBeenCalledTimes(1);
+    expect(deps.openTypography).toHaveBeenCalledTimes(1);
+    expect(deps.toggleSidebar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createReaderChrome escape is one step', () => {
+  it('closes the selection toolbar before anything else', () => {
+    const { chrome, deps } = mount({
+      isSelectionToolbarVisible: vi.fn(() => true),
+    });
+    chrome.reveal();
+
+    expect(chrome.handleEscape()).toBe(true);
+    expect(deps.hideSelectionToolbar).toHaveBeenCalledTimes(1);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+    expect(deps.toggleSidebar).not.toHaveBeenCalled();
+    expect(chrome.isRevealed()).toBe(true);
+  });
+
+  it('closes open annotations and keeps the book open', () => {
+    const { chrome, deps } = mount({
+      isSidebarVisible: vi.fn(() => true),
+    });
+    chrome.reveal();
+
+    expect(chrome.handleEscape()).toBe(true);
+    expect(deps.toggleSidebar).toHaveBeenCalledTimes(1);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+    expect(chrome.isRevealed()).toBe(true);
+  });
+
+  it('dismisses a nested overlay via dismissOverlay without leaving the book', () => {
+    let overlay = true;
+    const { chrome, deps } = mount({
+      isOverlayOpen: () => overlay,
+      dismissOverlay: vi.fn(() => {
+        if (!overlay) {
+          return false;
+        }
+        overlay = false;
+        return true;
+      }),
+    });
+    chrome.reveal();
+
+    expect(chrome.handleEscape()).toBe(true);
+    expect(deps.dismissOverlay).toHaveBeenCalledTimes(1);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+    expect(chrome.isRevealed()).toBe(true);
+  });
+
+  it('hides the chrome bar on the next Escape and still does not return to the shelf', () => {
+    const { chrome, deps } = mount();
+    chrome.reveal();
+
+    expect(chrome.handleEscape()).toBe(true);
+    expect(chrome.isRevealed()).toBe(false);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+
+    expect(chrome.handleEscape()).toBe(false);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+  });
+});
+
+describe('createReaderChrome auto-hide', () => {
+  it('dismisses after 2.5s idle and stays up while an overlay is open', () => {
+    vi.useFakeTimers();
+    const overlay = { open: false };
+    const { chrome } = mount({
+      isOverlayOpen: () => overlay.open,
+    });
+
+    chrome.reveal();
+    vi.advanceTimersByTime(AUTO_HIDE_MS - 1);
+    expect(chrome.isRevealed()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(chrome.isRevealed()).toBe(false);
+
+    overlay.open = true;
+    chrome.reveal();
+    vi.advanceTimersByTime(AUTO_HIDE_MS * 2);
+    expect(chrome.isRevealed()).toBe(true);
+  });
+});
+
+describe('createReaderChrome destroy', () => {
+  it('removes the overlay and ignores later page clicks', () => {
+    const { host, page, chrome, deps } = mount();
+    chrome.reveal();
+    chrome.destroy();
+
+    expect(host.contains(chrome.element)).toBe(false);
+    clickPage(page, 120);
+    expect(chrome.isRevealed()).toBe(false);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
+  });
+});

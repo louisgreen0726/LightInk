@@ -65,6 +65,61 @@ function frameSource(host: HTMLElement): string {
   return host.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')?.srcdoc ?? '';
 }
 
+/** T3：读书页浮层四项均带文字，退出文案必须是「返回书架」。 */
+const READER_CHROME_LABELS = ['返回书架', '目录', '排版', '本书标注'] as const;
+
+function readerChrome(host: HTMLElement): HTMLElement | null {
+  return host.querySelector<HTMLElement>('.lightink-reader-chrome');
+}
+
+function isReaderChromeRevealed(host: HTMLElement): boolean {
+  const chrome = readerChrome(host);
+  return chrome !== null && !chrome.hidden && chrome.getAttribute('aria-hidden') !== 'true';
+}
+
+function chromeControls(host: HTMLElement): HTMLElement[] {
+  const chrome = readerChrome(host);
+  if (chrome === null) {
+    return [];
+  }
+  return [...chrome.querySelectorAll<HTMLElement>('button, [role="button"]')];
+}
+
+function chromeControlByLabel(host: HTMLElement, label: string): HTMLElement | undefined {
+  const actions: Record<string, readonly string[]> = {
+    返回书架: ['shelf', 'backToShelf'],
+    目录: ['toc'],
+    排版: ['typography'],
+    本书标注: ['annotations'],
+  };
+  for (const action of actions[label] ?? []) {
+    const match = host.querySelector<HTMLElement>(`[data-reader-chrome-action="${action}"]`);
+    if (match !== null) {
+      return match;
+    }
+  }
+  return chromeControls(host).find((el) => (el.textContent ?? '').includes(label));
+}
+
+function revealReaderChrome(host: HTMLElement): void {
+  const page =
+    host.querySelector<HTMLElement>('.lightink-reader-scroll') ??
+    host.querySelector<HTMLElement>('.lightink-reader');
+  page?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+}
+
+function readerViewDeps(
+  extras: Record<string, unknown> = {},
+): Parameters<typeof createReaderView>[1] {
+  return {
+    readBytes: async () => bytes('unused'),
+    parseContent: async () => ({
+      chapters: [{ title: 'One', html: '<p>one</p>' }],
+    }),
+    ...extras,
+  } as Parameters<typeof createReaderView>[1];
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -585,9 +640,10 @@ describe('Reader load lifecycle', () => {
 
   it('closes the annotation drawer from its backdrop, button, and Escape', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    const onReturnToShelf = vi.fn();
     const host = document.createElement('div');
     document.body.appendChild(host);
-    const view = createReaderView(host);
+    const view = createReaderView(host, readerViewDeps({ onReturnToShelf }));
     const root = host.querySelector<HTMLElement>('.lightink-reader')!;
 
     view.toggleSidebar();
@@ -619,6 +675,119 @@ describe('Reader load lifecycle', () => {
     view.toggleSidebar();
     root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(view.isSidebarVisible()).toBe(false);
+    expect(onReturnToShelf).not.toHaveBeenCalled();
+    expect(host.querySelector('.lightink-reader')).not.toBeNull();
+  });
+});
+
+describe('Reader immersive chrome lifecycle', () => {
+  it('opens a book without editor menus or tabs, then reveals four labeled overlay controls on a page click', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, readerViewDeps());
+    await view.load('book.epub');
+
+    expect(host.querySelector('.lightink-menu-bar')).toBeNull();
+    expect(host.querySelector('#lightink-chrome-host')).toBeNull();
+    expect(host.querySelector('#lightink-tabs-host')).toBeNull();
+    expect(host.querySelector('#lightink-tabbar')).toBeNull();
+    expect(host.querySelector('.lightink-tab')).toBeNull();
+
+    const chrome = readerChrome(host);
+    expect(chrome).not.toBeNull();
+    expect(isReaderChromeRevealed(host)).toBe(false);
+
+    revealReaderChrome(host);
+    expect(isReaderChromeRevealed(host)).toBe(true);
+    const labels = chromeControls(host).map((el) => (el.textContent ?? '').trim());
+    for (const label of READER_CHROME_LABELS) {
+      expect(labels.some((text) => text.includes(label))).toBe(true);
+    }
+    expect(chromeControlByLabel(host, '返回书架')?.textContent).toContain('返回书架');
+    await view.destroy();
+  });
+
+  it('keeps the reading pane height stable because chrome overlays the page instead of sitting in the scroll host', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, readerViewDeps());
+    await view.load('book.epub');
+
+    const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
+    const pages = host.querySelector<HTMLElement>('.lightink-reader-pages');
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 640 });
+    const heightBefore = scroll.clientHeight;
+    const scrollKids = scroll.childElementCount;
+
+    revealReaderChrome(host);
+    const chrome = readerChrome(host);
+    expect(chrome).not.toBeNull();
+    expect(isReaderChromeRevealed(host)).toBe(true);
+    expect(scroll.contains(chrome)).toBe(false);
+    expect(pages?.contains(chrome) ?? false).toBe(false);
+    expect(scroll.childElementCount).toBe(scrollKids);
+    expect(scroll.clientHeight).toBe(heightBefore);
+
+    chrome!.hidden = true;
+    expect(scroll.childElementCount).toBe(scrollKids);
+    expect(scroll.clientHeight).toBe(heightBefore);
+    await view.destroy();
+  });
+
+  it('returns to the shelf from 返回书架 without closing the window or destroying the reader', async () => {
+    const onReturnToShelf = vi.fn();
+    const closeWindow = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, readerViewDeps({ onReturnToShelf }));
+    await view.load('book.epub');
+
+    revealReaderChrome(host);
+    chromeControlByLabel(host, '返回书架')!.click();
+
+    expect(onReturnToShelf).toHaveBeenCalledTimes(1);
+    expect(closeWindow).not.toHaveBeenCalled();
+    expect(view.state.phase).toBe('ready');
+    expect(host.querySelector('.lightink-reader')).not.toBeNull();
+    closeWindow.mockRestore();
+    await view.destroy();
+  });
+
+  it('lets Escape close the annotation overlay first, then return to the shelf only when no overlay remains', async () => {
+    const onReturnToShelf = vi.fn();
+    const closeWindow = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createReaderView(host, readerViewDeps({ onReturnToShelf }));
+    await view.load('book.epub');
+    const root = host.querySelector<HTMLElement>('.lightink-reader')!;
+
+    revealReaderChrome(host);
+    chromeControlByLabel(host, '本书标注')!.click();
+    expect(view.isSidebarVisible()).toBe(true);
+
+    root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(view.isSidebarVisible()).toBe(false);
+    expect(onReturnToShelf).not.toHaveBeenCalled();
+    expect(view.state.phase).toBe('ready');
+    expect(host.querySelector('.lightink-reader')).not.toBeNull();
+
+    if (isReaderChromeRevealed(host)) {
+      root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(isReaderChromeRevealed(host)).toBe(false);
+      expect(onReturnToShelf).not.toHaveBeenCalled();
+    }
+
+    // 无浮层 Esc 不合书：阅读器只退一步；窗口级 leftover Esc 才 returnToShelf。
+    const leftover = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    root.dispatchEvent(leftover);
+    expect(onReturnToShelf).not.toHaveBeenCalled();
+    expect(leftover.defaultPrevented).toBe(false);
+    expect(closeWindow).not.toHaveBeenCalled();
+    expect(view.state.phase).toBe('ready');
+    expect(host.querySelector('.lightink-reader')).not.toBeNull();
+    closeWindow.mockRestore();
+    await view.destroy();
   });
 });
 

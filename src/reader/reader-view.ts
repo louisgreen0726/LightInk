@@ -122,8 +122,62 @@ import {
 } from './sources/native-archive.js';
 import { fnv1a64Hex } from './document-hash.js';
 import type { ComicMetadata } from './comic-model.js';
+import { createReaderChrome, type ReaderChrome } from './reader-chrome.js';
+import {
+  loadReaderTypography,
+  nextReaderFontScaleStep,
+  READER_FONT_FAMILY_PRESETS,
+  saveReaderTypography,
+  type ReaderFontFamilyPreset,
+  type ReaderTypography,
+} from './reader-typography.js';
 
 const PAGE_EXTS = new Set(['pdf', 'cbz', ...NATIVE_ARCHIVE_EXTENSIONS]);
+const READER_CHROME_LINE_HEIGHTS = [1.5, 1.65, 1.8, 2] as const;
+const READER_CHROME_MEASURE_REMS = [16, 18, 22, 26, 32] as const;
+
+function canMountReaderChrome(): boolean {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    return false;
+  }
+  const probe = document.createElement('div');
+  return typeof probe.classList?.toggle === 'function';
+}
+
+function dispatchReaderTypographyPref(typography: ReaderTypography): void {
+  if (
+    typeof document === 'undefined' ||
+    typeof document.dispatchEvent !== 'function' ||
+    typeof CustomEvent !== 'function'
+  ) {
+    return;
+  }
+  document.dispatchEvent(new CustomEvent('lightink:reader-typography', { detail: typography }));
+}
+
+function typographyStorage(): {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+} | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function fontPresetLabel(family: ReaderFontFamilyPreset): string {
+  switch (family) {
+    case 'serif':
+      return '宋体';
+    case 'sans':
+      return '黑体';
+    case 'mono':
+      return '等宽';
+    default:
+      return '原文';
+  }
+}
 
 /** 仅用于稳定标注 id（无加密强度需求）。 */
 function newAnnotationId(): string {
@@ -221,6 +275,8 @@ export interface ReaderViewDeps {
    * cancelled loads must not fire this (unopened OPDS rows stay alias-free).
    */
   onProgressBound?: (progressId: string, target: ReaderTarget) => void;
+  /** Close the open book and return to the shelf (window stays open). */
+  onReturnToShelf?: () => void;
 }
 
 /**
@@ -260,6 +316,28 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   root.append(scrollHost, pageHost, status);
   host.appendChild(root);
+
+  let readerChrome: ReaderChrome | null = null;
+  let chromePanel: 'toc' | 'typography' | null = null;
+  let chromeRevealObserver: MutationObserver | null = null;
+  const tocPanel = document.createElement('div');
+  tocPanel.className = 'lightink-reader-chrome-panel lightink-reader-chrome-toc';
+  tocPanel.hidden = true;
+  tocPanel.setAttribute('data-panel', 'toc');
+  tocPanel.style.position = 'absolute';
+  tocPanel.style.left = '0';
+  tocPanel.style.right = '0';
+  tocPanel.style.top = '2.75rem';
+  tocPanel.style.zIndex = '13';
+  const typePanel = document.createElement('div');
+  typePanel.className = 'lightink-reader-chrome-panel lightink-reader-chrome-typography';
+  typePanel.hidden = true;
+  typePanel.setAttribute('data-panel', 'typography');
+  typePanel.style.position = 'absolute';
+  typePanel.style.left = '0';
+  typePanel.style.right = '0';
+  typePanel.style.top = '2.75rem';
+  typePanel.style.zIndex = '13';
 
   const annotationsEnabled = deps.readAnnotations !== undefined;
 
@@ -341,12 +419,19 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     renderHighlights: () => renderHighlights(),
     handleNoteMarkClick: (event) => {
       const annotation = annotationFromMark(event.target);
-      if (annotation === null || annotation.kind !== 'note') {
-        return false;
+      if (annotation !== null && annotation.kind === 'note') {
+        event.preventDefault();
+        openNote(annotation);
+        return true;
       }
-      event.preventDefault();
-      openNote(annotation);
-      return true;
+      const target = event.target;
+      const link =
+        target instanceof Element ? target.closest<HTMLAnchorElement>('a[href]') : null;
+      if (link === null) {
+        readerChrome?.handleSurfaceClick(event);
+        syncChromeRevealAttr();
+      }
+      return false;
     },
     onSelectionMouseUp: (selection, chapter, body, frame) =>
       onFlowSelectionMouseUp(selection, chapter, body, frame),
@@ -359,13 +444,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       }
       return false;
     },
-    dismissSelectionToolbar: () => {
-      if (selectionToolbar?.isVisible() !== true) {
-        return false;
-      }
-      hideSelectionToolbar();
-      return true;
-    },
+    dismissSelectionToolbar: () => dismissReaderOverlayStep(),
     isLayoutSwitching: () => layoutSwitching,
     scrollContainer: () => flowScrollContainer(),
   });
@@ -1114,6 +1193,42 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     syncVisibleFlowFrames();
   }
 
+  const syncChromeRevealAttr = (): void => {
+    if (readerChrome === null) {
+      return;
+    }
+    const shown = readerChrome.isRevealed();
+    readerChrome.element.hidden = !shown;
+    readerChrome.element.setAttribute('aria-hidden', shown ? 'false' : 'true');
+  };
+
+  const closeChromePanel = (): boolean => {
+    if (chromePanel === null) {
+      return false;
+    }
+    chromePanel = null;
+    tocPanel.hidden = true;
+    typePanel.hidden = true;
+    return true;
+  };
+
+  const dismissReaderOverlayStep = (): boolean => {
+    if (readerChrome !== null) {
+      const closed = readerChrome.handleEscape();
+      syncChromeRevealAttr();
+      return closed;
+    }
+    if (selectionToolbar?.isVisible() === true) {
+      hideSelectionToolbar();
+      return true;
+    }
+    if (sidebarVisible) {
+      setSidebarVisible(false);
+      return true;
+    }
+    return closeChromePanel();
+  };
+
   /**
    * 标签可见性变化（切换标签时由宿主调用）。侧栏/搜索面板 portal 到共享的
    * #lightink-main，不随标签宿主的 display:none 一起隐藏，必须在此显式同步，
@@ -1128,6 +1243,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     syncSidebarOverlayDom();
     if (!active) {
       hideSelectionToolbar();
+      closeChromePanel();
+      readerChrome?.dismiss();
+      syncChromeRevealAttr();
     }
   }
 
@@ -1246,11 +1364,13 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   const onPageHostNoteClick = (event: MouseEvent): void => {
     const annotation = annotationFromMark(event.target);
-    if (annotation === null || annotation.kind !== 'note') {
+    if (annotation !== null && annotation.kind === 'note') {
+      event.preventDefault();
+      openNote(annotation);
       return;
     }
-    event.preventDefault();
-    openNote(annotation);
+    readerChrome?.handleSurfaceClick(event);
+    syncChromeRevealAttr();
   };
 
   /** 关闭可能打开中的笔记弹层（切换/销毁时经 Escape 走正规 release，恢复背景 inert）。 */
@@ -2277,17 +2397,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
 
   // PDF 连续滚动：←/→ 滚到上/下一页，+/- 缩放，0 还原。
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      if (selectionToolbar?.isVisible() === true) {
-        hideSelectionToolbar();
-        event.preventDefault();
-        return;
-      }
-      if (sidebarVisible) {
-        setSidebarVisible(false);
-        event.preventDefault();
-        return;
-      }
+    if (event.key === 'Escape' && dismissReaderOverlayStep()) {
+      event.preventDefault();
+      return;
     }
     // 方向键/空格/PageUp/Down 由窗口级 main.ts 统一翻页（R1：大纲/chrome/空白区
     // 同样生效）。这里只保留 PDF 缩放键；流式章节 iframe 内翻页仍由 flow-renderer 转发。
@@ -2317,6 +2429,142 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   });
 
   // 书签 / 笔记改由菜单触发（见 ReaderInstance.addBookmark/addNote），不再挂浮动工具栏。
+
+  const returnToShelf = (): void => {
+    persistReadingProgress();
+    closeChromePanel();
+    readerChrome?.dismiss();
+    syncChromeRevealAttr();
+    deps.onReturnToShelf?.();
+  };
+
+  const applyTypographyPatch = (patch: Partial<ReaderTypography>): void => {
+    const next = saveReaderTypography(typographyStorage(), patch);
+    dispatchReaderTypographyPref(next);
+    refreshViewport();
+    renderTypographyPanel();
+  };
+
+  const renderTocPanel = (): void => {
+    tocPanel.textContent = '';
+    const heading = document.createElement('h2');
+    heading.textContent = t('outline.title');
+    tocPanel.appendChild(heading);
+    if (readerOutline.length === 0) {
+      const empty = document.createElement('p');
+      empty.textContent = t('outline.empty');
+      tocPanel.appendChild(empty);
+      return;
+    }
+    const list = document.createElement('nav');
+    for (const item of readerOutline) {
+      const button = document.createElement('button');
+      button.setAttribute('type', 'button');
+      button.textContent = item.text;
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        jumpToOutlineItem(item);
+        closeChromePanel();
+      });
+      list.appendChild(button);
+    }
+    tocPanel.appendChild(list);
+  };
+
+  const renderTypographyPanel = (): void => {
+    typePanel.textContent = '';
+    const current = loadReaderTypography(typographyStorage());
+    const addChoice = (label: string, selected: boolean, apply: () => void): void => {
+      const button = document.createElement('button');
+      button.setAttribute('type', 'button');
+      button.textContent = selected ? `✓ ${label}` : label;
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        apply();
+      });
+      typePanel.appendChild(button);
+    };
+    const smaller = document.createElement('button');
+    smaller.setAttribute('type', 'button');
+    smaller.textContent = t('view.zoomOut');
+    smaller.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyTypographyPatch({ fontScaleStep: nextReaderFontScaleStep(current.fontScaleStep, 'out') });
+    });
+    const larger = document.createElement('button');
+    larger.setAttribute('type', 'button');
+    larger.textContent = t('view.zoomIn');
+    larger.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyTypographyPatch({ fontScaleStep: nextReaderFontScaleStep(current.fontScaleStep, 'in') });
+    });
+    typePanel.append(smaller, larger);
+    (Object.keys(READER_FONT_FAMILY_PRESETS) as ReaderFontFamilyPreset[]).forEach((family) => {
+      addChoice(
+        fontPresetLabel(family),
+        current.fontFamily === family || current.fontFamily === READER_FONT_FAMILY_PRESETS[family],
+        () => applyTypographyPatch({ fontFamily: family }),
+      );
+    });
+    for (const lineHeight of READER_CHROME_LINE_HEIGHTS) {
+      addChoice(`行高 ${lineHeight}`, current.lineHeight === lineHeight, () =>
+        applyTypographyPatch({ lineHeight }),
+      );
+    }
+    for (const measureRem of READER_CHROME_MEASURE_REMS) {
+      addChoice(`行长 ${measureRem}`, current.measureRem === measureRem, () =>
+        applyTypographyPatch({ measureRem }),
+      );
+    }
+  };
+
+  const openChromePanel = (next: 'toc' | 'typography'): void => {
+    if (chromePanel === next) {
+      closeChromePanel();
+      return;
+    }
+    chromePanel = next;
+    if (next === 'toc') {
+      renderTocPanel();
+    } else {
+      renderTypographyPanel();
+    }
+    tocPanel.hidden = next !== 'toc';
+    typePanel.hidden = next !== 'typography';
+  };
+
+  if (canMountReaderChrome()) {
+    readerChrome = createReaderChrome(root, {
+      returnToShelf,
+      openOutline: () => openChromePanel('toc'),
+      openTypography: () => openChromePanel('typography'),
+      toggleSidebar: () => setSidebarVisible(!sidebarVisible),
+      isOverlayOpen: () => sidebarVisible || chromePanel !== null,
+      dismissOverlay: () => closeChromePanel(),
+      isSidebarVisible: () => sidebarVisible,
+      isSelectionToolbarVisible: () => selectionToolbar?.isVisible() === true,
+      hideSelectionToolbar,
+    });
+    root.append(tocPanel, typePanel);
+    root.addEventListener('click', syncChromeRevealAttr);
+    root.addEventListener('pointermove', syncChromeRevealAttr);
+    syncChromeRevealAttr();
+    if (typeof MutationObserver === 'function') {
+      chromeRevealObserver = new MutationObserver(syncChromeRevealAttr);
+      try {
+        chromeRevealObserver.observe(readerChrome.element, {
+          attributes: true,
+          attributeFilter: ['data-reader-chrome-revealed', 'class'],
+        });
+      } catch {
+        chromeRevealObserver = null;
+      }
+    }
+  }
 
   return {
     get state() {
@@ -2592,7 +2840,18 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       cancelFontScaleRefresh = null;
       stalePaginatedChapters = null;
       pageHost.removeEventListener('mouseup', onPageHostSelection);
-    pageHost.removeEventListener('click', onPageHostNoteClick);
+      pageHost.removeEventListener('click', onPageHostNoteClick);
+      chromeRevealObserver?.disconnect();
+      chromeRevealObserver = null;
+      closeChromePanel();
+      if (readerChrome !== null) {
+        root.removeEventListener('click', syncChromeRevealAttr);
+        root.removeEventListener('pointermove', syncChromeRevealAttr);
+      }
+      readerChrome?.destroy();
+      readerChrome = null;
+      tocPanel.remove();
+      typePanel.remove();
       textLayerObserver?.disconnect();
       textLayerObserver = null;
       layoutRootObserver?.disconnect();
