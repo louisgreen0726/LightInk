@@ -16,3 +16,4 @@ docs/*
 !docs/requirements/
 docs/requirements/*
 !docs/requirements/opds-streaming-archives.md
+/.idea/
