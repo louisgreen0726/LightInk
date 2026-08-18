@@ -20,20 +20,39 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager};
 
+/// 主窗口 label，与 `tauri.conf.json` `app.windows[0].label` 一致。
+const MAIN_WINDOW_LABEL: &str = "main";
+
 /// 待打开文件槽（单值，取出即清空）。
 pub struct PendingFile(pub Mutex<Option<String>>);
 
-/// 把路径写入待打开槽并发出 `open-file`。
+/// 把路径写入待打开槽、把主窗口带到前台，并发出 `open-file`。
 ///
 /// 冷启动（前端尚未 listen）时只靠槽 + 启动后 `take_pending_file`；
 /// 已运行时 `open-file` 让前端立刻 `take` 打开。两条路径都先写槽，避免丢文件。
+///
+/// 已运行且窗口最小化/被挡住时，只 emit 会在后台换标签、任务栏闪一下。
+/// 必须先 unminimize + show + set_focus，再发事件，让用户看见打开结果或失败提示。
+/// 任一步失败仍继续 emit，由前端提示，不得既不恢复也不打开。
 pub fn enqueue_pending_file(app: &AppHandle, path: String) {
     if let Some(state) = app.try_state::<PendingFile>() {
         if let Ok(mut guard) = state.0.lock() {
             *guard = Some(path);
         }
     }
+    bring_main_window_forward(app);
     let _ = app.emit("open-file", ());
+}
+
+/// 对已有主窗口执行 unminimize → show → set_focus。
+/// 窗口不存在时静默跳过；任一步失败仍尝试后续步骤（最小化窗口可能拒绝 focus）。
+fn bring_main_window_forward(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// 扫描 argv（含程序路径，索引 0 跳过），返回首个可打开文件参数
@@ -370,5 +389,16 @@ mod tests {
     fn first_supported_from_urls_skips_non_file() {
         let urls = vec![url::Url::parse("https://example.com/x.md").unwrap()];
         assert!(first_supported_from_urls(urls).is_none());
+    }
+
+    #[test]
+    fn main_window_label_matches_tauri_config() {
+        // enqueue_pending_file 按此 label 恢复窗口；与配置漂移会静默找不到窗口。
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let label = conf["app"]["windows"][0]["label"]
+            .as_str()
+            .expect("main window label");
+        assert_eq!(label, MAIN_WINDOW_LABEL);
     }
 }

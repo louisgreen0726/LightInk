@@ -52,7 +52,7 @@ import {
   type InsertElementId,
 } from './editor/insert-commands.js';
 import { fileNameStem, importImageAsset } from './asset/asset-service.js';
-import { planDroppedFiles } from './file/file-drop.js';
+import { isReaderPath, planDroppedFiles } from './file/file-drop.js';
 import { OPEN_FILTERS } from './file/file-dialog.js';
 import { openDocumentPath } from './file/document-router.js';
 import { extOfPath } from './file/path-ext.js';
@@ -83,6 +83,12 @@ import {
   type WorkspaceMode,
   type WorkspaceSnapshot,
 } from './ui/workspace-mode.js';
+import {
+  handleExternalOpen,
+  revealExistingWindow,
+  type ExternalOpenOrigin,
+  type ExternalOpenTab,
+} from './ui/external-open.js';
 import { showConfirmDialog } from './ui/confirm-dialog.js';
 import { showExitConfirmation } from './ui/exit-confirmation.js';
 import {
@@ -482,6 +488,49 @@ async function openPathByKind(path: string): Promise<TabState | null> {
     workspace.enterEditor();
   }
   return tab;
+}
+
+/**
+ * File-association / second-instance open: restore the window, land on the
+ * matching surface, and show a short success notify (runtime) or the existing
+ * missing/load dialog (failure). Cold-start skips the success toast.
+ */
+async function openExternalAssociationPath(
+  path: string,
+  origin: ExternalOpenOrigin,
+): Promise<void> {
+  await handleExternalOpen(path, origin, {
+    openPath: async (filePath): Promise<ExternalOpenTab | null> => {
+      const tab = await openPathByKind(filePath);
+      if (tab === null) {
+        return null;
+      }
+      if (tab.kind === 'reader') {
+        return { kind: 'reader', title: tab.title, filePath: tab.filePath };
+      }
+      if (isMarkdownTab(tab)) {
+        return { kind: 'markdown', title: tab.title, filePath: tab.filePath };
+      }
+      return null;
+    },
+    workspace,
+    notify: (message, kind = 'info') => {
+      const dialogKind = kind === 'warning' || kind === 'error' ? kind : 'info';
+      void dialogMessage(message, { title: i18n.t('app.name'), kind: dialogKind });
+    },
+    reportOpenFailure: (filePath) => {
+      // Reader load/open already used reportReaderLoadError inside openPathByKind.
+      if (isReaderPath(filePath)) {
+        return;
+      }
+      void dialogMessage(i18n.t('error.openFileMissing', { path: filePath }), {
+        title: i18n.t('app.name'),
+        kind: 'warning',
+      });
+    },
+    restoreWindow: () => revealExistingWindow(),
+    locale: i18n.locale,
+  });
 }
 
 let outlineVisibilityBeforeLibrary: import('./outline/outline-view.js').OutlineVisibility | null = null;
@@ -1654,6 +1703,7 @@ manager = new TabManager({
           },
         ),
       onProgressBound: bindOpenedBookProgress,
+      onReturnToShelf: () => workspace.returnToShelf(),
     });
     reader.subscribeState(() => {
       const active = manager?.activeTab;
@@ -2958,12 +3008,17 @@ async function bootstrap(): Promise<void> {
   await manager.recoverUntitledDrafts();
   // R1：先注册单实例 open-file 监听，再取首实例 pending——监听就绪前到达的第二实例
   // 文件由随后的初始 take_pending_file 抽干槽兜底，避免启动竞态内事件被孤立。
+  // Runtime association/second-instance opens restore the window and notify;
+  // the cold-start take below does not add a success toast.
+  let externalOpenOrigin: ExternalOpenOrigin = 'cold-start';
   try {
     const { listen } = await import('@tauri-apps/api/event');
     await listen('open-file', () => {
       void invoke<string | null>('take_pending_file')
         .then((path) => {
-          if (path !== null) void openPathByKind(path);
+          if (path !== null) {
+            void openExternalAssociationPath(path, externalOpenOrigin);
+          }
         })
         .catch(() => undefined);
     });
@@ -2978,8 +3033,9 @@ async function bootstrap(): Promise<void> {
   // R1：取出启动/关联文件（首实例 argv 经后端 take_pending_file；命令未就绪时静默）。
   const pendingFile = await invoke<string | null>('take_pending_file').catch(() => null);
   if (pendingFile !== null) {
-    await openPathByKind(pendingFile);
+    await openExternalAssociationPath(pendingFile, 'cold-start');
   }
+  externalOpenOrigin = 'runtime';
   // 无标签（无恢复草稿、无启动文件）则新建欢迎标签。
   if (manager.tabList.length === 0) {
     await manager.newTab(i18n.t('welcome.body'));
