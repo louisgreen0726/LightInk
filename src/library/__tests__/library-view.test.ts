@@ -7,6 +7,7 @@ import { createLibraryView, type LibraryViewDependencies } from '../library-view
 import type { LibraryItem } from '../library-client.js';
 import type { OpdsEntry, OpdsFeed, OpdsSource } from '../opds-client.js';
 import { saveReadingProgress, type ProgressStorage } from '../../reader/reading-progress.js';
+import '../library.css';
 
 const source: OpdsSource = {
   id: 'source-1',
@@ -43,7 +44,7 @@ function feed(overrides: Partial<OpdsFeed> = {}): OpdsFeed {
   };
 }
 
-function localItem(): LibraryItem {
+function localItem(overrides: Partial<LibraryItem> = {}): LibraryItem {
   return {
     id: 'local:/books/a.epub',
     sourceKind: 'local',
@@ -52,7 +53,19 @@ function localItem(): LibraryItem {
     localPath: '/books/a.epub',
     extension: 'epub',
     updatedAt: 1,
+    ...overrides,
   };
+}
+
+function comicItem(overrides: Partial<LibraryItem> = {}): LibraryItem {
+  return localItem({
+    id: 'local:/books/b.cbz',
+    title: '本地漫画',
+    extension: 'cbz',
+    localPath: '/books/b.cbz',
+    coverUrl: 'https://covers.example/comic.jpg',
+    ...overrides,
+  });
 }
 
 function dependencies(overrides: Partial<LibraryViewDependencies> = {}): LibraryViewDependencies {
@@ -85,19 +98,519 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-function buttonWithText(root: ParentNode, text: string): HTMLButtonElement {
+function libraryRoot(host: ParentNode): HTMLElement {
+  const root = host.querySelector<HTMLElement>('.lightink-library');
+  if (!root) throw new Error('library root not found');
+  return root;
+}
+
+function libraryPage(host: ParentNode): string | undefined {
+  return libraryRoot(host).dataset.libraryPage;
+}
+
+function isShown(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.hidden || el.closest('[hidden]')) return false;
+  const style = getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function shownButtonWithText(root: ParentNode, text: string): HTMLButtonElement {
   const candidate = Array.from(root.querySelectorAll('button')).find(
-    (button) => button.textContent === text,
+    (button) => button.textContent === text && isShown(button),
   );
-  if (!(candidate instanceof HTMLButtonElement)) throw new Error(`button not found: ${text}`);
+  if (!(candidate instanceof HTMLButtonElement)) throw new Error(`visible button not found: ${text}`);
   return candidate;
+}
+
+function groupButton(host: ParentNode, label: string): HTMLButtonElement {
+  const groups = host.querySelector('.lightink-library-groups') ?? host;
+  return shownButtonWithText(groups, label);
+}
+
+async function openManage(host: HTMLElement): Promise<void> {
+  const entry =
+    host.querySelector<HTMLButtonElement>('.lightink-library-manage-entry') ??
+    shownButtonWithText(host, '管理');
+  if (!isShown(entry)) throw new Error('manage entry is not on the first screen');
+  entry.click();
+  await settle();
+}
+
+async function openMyBooks(host: HTMLElement): Promise<void> {
+  const home =
+    host.querySelector<HTMLButtonElement>('.lightink-library-home') ??
+    Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent === '我的书' && isShown(button),
+    );
+  if (!(home instanceof HTMLButtonElement)) throw new Error('my-books entry not found');
+  home.click();
+  await settle();
+}
+
+async function openCatalog(host: HTMLElement, sourceTitle = '测试书库'): Promise<void> {
+  if (libraryPage(host) !== 'manage' && libraryPage(host) !== 'catalog') {
+    await openManage(host);
+  }
+  shownButtonWithText(host, sourceTitle).click();
+  await settle();
+}
+
+function itemRow(host: ParentNode, itemId: string): HTMLButtonElement {
+  const row = host.querySelector<HTMLButtonElement>(`[data-item-id="${itemId}"]`);
+  if (!row) throw new Error(`item not found: ${itemId}`);
+  return row;
 }
 
 afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe('LibraryView', () => {
+describe('LibraryView my-books home', () => {
+  it('renders a recognizable cover wall that distinguishes unread and in-progress books', async () => {
+    const unread = localItem({
+      coverUrl: 'https://covers.example/novel.jpg',
+    });
+    const comic = comicItem();
+    const getProgress = vi.fn((item: LibraryItem) =>
+      item.id === comic.id
+        ? { status: 'in-progress' as const, unit: 'page' as const, index: 12, ratio: 0, percent: 37 }
+        : { status: 'not-started' as const },
+    );
+    const base = dependencies();
+    const deps = dependencies({
+      getProgress,
+      library: { ...base.library, listItems: vi.fn(async () => [unread, comic]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(libraryPage(host)).toBe('my-books');
+    const unreadRow = itemRow(host, unread.id);
+    const comicRow = itemRow(host, comic.id);
+    expect(unreadRow.textContent).toContain('本地小说');
+    expect(comicRow.textContent).toContain('本地漫画');
+    expect(unreadRow.querySelector<HTMLImageElement>('.lightink-library-cover img')?.src).toContain(
+      'covers.example/novel.jpg',
+    );
+    expect(comicRow.querySelector<HTMLImageElement>('.lightink-library-cover img')?.src).toContain(
+      'covers.example/comic.jpg',
+    );
+    expect(unreadRow.dataset.progressStatus).toBe('not-started');
+    expect(unreadRow.textContent).toContain('未开始');
+    expect(unreadRow.textContent).not.toContain('0%');
+    expect(comicRow.dataset.progressStatus).toBe('in-progress');
+    expect(comicRow.textContent).toContain('第 12 页');
+    expect(comicRow.textContent).toContain('已读 37%');
+    expect(isShown(host.querySelector('.lightink-library-detail'))).toBe(false);
+    view.destroy();
+  });
+
+  it('keeps sources, cache, import, close, and detail off the first screen', async () => {
+    const deps = dependencies();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(libraryPage(host)).toBe('my-books');
+    expect(isShown(host.querySelector('.lightink-library-sources'))).toBe(false);
+    expect(isShown(host.querySelector('.lightink-library-cache-summary'))).toBe(false);
+    expect(isShown(host.querySelector('.lightink-library-detail'))).toBe(false);
+    expect(isShown(host.querySelector('[aria-label="关闭书库"]'))).toBe(false);
+    expect(
+      Array.from(host.querySelectorAll('button')).some(
+        (button) => button.textContent === '导入本地书籍' && isShown(button),
+      ),
+    ).toBe(false);
+    expect(
+      Array.from(host.querySelectorAll('button')).some(
+        (button) => button.textContent === '测试书库' && isShown(button),
+      ),
+    ).toBe(false);
+    expect(isShown(host.querySelector('.lightink-library-groups'))).toBe(true);
+    expect(isShown(host.querySelector('.lightink-library-manage-entry'))).toBe(true);
+    expect(host.querySelector('.lightink-library-search')).not.toBeNull();
+    view.destroy();
+  });
+
+  it('filters the cover wall with 全部 / 在读 / 未读 / 文字书 / 漫画', async () => {
+    const unread = localItem();
+    const novel = localItem({
+      id: 'local:/books/c.epub',
+      title: '续读小说',
+      localPath: '/books/c.epub',
+    });
+    const comic = comicItem();
+    const getProgress = vi.fn((item: LibraryItem) => {
+      if (item.id === unread.id) return { status: 'not-started' as const };
+      if (item.id === comic.id) {
+        return { status: 'in-progress' as const, unit: 'page' as const, index: 4, ratio: 0, percent: 20 };
+      }
+      return { status: 'in-progress' as const, unit: 'chapter' as const, index: 2, ratio: 0.4, percent: 21 };
+    });
+    const base = dependencies();
+    const deps = dependencies({
+      getProgress,
+      library: { ...base.library, listItems: vi.fn(async () => [unread, novel, comic]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(itemRow(host, unread.id).textContent).toContain('本地小说');
+    expect(itemRow(host, novel.id).textContent).toContain('续读小说');
+    expect(itemRow(host, comic.id).textContent).toContain('本地漫画');
+
+    groupButton(host, '在读').click();
+    await settle();
+    expect(host.querySelector(`[data-item-id="${unread.id}"]`)).toBeNull();
+    expect(itemRow(host, novel.id).textContent).toContain('续读小说');
+    expect(itemRow(host, comic.id).textContent).toContain('本地漫画');
+
+    groupButton(host, '未读').click();
+    await settle();
+    expect(itemRow(host, unread.id).textContent).toContain('本地小说');
+    expect(host.querySelector(`[data-item-id="${novel.id}"]`)).toBeNull();
+    expect(host.querySelector(`[data-item-id="${comic.id}"]`)).toBeNull();
+
+    groupButton(host, '文字书').click();
+    await settle();
+    expect(itemRow(host, unread.id).textContent).toContain('本地小说');
+    expect(itemRow(host, novel.id).textContent).toContain('续读小说');
+    expect(host.querySelector(`[data-item-id="${comic.id}"]`)).toBeNull();
+
+    groupButton(host, '漫画').click();
+    await settle();
+    expect(host.querySelector(`[data-item-id="${unread.id}"]`)).toBeNull();
+    expect(host.querySelector(`[data-item-id="${novel.id}"]`)).toBeNull();
+    expect(itemRow(host, comic.id).textContent).toContain('本地漫画');
+
+    groupButton(host, '全部').click();
+    await settle();
+    expect(itemRow(host, unread.id)).toBeTruthy();
+    expect(itemRow(host, novel.id)).toBeTruthy();
+    expect(itemRow(host, comic.id)).toBeTruthy();
+    view.destroy();
+  });
+
+  it('opens from a cover click without a persistent detail pane', async () => {
+    const unread = localItem({ coverUrl: 'https://covers.example/novel.jpg' });
+    const deps = dependencies({
+      library: { ...dependencies().library, listItems: vi.fn(async () => [unread]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(isShown(host.querySelector('.lightink-library-detail'))).toBe(false);
+    itemRow(host, unread.id).querySelector('.lightink-library-cover')!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+    await settle();
+    expect(deps.onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ item: expect.objectContaining({ id: unread.id }) }),
+      expect.anything(),
+    );
+    expect(isShown(host.querySelector('.lightink-library-detail'))).toBe(false);
+    view.destroy();
+  });
+
+  it('opens an in-progress book from 继续阅读 and hides a zero percent', async () => {
+    const novel = localItem({
+      id: 'local:/books/c.epub',
+      title: '续读小说',
+      localPath: '/books/c.epub',
+      coverUrl: 'https://covers.example/reading.jpg',
+    });
+    const getProgress = vi.fn(() => ({
+      status: 'in-progress' as const,
+      unit: 'chapter' as const,
+      index: 3,
+      ratio: 0,
+      percent: 0,
+    }));
+    const deps = dependencies({
+      getProgress,
+      library: { ...dependencies().library, listItems: vi.fn(async () => [novel]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(isShown(host.querySelector('.lightink-library-continue'))).toBe(true);
+    expect(host.querySelector('.lightink-library-continue')?.textContent).toContain('续读小说');
+    expect(host.textContent).toContain('第 4 章');
+    expect(host.textContent).not.toContain('0%');
+    shownButtonWithText(host, '继续阅读').click();
+    await settle();
+    expect(deps.onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ item: expect.objectContaining({ id: novel.id }) }),
+      expect.anything(),
+    );
+    view.destroy();
+  });
+
+  it('shows series on the cover card without opening a detail pane', async () => {
+    const comic = comicItem({
+      series: '墨色档案',
+      number: '12',
+      volume: '3',
+      pageCount: 128,
+      readingDirection: 'rtl',
+      coverPage: 0,
+    });
+    const base = dependencies();
+    const deps = dependencies({
+      library: { ...base.library, listItems: vi.fn(async () => [comic]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const row = itemRow(host, comic.id);
+    expect(row.textContent).toContain('本地漫画');
+    expect(row.textContent).toContain('墨色档案');
+    expect(isShown(host.querySelector('.lightink-library-detail'))).toBe(false);
+    view.destroy();
+  });
+
+  it('treats missing or unreadable progress as not started without 0%', async () => {
+    const deps = dependencies({ getProgress: vi.fn(() => null) });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const row = itemRow(host, localItem().id);
+    expect(row.dataset.progressStatus).toBe('not-started');
+    expect(row.textContent).toContain('未开始');
+    expect(row.textContent).not.toContain('0%');
+    expect(row.textContent).not.toContain('已读');
+    view.destroy();
+  });
+
+  it('labels a first comic page without rendering 0%', async () => {
+    const comic = comicItem({ title: '首页漫画', id: 'local:/comics/a.cbz', localPath: '/comics/a.cbz' });
+    const getProgress = vi.fn(() => ({
+      status: 'in-progress' as const,
+      unit: 'page' as const,
+      index: 0,
+      ratio: 0,
+    }));
+    const base = dependencies();
+    const deps = dependencies({
+      getProgress,
+      library: { ...base.library, listItems: vi.fn(async () => [comic]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const row = itemRow(host, comic.id);
+    expect(row.dataset.progressStatus).toBe('in-progress');
+    expect(row.textContent).toContain('第 1 页');
+    expect(row.textContent).not.toContain('0%');
+    view.destroy();
+  });
+
+  it('cancels an active open when the library is hidden', async () => {
+    let operationSignal: AbortSignal | undefined;
+    const onOpen = vi.fn(
+      async (_request: unknown, signal?: AbortSignal): Promise<void> =>
+        new Promise<void>((resolve) => {
+          operationSignal = signal;
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        }),
+    );
+    const deps = dependencies({ onOpen });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    itemRow(host, localItem().id).click();
+    await settle();
+    view.hide();
+    await settle();
+
+    expect(operationSignal?.aborted).toBe(true);
+    expect(deps.notify).not.toHaveBeenCalled();
+    view.destroy();
+  });
+});
+
+describe('LibraryView manage and catalog', () => {
+  it('imports a local book from manage and returns it to the cover wall', async () => {
+    const imported = localItem({
+      id: 'local:/books/new.epub',
+      title: '新导入的书',
+      localPath: '/books/new.epub',
+      coverUrl: 'https://covers.example/new.jpg',
+    });
+    let items = [localItem()];
+    const base = dependencies();
+    const deps = dependencies({
+      onImportLocal: vi.fn(async () => imported),
+      library: {
+        ...base.library,
+        listItems: vi.fn(async () => items),
+      },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    await openManage(host);
+    expect(libraryPage(host)).toBe('manage');
+    shownButtonWithText(host, '导入本地书籍').click();
+    items = [localItem(), imported];
+    await settle();
+    if (libraryPage(host) !== 'my-books') await openMyBooks(host);
+
+    expect(libraryPage(host)).toBe('my-books');
+    expect(itemRow(host, imported.id).textContent).toContain('新导入的书');
+    expect(isShown(host.querySelector('.lightink-library-sources'))).toBe(false);
+    view.destroy();
+  });
+
+  it('adds an OPDS source from manage and can open its catalog', async () => {
+    const added = { ...source, id: 'source-2', title: '新 OPDS 源', url: 'https://other.example/opds' };
+    const addSource = vi.fn(async () => added);
+    const listSources = vi.fn(async () => [source, added]);
+    const browse = vi.fn(async () => feed());
+    const base = dependencies();
+    const deps = dependencies({
+      opds: { ...base.opds, addSource, listSources, browse },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    await openManage(host);
+    host.querySelector<HTMLButtonElement>('[aria-label="添加 OPDS 源"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
+    expect(isShown(form)).toBe(true);
+    (form.elements.namedItem('title') as HTMLInputElement).value = added.title;
+    (form.elements.namedItem('url') as HTMLInputElement).value = added.url;
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(addSource).toHaveBeenCalledWith(expect.objectContaining({ title: added.title, url: added.url }));
+    if (libraryPage(host) === 'catalog') await openMyBooks(host);
+    else if (libraryPage(host) === 'manage') await openMyBooks(host);
+    expect(libraryPage(host)).toBe('my-books');
+    expect(isShown(host.querySelector('.lightink-library-sources'))).toBe(false);
+
+    await openCatalog(host, added.title);
+    expect(libraryPage(host)).toBe('catalog');
+    expect(host.textContent).toContain('远程漫画');
+    view.destroy();
+  });
+
+  it('lets the user change the bounded cache limit on manage', async () => {
+    const deps = dependencies();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(isShown(host.querySelector('.lightink-library-cache-summary'))).toBe(false);
+    await openManage(host);
+    expect(libraryPage(host)).toBe('manage');
+    host.querySelector<HTMLButtonElement>('[aria-label="调整缓存上限"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-cache-limit-form')!;
+    const input = form.elements.namedItem('cacheLimitGiB') as HTMLInputElement;
+    input.value = '3.5';
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(deps.library.setCacheLimit).toHaveBeenCalledWith(3.5 * 1024 ** 3);
+    expect(form.hidden).toBe(true);
+    view.destroy();
+  });
+
+  it('preserves an existing OPDS credential unless the user changes authentication', async () => {
+    const authenticated = { ...source, credentialRef: 'credential-1' };
+    const addSource = vi.fn(async () => authenticated);
+    const listSources = vi.fn(async () => [authenticated]);
+    const base = dependencies();
+    const deps = dependencies({
+      opds: { ...base.opds, addSource, listSources },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    await openManage(host);
+    host.querySelector<HTMLButtonElement>('[aria-label^="编辑 OPDS 源"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
+    expect((form.elements.namedItem('auth') as HTMLSelectElement).value).toBe('keep');
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(addSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'source-1',
+        credentialRef: 'credential-1',
+        clearCredential: undefined,
+        credential: undefined,
+      }),
+    );
+    view.destroy();
+  });
+
+  it('edits an OPDS source and explicitly clears its stored credential', async () => {
+    const authenticated = { ...source, credentialRef: 'credential-1' };
+    const addSource = vi.fn(async (input) => ({
+      ...authenticated,
+      title: input.title,
+      url: input.url,
+      credentialRef: undefined,
+    }));
+    const listSources = vi
+      .fn()
+      .mockResolvedValueOnce([authenticated])
+      .mockResolvedValueOnce([{ ...authenticated, title: '更新后的书库', credentialRef: undefined }]);
+    const base = dependencies();
+    const deps = dependencies({
+      opds: { ...base.opds, addSource, listSources },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    await openManage(host);
+    host.querySelector<HTMLButtonElement>('[aria-label^="编辑 OPDS 源"]')!.click();
+    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
+    (form.elements.namedItem('title') as HTMLInputElement).value = '更新后的书库';
+    (form.elements.namedItem('auth') as HTMLSelectElement).value = 'none';
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(addSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'source-1',
+        title: '更新后的书库',
+        credentialRef: undefined,
+        clearCredential: true,
+      }),
+    );
+    expect(form.hidden).toBe(true);
+    view.destroy();
+  });
+
   it('switches source, pages, searches, opens an item, and supports keyboard navigation', async () => {
     const deps = dependencies();
     const host = document.createElement('div');
@@ -106,12 +619,12 @@ describe('LibraryView', () => {
     await view.show();
 
     expect(host.textContent).toContain('本地小说');
-    buttonWithText(host, '测试书库').click();
-    await settle();
+    await openCatalog(host);
+    expect(libraryPage(host)).toBe('catalog');
     expect(deps.opds.browse).toHaveBeenCalledWith('source-1', undefined);
     expect(host.textContent).toContain('远程漫画');
 
-    buttonWithText(host, '下一页').click();
+    shownButtonWithText(host, '下一页').click();
     await settle();
     expect(deps.opds.browse).toHaveBeenCalledWith(
       'source-1',
@@ -154,294 +667,12 @@ describe('LibraryView', () => {
     const view = createLibraryView(host, deps);
     await view.show();
 
-    buttonWithText(host, '测试书库').click();
-    await settle();
+    await openCatalog(host);
     expect(host.textContent).toContain('offline');
-    buttonWithText(host, '重试').click();
+    shownButtonWithText(host, '重试').click();
     await settle();
     expect(browse).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain('远程漫画');
-  });
-  it('preserves an existing OPDS credential unless the user changes authentication', async () => {
-    const authenticated = { ...source, credentialRef: 'credential-1' };
-    const addSource = vi.fn(async () => authenticated);
-    const listSources = vi.fn(async () => [authenticated]);
-    const base = dependencies();
-    const deps = dependencies({
-      opds: { ...base.opds, addSource, listSources },
-    });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    host.querySelector<HTMLButtonElement>('[aria-label^="编辑 OPDS 源"]')!.click();
-    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
-    expect((form.elements.namedItem('auth') as HTMLSelectElement).value).toBe('keep');
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
-    await settle();
-
-    expect(addSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'source-1',
-        credentialRef: 'credential-1',
-        clearCredential: undefined,
-        credential: undefined,
-      }),
-    );
-    view.destroy();
-  });
-
-  it('edits an OPDS source and explicitly clears its stored credential', async () => {
-    const authenticated = { ...source, credentialRef: 'credential-1' };
-    const addSource = vi.fn(async (input) => ({
-      ...authenticated,
-      title: input.title,
-      url: input.url,
-      credentialRef: undefined,
-    }));
-    const listSources = vi
-      .fn()
-      .mockResolvedValueOnce([authenticated])
-      .mockResolvedValueOnce([{ ...authenticated, title: '更新后的书库', credentialRef: undefined }]);
-    const base = dependencies();
-    const deps = dependencies({
-      opds: { ...base.opds, addSource, listSources },
-    });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    host.querySelector<HTMLButtonElement>('[aria-label^="编辑 OPDS 源"]')!.click();
-    const form = host.querySelector<HTMLFormElement>('.lightink-library-source-form')!;
-    (form.elements.namedItem('title') as HTMLInputElement).value = '更新后的书库';
-    (form.elements.namedItem('auth') as HTMLSelectElement).value = 'none';
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
-    await settle();
-
-    expect(addSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'source-1',
-        title: '更新后的书库',
-        credentialRef: undefined,
-        clearCredential: true,
-      }),
-    );
-    expect(form.hidden).toBe(true);
-    view.destroy();
-  });
-
-  it('lets the user change the bounded cache limit', async () => {
-    const deps = dependencies();
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    host.querySelector<HTMLButtonElement>('[aria-label="调整缓存上限"]')!.click();
-    const form = host.querySelector<HTMLFormElement>('.lightink-library-cache-limit-form')!;
-    const input = form.elements.namedItem('cacheLimitGiB') as HTMLInputElement;
-    input.value = '3.5';
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
-    await settle();
-
-    expect(deps.library.setCacheLimit).toHaveBeenCalledWith(3.5 * 1024 ** 3);
-    expect(form.hidden).toBe(true);
-    view.destroy();
-  });
-
-  it('cancels an active open when the library is closed', async () => {
-    let operationSignal: AbortSignal | undefined;
-    const onOpen = vi.fn(
-      async (_request: unknown, signal?: AbortSignal): Promise<void> =>
-        new Promise<void>((resolve) => {
-          operationSignal = signal;
-          signal?.addEventListener('abort', () => resolve(), { once: true });
-        }),
-    );
-    const deps = dependencies({ onOpen });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    host.querySelector<HTMLButtonElement>('.lightink-library-item')!.click();
-    await settle();
-    buttonWithText(host, '打开阅读').click();
-    await settle();
-    host.querySelector<HTMLButtonElement>('[aria-label="关闭书库"]')!.click();
-    await settle();
-
-    expect(operationSignal?.aborted).toBe(true);
-    expect(deps.notify).not.toHaveBeenCalled();
-    view.destroy();
-  });
-
-  it('shows persisted comic series, volume, page count, direction, and cover page', async () => {
-    const comic: LibraryItem = {
-      ...localItem(),
-      title: '本地漫画',
-      series: '墨色档案',
-      number: '12',
-      volume: '3',
-      pageCount: 128,
-      readingDirection: 'rtl',
-      coverPage: 0,
-    };
-    const base = dependencies();
-    const deps = dependencies({
-      library: {
-        ...base.library,
-        listItems: vi.fn(async () => [comic]),
-      },
-    });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    host.querySelector<HTMLButtonElement>('.lightink-library-item')!.click();
-    await settle();
-    const metadata = host.querySelector<HTMLElement>('.lightink-library-comic-metadata')!;
-    expect(metadata.textContent).toContain('系列墨色档案');
-    expect(metadata.textContent).toContain('卷3');
-    expect(metadata.textContent).toContain('页数128');
-    expect(metadata.textContent).toContain('阅读方向从右到左');
-    expect(metadata.textContent).toContain('封面页1');
-    view.destroy();
-  });
-
-  it('distinguishes not-started and in-progress imported books without rendering 0%', async () => {
-    const unread = localItem();
-    const comic: LibraryItem = {
-      ...localItem(),
-      id: 'local:/books/b.cbz',
-      title: '本地漫画',
-      extension: 'cbz',
-      localPath: '/books/b.cbz',
-    };
-    const novel: LibraryItem = {
-      ...localItem(),
-      id: 'local:/books/c.epub',
-      title: '续读小说',
-      localPath: '/books/c.epub',
-    };
-    const getProgress = vi.fn((item: LibraryItem) => {
-      if (item.id === comic.id) {
-        return { status: 'in-progress' as const, unit: 'page' as const, index: 12, ratio: 0, percent: 37 };
-      }
-      if (item.id === novel.id) {
-        return { status: 'in-progress' as const, unit: 'chapter' as const, index: 2, ratio: 0.4, percent: 21 };
-      }
-      return { status: 'not-started' as const };
-    });
-    const base = dependencies();
-    const deps = dependencies({
-      getProgress,
-      library: {
-        ...base.library,
-        listItems: vi.fn(async () => [unread, comic, novel]),
-      },
-    });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    const unreadRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${unread.id}"]`)!;
-    const comicRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${comic.id}"]`)!;
-    const novelRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${novel.id}"]`)!;
-    expect(unreadRow.dataset.progressStatus).toBe('not-started');
-    expect(unreadRow.textContent).toContain('未开始');
-    expect(unreadRow.textContent).not.toContain('0%');
-    expect(comicRow.dataset.progressStatus).toBe('in-progress');
-    expect(comicRow.textContent).toContain('第 12 页');
-    expect(comicRow.textContent).toContain('已读 37%');
-    expect(novelRow.dataset.progressStatus).toBe('in-progress');
-    expect(novelRow.textContent).toContain('第 3 章');
-    expect(novelRow.textContent).toContain('已读 21%');
-    expect(getProgress).toHaveBeenCalledWith(expect.objectContaining({ id: unread.id }));
-    expect(getProgress).toHaveBeenCalledWith(expect.objectContaining({ id: comic.id }));
-    expect(getProgress).toHaveBeenCalledWith(expect.objectContaining({ id: novel.id }));
-    view.destroy();
-  });
-
-  it('offers continue reading for in-progress books and hides a zero percent', async () => {
-    const getProgress = vi.fn(() => ({
-      status: 'in-progress' as const,
-      unit: 'chapter' as const,
-      index: 3,
-      ratio: 0,
-      percent: 0,
-    }));
-    const deps = dependencies({ getProgress });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    host.querySelector<HTMLButtonElement>('.lightink-library-item')!.click();
-    await settle();
-    expect(host.textContent).toContain('第 4 章');
-    expect(host.textContent).not.toContain('0%');
-    buttonWithText(host, '继续阅读').click();
-    await settle();
-    expect(deps.onOpen).toHaveBeenCalledWith(
-      expect.objectContaining({ item: expect.objectContaining({ id: localItem().id }) }),
-      expect.anything(),
-    );
-    view.destroy();
-  });
-
-  it('labels a first comic page without rendering 0%', async () => {
-    const comic: LibraryItem = {
-      ...localItem(),
-      id: 'local:/comics/a.cbz',
-      title: '首页漫画',
-      extension: 'cbz',
-      localPath: '/comics/a.cbz',
-    };
-    const getProgress = vi.fn(() => ({
-      status: 'in-progress' as const,
-      unit: 'page' as const,
-      index: 0,
-      ratio: 0,
-    }));
-    const base = dependencies();
-    const deps = dependencies({
-      getProgress,
-      library: {
-        ...base.library,
-        listItems: vi.fn(async () => [comic]),
-      },
-    });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    const row = host.querySelector<HTMLButtonElement>('.lightink-library-item')!;
-    expect(row.dataset.progressStatus).toBe('in-progress');
-    expect(row.textContent).toContain('第 1 页');
-    expect(row.textContent).not.toContain('0%');
-    view.destroy();
-  });
-
-  it('treats missing or unreadable progress as not started without 0%', async () => {
-    const getProgress = vi.fn(() => null);
-    const deps = dependencies({ getProgress });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const view = createLibraryView(host, deps);
-    await view.show();
-
-    const row = host.querySelector<HTMLButtonElement>('.lightink-library-item')!;
-    expect(row.dataset.progressStatus).toBe('not-started');
-    expect(row.textContent).toContain('未开始');
-    expect(row.textContent).not.toContain('0%');
-    expect(row.textContent).not.toContain('已读');
-    view.destroy();
   });
 
   it('does not project progress onto unopened OPDS catalog entries', async () => {
@@ -457,8 +688,8 @@ describe('LibraryView', () => {
     await view.show();
 
     getProgress.mockClear();
-    buttonWithText(host, '测试书库').click();
-    await settle();
+    await openCatalog(host);
+    expect(libraryPage(host)).toBe('catalog');
 
     expect(getProgress).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'item-1' }),
@@ -486,10 +717,9 @@ describe('LibraryView', () => {
     const view = createLibraryView(host, deps);
     await view.show();
 
-    buttonWithText(host, '测试书库').click();
-    await settle();
+    await openCatalog(host);
 
-    const row = host.querySelector<HTMLButtonElement>('[data-item-id="item-1"]')!;
+    const row = itemRow(host, 'item-1');
     expect(row.dataset.progressStatus).toBe('in-progress');
     expect(row.textContent).toContain('第 12 页');
     expect(row.textContent).toContain('已读 30%');
@@ -506,14 +736,12 @@ describe('LibraryView', () => {
     };
     const unread = localItem();
     const comicPath = '/comics/bound.cbz';
-    const comic: LibraryItem = {
-      ...localItem(),
+    const comic = comicItem({
       id: 'local:/comics/bound.cbz',
       title: '续读漫画',
-      extension: 'cbz',
       localPath: comicPath,
       pageCount: 40,
-    };
+    });
     saveReadingProgress(storage, comicPath, {
       version: 1,
       kind: 'page',
@@ -535,8 +763,8 @@ describe('LibraryView', () => {
     const view = createLibraryView(host, deps);
     await view.show();
 
-    const unreadRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${unread.id}"]`)!;
-    const comicRow = host.querySelector<HTMLButtonElement>(`[data-item-id="${comic.id}"]`)!;
+    const unreadRow = itemRow(host, unread.id);
+    const comicRow = itemRow(host, comic.id);
     expect(unreadRow.dataset.progressStatus).toBe('not-started');
     expect(unreadRow.textContent).toContain('未开始');
     expect(unreadRow.textContent).not.toContain('0%');
@@ -544,8 +772,7 @@ describe('LibraryView', () => {
     expect(comicRow.textContent).toContain('第 12 页');
     expect(comicRow.textContent).toContain('已读 30%');
 
-    buttonWithText(host, '测试书库').click();
-    await settle();
+    await openCatalog(host);
     expect(host.textContent).toContain('远程漫画');
     expect(host.querySelector('[data-item-id="item-1"]')?.textContent).not.toContain('已读');
     expect(host.querySelector('[data-item-id="item-1"]')?.dataset.progressStatus).toBeUndefined();

@@ -125,7 +125,8 @@
   min-height: 0;
 }
 
-.lightink-library-sources {
+.lightink-library-sources,
+.lightink-library-groups {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -155,9 +156,15 @@
   letter-spacing: 0;
 }
 
-.lightink-library-source-list {
+.lightink-library-source-list,
+.lightink-library-groups {
   overflow-y: auto;
   padding: 6px;
+}
+
+.lightink-library-groups {
+  gap: 2px;
+  padding: 10px 8px;
 }
 
 .lightink-library-source-row {
@@ -166,7 +173,8 @@
   gap: 3px;
 }
 
-.lightink-library-source {
+.lightink-library-source,
+.lightink-library-group {
   width: 100%;
   overflow: hidden;
   border-color: transparent !important;
@@ -176,7 +184,15 @@
   white-space: nowrap;
 }
 
-.lightink-library-source.is-active {
+.lightink-library-group {
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--lightink-fg);
+}
+
+.lightink-library-source.is-active,
+.lightink-library-group.is-active {
   background: var(--lightink-accent-soft) !important;
   color: var(--lightink-accent);
   font-weight: 650;
@@ -292,6 +308,50 @@
   display: none;
 }
 
+.lightink-library-continue {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% - 8px);
+  margin: 0 4px 12px;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid var(--lightink-border);
+  border-radius: 8px;
+  background: var(--lightink-bg-elevated);
+  text-align: left;
+}
+
+.lightink-library-continue-cover,
+.lightink-library-continue .lightink-library-cover {
+  width: 36px;
+  height: 54px;
+  border-radius: 3px;
+}
+
+.lightink-library-continue-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lightink-library-continue-text strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightink-library-continue-text span {
+  overflow: hidden;
+  color: var(--lightink-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .lightink-library-workarea {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) minmax(260px, 34%);
@@ -301,20 +361,28 @@
 }
 
 .lightink-library-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  align-content: start;
+  gap: 18px 14px;
   min-width: 0;
   overflow-y: auto;
+  padding: 16px 18px 28px;
+}
+
+.lightink-library-items .lightink-library-empty {
+  grid-column: 1 / -1;
 }
 
 .lightink-library-item {
-  display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   width: 100%;
-  min-height: 62px !important;
-  padding: 7px 12px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
   border: none !important;
-  border-bottom: 1px solid var(--lightink-border) !important;
   border-radius: 0 !important;
   background: transparent !important;
   text-align: left;
@@ -322,20 +390,30 @@
 
 .lightink-library-item:hover,
 .lightink-library-item.is-selected {
-  background: var(--lightink-accent-soft) !important;
+  background: transparent !important;
 }
 
 .lightink-library-cover {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 48px;
+  width: 100%;
+  aspect-ratio: 2 / 3;
   overflow: hidden;
   border: 1px solid var(--lightink-border);
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--lightink-bg-elevated);
+  box-shadow: var(--lightink-shadow, 0 4px 16px rgba(0, 0, 0, 0.1));
   color: var(--lightink-muted);
-  font-size: 18px;
+  font-size: clamp(22px, 4vw, 36px);
+  font-weight: 650;
+}
+
+.lightink-library-item:hover .lightink-library-cover,
+.lightink-library-item.is-selected .lightink-library-cover,
+.lightink-library-item:focus-visible .lightink-library-cover {
+  border-color: var(--lightink-accent);
+  box-shadow: var(--lightink-shadow-strong, 0 12px 32px rgba(0, 0, 0, 0.14));
 }
 
 .lightink-library-cover img {
@@ -344,11 +422,21 @@
   object-fit: cover;
 }
 
+.lightink-library-item[data-progress-status='in-progress'] .lightink-library-cover::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: var(--lightink-accent);
+  content: '';
+}
+
 .lightink-library-item-text {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .lightink-library-item-text strong,
@@ -359,13 +447,30 @@
 }
 
 .lightink-library-item-text strong {
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 650;
   letter-spacing: 0;
 }
 
 .lightink-library-item-text span,
-.lightink-library-detail-authors {
+.lightink-library-detail-authors,
+.lightink-library-item-progress {
   color: var(--lightink-muted);
+  font-size: 12px;
+}
+
+.lightink-library-item-progress {
+  line-height: 1.3;
+}
+
+.lightink-library-item[data-progress-status='not-started'] .lightink-library-item-progress {
+  opacity: 0.85;
+}
+
+.lightink-library-item-continue {
+  align-self: start;
+  min-height: 26px;
+  padding: 2px 8px;
   font-size: 12px;
 }
 
@@ -421,6 +526,55 @@
   margin-top: 14px;
 }
 
+/* library-view page contract: data-library-page = my-books | manage | catalog */
+.lightink-library[data-library-page='my-books'] .lightink-library-header,
+.lightink-library--my-books .lightink-library-header {
+  grid-template-columns: auto minmax(200px, 360px) minmax(0, 1fr);
+  min-height: 56px;
+  padding: 14px 20px 10px;
+  border-bottom: none;
+  background: transparent;
+}
+
+.lightink-library[data-library-page='my-books'] .lightink-library-body,
+.lightink-library--my-books .lightink-library-body {
+  grid-template-columns: minmax(132px, 168px) minmax(0, 1fr);
+}
+
+.lightink-library[data-library-page='my-books'] .lightink-library-body:not(:has(> .lightink-library-groups)),
+.lightink-library--my-books .lightink-library-body:not(:has(> .lightink-library-groups)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.lightink-library[data-library-page='my-books'] .lightink-library-workarea,
+.lightink-library--my-books .lightink-library-workarea {
+  grid-template-columns: minmax(0, 1fr);
+  border-top: none;
+}
+
+.lightink-library[data-library-page='my-books'] .lightink-library-items,
+.lightink-library--my-books .lightink-library-items {
+  padding: 8px 24px 32px;
+}
+
+.lightink-library[data-library-page='my-books'] .lightink-library-sources,
+.lightink-library[data-library-page='my-books'] .lightink-library-source-form,
+.lightink-library[data-library-page='my-books'] .lightink-library-cache-summary,
+.lightink-library[data-library-page='my-books'] .lightink-library-navigation,
+.lightink-library[data-library-page='my-books'] .lightink-library-detail,
+.lightink-library--my-books .lightink-library-sources,
+.lightink-library--my-books .lightink-library-source-form,
+.lightink-library--my-books .lightink-library-cache-summary,
+.lightink-library--my-books .lightink-library-navigation,
+.lightink-library--my-books .lightink-library-detail {
+  display: none;
+}
+
+.lightink-library[data-library-page='my-books'] .lightink-library-toolbar > :not(.lightink-library-edit):not(.lightink-library-manage-entry),
+.lightink-library--my-books .lightink-library-toolbar > :not(.lightink-library-edit):not(.lightink-library-manage-entry) {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .lightink-library-header {
     display: flex;
@@ -441,12 +595,22 @@
     flex: 1 1 100%;
   }
 
-  .lightink-library-body {
+  .lightink-library-body,
+  .lightink-library[data-library-page='my-books'] .lightink-library-body,
+  .lightink-library--my-books .lightink-library-body {
     grid-template-columns: 112px minmax(0, 1fr);
   }
 
-  .lightink-library-workarea {
+  .lightink-library-workarea,
+  .lightink-library[data-library-page='my-books'] .lightink-library-workarea,
+  .lightink-library--my-books .lightink-library-workarea {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lightink-library-items {
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    gap: 14px 10px;
+    padding: 12px;
   }
 
   .lightink-library-detail {
@@ -454,6 +618,11 @@
     inset: 42px 0 0 112px;
     z-index: 2;
     border-left: none;
+  }
+
+  .lightink-library[data-library-page='my-books'] .lightink-library-detail,
+  .lightink-library--my-books .lightink-library-detail {
+    display: none;
   }
 
   .lightink-library-navigation {
