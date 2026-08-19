@@ -133,6 +133,7 @@ import {
   type LibraryView,
 } from './library/library-view.js';
 import { credentialRefForResource, opdsClient } from './library/opds-client.js';
+import { createSyncableStorage } from './storage/syncable-storage.js';
 import {
   createBoundVersionActions,
   showVersionsModal,
@@ -147,11 +148,19 @@ if (app === null) {
   throw new Error('LightInk: #app root container not found in index.html');
 }
 
+const syncableStorage = createSyncableStorage(window.localStorage, {
+  onChange: (key, value) => {
+    window.dispatchEvent(
+      new CustomEvent('lightink:syncable-storage-change', { detail: { key, value } }),
+    );
+  },
+});
+
 // 1080p / 2K / 4K layout tier → html[data-display]; theme.css scales tokens.
 const displayScale = installDisplayScale(document.documentElement, window);
 
 // Reading font zoom (body/code) over tier baselines; persists lightink.fontScale.
-const fontScale = installFontScale(document.documentElement, window.localStorage);
+const fontScale = installFontScale(document.documentElement, syncableStorage);
 
 // R5：Ctrl/Cmd + 滚轮字号缩放（与 Ctrl+=/- 同档位）。阅读工作区走阅读排版键。
 const readingZoomHandle: FontScaleHandle = {
@@ -169,7 +178,7 @@ const readingZoomHandle: FontScaleHandle = {
 };
 const wheelZoom = installWheelZoom(document, readingZoomHandle);
 
-let readingLayout = loadReadingLayout(window.localStorage);
+let readingLayout = loadReadingLayout(syncableStorage);
 applyReadingLayout(document.documentElement, readingLayout);
 
 function readingSurfaceWidth(): number {
@@ -212,7 +221,7 @@ function scheduleReadingColumnSync(): void {
 
 function setReadingLayout(next: ReadingLayout): void {
   readingLayout = next;
-  saveReadingLayout(window.localStorage, next);
+  saveReadingLayout(syncableStorage, next);
   applyReadingLayout(document.documentElement, next);
   syncReadingColumns();
 }
@@ -223,7 +232,7 @@ function toggleReadingLayoutMode(): void {
 }
 
 // UI language (en / zh-CN) + macOS shortcut labels.
-const i18n = createI18n(window.localStorage);
+const i18n = createI18n(syncableStorage);
 const isMac = isMacPlatform();
 
 type RecentMutationCommand = 'add_recent' | 'remove_recent' | 'clear_recents';
@@ -298,7 +307,7 @@ applyLocaleChrome();
 const themeService = new ThemeService({
   root: document.documentElement,
   customStyleSlot: createStyleTagSlot(document),
-  storage: window.localStorage,
+  storage: syncableStorage,
   readFile,
   syncNativeTheme: (dark) => void setNativeTheme(dark),
   onThemeChange: () => {
@@ -647,7 +656,7 @@ workspace.subscribe((state) => {
 
 function syncNativeWindowChrome(state: WorkspaceSnapshot = workspace.snapshot()): void {
   if (state.surface === 'reader') {
-    const chrome = readerNativeWindowChrome(loadReaderTheme(window.localStorage));
+    const chrome = readerNativeWindowChrome(loadReaderTheme(syncableStorage));
     void setNativeTheme(chrome.dark);
     void setNativeCaptionColors({ caption: chrome.caption, text: chrome.text });
     return;
@@ -665,7 +674,7 @@ function libraryItemIdForTarget(target: ReaderTarget): string {
 }
 
 function bindOpenedBookProgress(progressId: string, target: ReaderTarget): void {
-  saveLibraryProgressAlias(window.localStorage, libraryItemIdForTarget(target), progressId);
+  saveLibraryProgressAlias(syncableStorage, libraryItemIdForTarget(target), progressId);
 }
 
 function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
@@ -1953,7 +1962,7 @@ shell.outlineSidebar.appendChild(outline.root);
 // debounced; save/conflict transitions refresh immediately.
 // 标签闭包现读 locale，语言切换后下次刷新即用新文案。
 statusBar = createStatusBar(document, shell.statusBarHost, {
-  storage: window.localStorage,
+  storage: syncableStorage,
   initiallyVisible: false,
   labels: () => ({
     words: i18n.t('status.words'),
@@ -1989,7 +1998,7 @@ libraryView = createLibraryView(shell.editorArea, {
   opds: opdsClient,
   library: libraryClient,
   getLocale: () => i18n.locale,
-  getProgress: bindLibraryProgress(window.localStorage),
+  getProgress: bindLibraryProgress(syncableStorage),
   workspaceTravel: shell.enterEditorButton,
   enrichLocalItem: enrichLocalLibraryItem,
   onOpen: openLibraryItem,
@@ -2024,7 +2033,7 @@ function getActiveStatusSnapshot(): StatusBarSnapshot {
       kind: 'reader',
       state: tab.reader.state,
       displayScale:
-        tab.reader.state.scale * loadReaderTypography(window.localStorage).fontScaleStep,
+        tab.reader.state.scale * loadReaderTypography(syncableStorage).fontScaleStep,
     };
   }
   try {
@@ -2067,7 +2076,7 @@ function isReaderZoomContext(): boolean {
 function changeReadingScale(action: 'in' | 'out' | 'reset'): number {
   if (isReaderZoomContext()) {
     const fontScaleStep = nextReaderFontScaleStep(
-      loadReaderTypography(window.localStorage).fontScaleStep,
+      loadReaderTypography(syncableStorage).fontScaleStep,
       action,
     );
     shell?.setReaderTypography({ fontScaleStep });
@@ -2098,7 +2107,7 @@ document.addEventListener('selectionchange', () => {
 // 活动标签的源码态编辑（与手动保存同口径），再扫全部有路径脏 tab 走同一保存流
 // （含 R13 保存前 mtime 闸门；冲突由既有对话框分派，不静默覆盖）。
 autosave = createAutosave({
-  storage: window.localStorage,
+  storage: syncableStorage,
   tick: () => {
     commitActiveSourceMode();
     return manager.autosaveDirtyTabs();
