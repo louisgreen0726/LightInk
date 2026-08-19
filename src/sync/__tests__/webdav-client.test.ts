@@ -3,11 +3,11 @@ import { WebDavClient, type SyncClientInvoker } from '../webdav-client.js';
 
 describe('WebDavClient', () => {
   it('keeps command payloads explicit and delegates profile operations', async () => {
-    const invoke = vi.fn<SyncClientInvoker['invoke']>();
+    const invoke = vi.fn();
     invoke.mockResolvedValueOnce(null);
     invoke.mockResolvedValueOnce({ id: 'p1', name: 'Nextcloud' });
     invoke.mockResolvedValueOnce({ reachable: true });
-    const client = new WebDavClient({ invoke });
+    const client = new WebDavClient({ invoke } as SyncClientInvoker);
 
     expect(await client.getProfile()).toBeNull();
     await client.saveProfile({ name: 'Nextcloud', url: 'https://dav.example', authType: 'basic' });
@@ -23,12 +23,12 @@ describe('WebDavClient', () => {
   });
 
   it('never invents a local credential cache in the frontend', async () => {
-    const invoke = vi.fn<SyncClientInvoker['invoke']>().mockResolvedValue({
+    const invoke = vi.fn().mockResolvedValue({
       credentialRef: 'sync-profile-p1',
       persisted: true,
       needsCredential: false,
     });
-    const client = new WebDavClient({ invoke });
+    const client = new WebDavClient({ invoke } as SyncClientInvoker);
     await client.storeCredential('p1', { kind: 'bearer', token: 'secret' });
     expect(invoke).toHaveBeenCalledWith('sync_store_credential', {
       profileId: 'p1',

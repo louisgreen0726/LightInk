@@ -2,6 +2,7 @@
 
 use crate::file::MAX_READER_FILE_BYTES;
 use crate::library::{self, LibraryItem};
+use crate::sync;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -63,6 +64,9 @@ struct StoredBlob {
     absolute_path: PathBuf,
     size: u64,
     duplicate: bool,
+    /// Whether this call created a new file that must be removed if the
+    /// surrounding metadata transaction rolls back.
+    created_file: bool,
 }
 
 fn extension_for(path: &Path) -> String {
@@ -113,8 +117,26 @@ fn hash_file(path: &Path) -> Result<(String, u64), String> {
     Ok((format!("{:x}", hasher.finalize()), size))
 }
 
+fn verify_blob_file(path: &Path, expected_hash: &str, expected_size: u64) -> Result<(), String> {
+    let (actual_hash, actual_size) = hash_file(path)?;
+    if actual_hash != expected_hash || actual_size != expected_size {
+        return Err(format!(
+            "受管正文校验失败: {} (expected {expected_hash}/{expected_size}, got {actual_hash}/{actual_size})",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn managed_root(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(MANAGED_DIRECTORY)
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn safe_managed_path(app_data_dir: &Path, relative_path: &str) -> Result<PathBuf, String> {
@@ -135,6 +157,103 @@ fn safe_managed_path(app_data_dir: &Path, relative_path: &str) -> Result<PathBuf
         return Err("受管内容路径不属于书库目录".to_string());
     }
     Ok(target)
+}
+
+pub(crate) fn managed_blob_path(
+    connection: &Connection,
+    app_data_dir: &Path,
+    hash: &str,
+) -> Result<PathBuf, String> {
+    if !is_sha256(hash) {
+        return Err("受管正文哈希无效".to_string());
+    }
+    let relative = connection
+        .query_row(
+            "SELECT relative_path FROM managed_blobs WHERE hash=?1",
+            params![hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("无法读取受管正文路径: {error}"))?
+        .unwrap_or_else(|| {
+            format!(
+                "{MANAGED_DIRECTORY}/{HASH_DIRECTORY}/{}/{}.bin",
+                &hash[..2],
+                hash
+            )
+        });
+    safe_managed_path(app_data_dir, &relative)
+}
+
+/// Resolve a content blob path before its first local registration.  The
+/// extension is part of the runtime reader contract, so a freshly downloaded
+/// EPUB/CBZ/PDF must not fall back to an extension-less `.bin` path.
+pub(crate) fn managed_blob_path_for_extension(
+    connection: &Connection,
+    app_data_dir: &Path,
+    hash: &str,
+    extension: Option<&str>,
+) -> Result<PathBuf, String> {
+    if !is_sha256(hash) {
+        return Err("受管正文哈希无效".to_string());
+    }
+    if let Some(relative) = connection
+        .query_row(
+            "SELECT relative_path FROM managed_blobs WHERE hash=?1",
+            params![hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("无法读取受管正文路径: {error}"))?
+    {
+        return safe_managed_path(app_data_dir, &relative);
+    }
+    let extension = extension
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 16
+                && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        .unwrap_or("bin")
+        .to_ascii_lowercase();
+    safe_managed_path(
+        app_data_dir,
+        &format!(
+            "{MANAGED_DIRECTORY}/{HASH_DIRECTORY}/{}/{}.{}",
+            &hash[..2],
+            hash,
+            extension
+        ),
+    )
+}
+
+pub(crate) fn register_downloaded_blob_at(
+    connection: &Connection,
+    app_data_dir: &Path,
+    hash: &str,
+    path: &Path,
+    size: u64,
+) -> Result<PathBuf, String> {
+    if !is_sha256(hash) || !path.is_file() {
+        return Err("下载正文不存在或哈希无效".to_string());
+    }
+    verify_blob_file(path, hash, size)?;
+    let relative = path
+        .strip_prefix(app_data_dir)
+        .map_err(|_| "受管正文路径不在应用目录内".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let safe_path = safe_managed_path(app_data_dir, &relative)?;
+    connection
+        .execute(
+            "INSERT INTO managed_blobs(hash,relative_path,size,created_at,last_verified_at)
+             VALUES (?1,?2,?3,?4,?4)
+             ON CONFLICT(hash) DO UPDATE SET size=?3,last_verified_at=?4",
+            params![hash, relative, size as i64, library::now_ms()],
+        )
+        .map_err(|error| format!("无法登记下载正文: {error}"))?;
+    Ok(safe_path)
 }
 
 fn store_blob_at(
@@ -198,30 +317,48 @@ fn store_blob_at(
         )
     });
     let absolute_path = safe_managed_path(app_data_dir, &relative_path)?;
-    let duplicate = known_path.is_some() && absolute_path.is_file();
-    if !absolute_path.is_file() {
+    let already_present = absolute_path.is_file();
+    if already_present {
+        // A database row is not enough to trust a blob: interrupted copies or
+        // manual edits must never be silently reused on another import.
+        verify_blob_file(&absolute_path, &hash, copied)?;
+    }
+    let mut duplicate = already_present;
+    let created_file = if !already_present {
         let parent = absolute_path
             .parent()
             .ok_or_else(|| "受管书籍目标路径无效".to_string())?;
         fs::create_dir_all(parent).map_err(|error| format!("无法创建受管书籍目录: {error}"))?;
-        temporary
-            .persist(&absolute_path)
-            .map_err(|error| format!("无法提交受管书籍: {}", error.error))?;
-    }
+        match temporary.persist_noclobber(&absolute_path) {
+            Ok(_) => true,
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                verify_blob_file(&absolute_path, &hash, copied)?;
+                duplicate = true;
+                false
+            }
+            Err(error) => return Err(format!("无法提交受管书籍: {}", error.error)),
+        }
+    } else {
+        false
+    };
     let now = library::now_ms();
-    connection
-        .execute(
-            "INSERT INTO managed_blobs(hash, relative_path, size, created_at, last_verified_at)
+    if let Err(error) = connection.execute(
+        "INSERT INTO managed_blobs(hash, relative_path, size, created_at, last_verified_at)
              VALUES (?1,?2,?3,?4,?4)
              ON CONFLICT(hash) DO UPDATE SET last_verified_at=?4",
-            params![hash, relative_path, copied as i64, now],
-        )
-        .map_err(|error| format!("无法记录受管书籍: {error}"))?;
+        params![hash, relative_path, copied as i64, now],
+    ) {
+        if created_file {
+            let _ = fs::remove_file(&absolute_path);
+        }
+        return Err(format!("无法记录受管书籍: {error}"));
+    }
     Ok(StoredBlob {
         hash,
         absolute_path,
         size: copied,
         duplicate,
+        created_file,
     })
 }
 
@@ -245,7 +382,7 @@ fn insert_managed_item(
             params![
                 id,
                 title,
-                blob.absolute_path.to_string_lossy(),
+                blob.absolute_path.to_string_lossy().into_owned(),
                 extension,
                 blob.size as i64,
                 blob.hash,
@@ -253,6 +390,7 @@ fn insert_managed_item(
             ],
         )
         .map_err(|error| format!("无法保存受管书籍条目: {error}"))?;
+    sync::write_library_item_record_at(connection, &id, true)?;
     Ok(())
 }
 
@@ -261,7 +399,10 @@ fn migrate_item_at(
     app_data_dir: &Path,
     item_id: &str,
 ) -> Result<(LibraryItemAlias, bool), String> {
-    let source_path: String = connection
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("无法开启书籍迁移事务: {error}"))?;
+    let source_path: String = transaction
         .query_row(
             "SELECT local_path FROM library_items
              WHERE id=?1 AND source_kind='local' AND blob_hash IS NULL",
@@ -270,66 +411,107 @@ fn migrate_item_at(
         )
         .map_err(|error| format!("无法读取待迁移书籍 {item_id}: {error}"))?;
     let source = PathBuf::from(source_path);
-    let blob = store_blob_at(connection, app_data_dir, &source)?;
-    let target_id = format!("managed:{}", blob.hash);
-    let transaction = connection
-        .transaction()
-        .map_err(|error| format!("无法开启书籍迁移事务: {error}"))?;
-    transaction
-        .execute(
-            "INSERT INTO library_items(
-               id, source_id, source_kind, title, authors_json, cover_url, local_path,
-               acquisition_url, media_type, extension, size, etag, last_modified,
-               series, number, volume, page_count, reading_direction, cover_page,
-               blob_hash, availability, offline_pinned, subjects_json, updated_at
-             ) SELECT ?2, source_id, 'managed', title, authors_json, cover_url, ?3,
-               acquisition_url, media_type, extension, ?4, etag, last_modified,
-               series, number, volume, page_count, reading_direction, cover_page,
-               ?5, 'local', offline_pinned, subjects_json, ?6
-             FROM library_items WHERE id=?1
-             ON CONFLICT(id) DO UPDATE SET source_kind='managed', local_path=?3, size=?4,
-               blob_hash=?5, availability='local', updated_at=?6",
-            params![
-                item_id,
-                target_id,
-                blob.absolute_path.to_string_lossy(),
-                blob.size as i64,
-                blob.hash,
-                library::now_ms(),
-            ],
-        )
-        .map_err(|error| format!("无法迁移书籍元数据: {error}"))?;
-    if item_id != target_id {
+    let blob = store_blob_at(&transaction, app_data_dir, &source)?;
+    let cleanup_path = blob.absolute_path.clone();
+    let cleanup_blob = blob.created_file;
+    let result = (|| -> Result<(LibraryItemAlias, bool), String> {
+        let target_id = format!("managed:{}", blob.hash);
         transaction
             .execute(
-                "INSERT INTO acquisition_links(item_id, href, rel, media_type, extension, size)
-                 SELECT ?2, href, rel, media_type, extension, size
-                 FROM acquisition_links WHERE item_id=?1
-                 ON CONFLICT(item_id, href) DO NOTHING",
-                params![item_id, target_id],
+                "INSERT INTO library_items(
+                   id, source_id, source_kind, title, authors_json, cover_url, local_path,
+                   acquisition_url, media_type, extension, size, etag, last_modified,
+                   series, number, volume, page_count, reading_direction, cover_page,
+                   blob_hash, availability, offline_pinned, subjects_json, updated_at
+                 ) SELECT ?2, source_id, 'managed', title, authors_json, cover_url, ?3,
+                   acquisition_url, media_type, extension, ?4, etag, last_modified,
+                   series, number, volume, page_count, reading_direction, cover_page,
+                   ?5, 'local', offline_pinned, subjects_json, ?6
+                 FROM library_items WHERE id=?1
+                 ON CONFLICT(id) DO UPDATE SET source_kind='managed', local_path=?3, size=?4,
+                   blob_hash=?5, availability='local', updated_at=?6",
+                params![
+                    item_id,
+                    target_id,
+                    blob.absolute_path.to_string_lossy().into_owned(),
+                    blob.size as i64,
+                    blob.hash.clone(),
+                    library::now_ms(),
+                ],
             )
-            .map_err(|error| format!("无法迁移书籍获取链接: {error}"))?;
-        transaction
-            .execute(
-                "INSERT INTO library_item_aliases(alias_id, item_id) VALUES (?1,?2)
-                 ON CONFLICT(alias_id) DO UPDATE SET item_id=?2",
-                params![item_id, target_id],
-            )
-            .map_err(|error| format!("无法记录书籍旧标识: {error}"))?;
-        transaction
-            .execute("DELETE FROM library_items WHERE id=?1", params![item_id])
-            .map_err(|error| format!("无法移除旧书籍条目: {error}"))?;
+            .map_err(|error| format!("无法迁移书籍元数据: {error}"))?;
+        if item_id != target_id {
+            let group_ids = transaction
+                .prepare(
+                    "SELECT group_id FROM library_group_members WHERE item_id=?1 ORDER BY group_id",
+                )
+                .and_then(|mut statement| {
+                    let rows =
+                        statement.query_map(params![item_id], |row| row.get::<_, String>(0))?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|error| format!("无法读取待迁移书籍分组引用: {error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO library_group_members(group_id, item_id, created_at)
+                     SELECT group_id, ?2, created_at
+                     FROM library_group_members WHERE item_id=?1
+                     ON CONFLICT(group_id, item_id) DO NOTHING",
+                    params![item_id, target_id],
+                )
+                .map_err(|error| format!("无法迁移书籍分组引用: {error}"))?;
+            for group_id in group_ids {
+                sync::write_membership_record_at(&transaction, &group_id, item_id, false)?;
+                sync::write_membership_record_at(&transaction, &group_id, &target_id, true)?;
+            }
+            sync::write_library_item_record_at(&transaction, item_id, false)?;
+            sync::write_library_item_record_at(&transaction, &target_id, true)?;
+            transaction
+                .execute(
+                    "INSERT INTO acquisition_links(item_id, href, rel, media_type, extension, size)
+                     SELECT ?2, href, rel, media_type, extension, size
+                     FROM acquisition_links WHERE item_id=?1
+                     ON CONFLICT(item_id, href) DO NOTHING",
+                    params![item_id, target_id],
+                )
+                .map_err(|error| format!("无法迁移书籍获取链接: {error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO library_item_aliases(alias_id, item_id) VALUES (?1,?2)
+                     ON CONFLICT(alias_id) DO UPDATE SET item_id=?2",
+                    params![item_id, target_id],
+                )
+                .map_err(|error| format!("无法记录书籍旧标识: {error}"))?;
+            transaction
+                .execute("DELETE FROM library_items WHERE id=?1", params![item_id])
+                .map_err(|error| format!("无法移除旧书籍条目: {error}"))?;
+        }
+        Ok((
+            LibraryItemAlias {
+                alias_id: item_id.to_string(),
+                item_id: target_id,
+            },
+            blob.duplicate,
+        ))
+    })();
+    match result {
+        Ok(value) => transaction.commit().map(|_| value).map_err(|error| {
+            if cleanup_blob {
+                let _ = fs::remove_file(&cleanup_path);
+            }
+            format!("无法提交书籍迁移: {error}")
+        }),
+        Err(error) => {
+            // Dropping the transaction rolls back the metadata and blob index;
+            // remove a newly materialized file as well so a failed migration
+            // leaves no orphaned managed content.
+            drop(transaction);
+            if cleanup_blob {
+                let _ = fs::remove_file(cleanup_path);
+            }
+            Err(error)
+        }
     }
-    transaction
-        .commit()
-        .map_err(|error| format!("无法提交书籍迁移: {error}"))?;
-    Ok((
-        LibraryItemAlias {
-            alias_id: item_id.to_string(),
-            item_id: target_id,
-        },
-        blob.duplicate,
-    ))
 }
 
 fn preview_at(connection: &Connection) -> Result<ManagedMigrationPreview, String> {
@@ -397,14 +579,44 @@ fn preview_at(connection: &Connection) -> Result<ManagedMigrationPreview, String
     Ok(ManagedMigrationPreview { entries })
 }
 
+fn import_managed_book_at(
+    connection: &mut Connection,
+    app_data_dir: &Path,
+    source: &Path,
+) -> Result<String, String> {
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("无法开启受管书籍事务: {error}"))?;
+    let blob = store_blob_at(&transaction, app_data_dir, source)?;
+    let cleanup_path = blob.absolute_path.clone();
+    let cleanup_file = blob.created_file;
+    let result = (|| -> Result<String, String> {
+        insert_managed_item(&transaction, source, &blob)?;
+        Ok(format!("managed:{}", blob.hash))
+    })();
+    match result {
+        Ok(item_id) => transaction.commit().map(|_| item_id).map_err(|error| {
+            if cleanup_file {
+                let _ = fs::remove_file(&cleanup_path);
+            }
+            format!("无法提交受管书籍: {error}")
+        }),
+        Err(error) => {
+            drop(transaction);
+            if cleanup_file {
+                let _ = fs::remove_file(cleanup_path);
+            }
+            Err(error)
+        }
+    }
+}
+
 #[tauri::command]
 pub fn library_import_managed_book(app: AppHandle, path: String) -> Result<LibraryItem, String> {
     let app_data_dir = library::app_data_dir(&app)?;
-    let connection = library::open_database_at(&app_data_dir)?;
+    let mut connection = library::open_database_at(&app_data_dir)?;
     let source = PathBuf::from(path);
-    let blob = store_blob_at(&connection, &app_data_dir, &source)?;
-    insert_managed_item(&connection, &source, &blob)?;
-    let id = format!("managed:{}", blob.hash);
+    let id = import_managed_book_at(&mut connection, &app_data_dir, &source)?;
     library::library_list_items(app, None)?
         .into_iter()
         .find(|item| item.id == id)
@@ -530,6 +742,12 @@ mod tests {
         assert!(first.absolute_path.is_file());
         assert!(!first.duplicate);
         assert!(second.duplicate);
+        assert!(first.created_file);
+        assert!(!second.created_file);
+
+        fs::write(&first.absolute_path, b"corrupted").unwrap();
+        let error = store_blob_at(&connection, app_data.path(), &source).unwrap_err();
+        assert!(error.contains("校验失败"));
     }
 
     #[test]
@@ -577,5 +795,70 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         assert!(safe_managed_path(root.path(), "../outside").is_err());
         assert!(safe_managed_path(root.path(), "/outside").is_err());
+    }
+
+    #[test]
+    fn first_download_path_keeps_the_book_extension() {
+        let app_data = tempfile::tempdir().unwrap();
+        let connection = library::open_database_at(app_data.path()).unwrap();
+        let hash = "a".repeat(64);
+        let path =
+            managed_blob_path_for_extension(&connection, app_data.path(), &hash, Some("EPUB"))
+                .unwrap();
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("epub")
+        );
+        assert!(path.starts_with(app_data.path().join(MANAGED_DIRECTORY)));
+    }
+
+    #[test]
+    fn migration_preserves_groups_and_tombstones_the_old_membership() {
+        let app_data = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("book.epub");
+        fs::write(&source, b"grouped book").unwrap();
+        let mut connection = library::open_database_at(app_data.path()).unwrap();
+        let group_id = "11111111-1111-4111-8111-111111111111";
+        connection
+            .execute(
+                "INSERT INTO library_items(
+                   id,source_kind,title,authors_json,local_path,availability,subjects_json,updated_at
+                 ) VALUES ('local:book','local','Book','[]',?1,'external','[]',1)",
+                params![source.to_string_lossy()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO library_groups(
+                   id,parent_id,name,kind,rule_json,sort_order,created_at,updated_at
+                 ) VALUES (?1,NULL,'Group','custom',NULL,0,1,1)",
+                params![group_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO library_group_members(group_id,item_id,created_at)
+                 VALUES (?1,'local:book',1)",
+                params![group_id],
+            )
+            .unwrap();
+
+        let (alias, _) = migrate_item_at(&mut connection, app_data.path(), "local:book").unwrap();
+        let membership_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM library_group_members WHERE group_id=?1 AND item_id=?2",
+                params![group_id, alias.item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(membership_count, 1);
+        let records = sync::list_records_at(&connection).unwrap();
+        assert!(records
+            .iter()
+            .any(|record| { record.object_id.ends_with(":local:book") && record.tombstone }));
+        assert!(records.iter().any(|record| {
+            record.object_id.ends_with(&format!(":{}", alias.item_id)) && !record.tombstone
+        }));
     }
 }

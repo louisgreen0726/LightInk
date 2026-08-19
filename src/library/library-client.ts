@@ -183,6 +183,10 @@ export class LibraryClient {
     return this.invoker.invoke<void>('library_update_comic_metadata', { itemId, metadata });
   }
 
+  setOfflinePinned(itemId: string, pinned: boolean): Promise<void> {
+    return this.invoker.invoke<void>('library_set_offline_pinned', { itemId, pinned });
+  }
+
   removeItem(itemId: string): Promise<void> {
     return this.invoker.invoke<void>('library_remove_item', { itemId });
   }

@@ -25,4 +25,19 @@ describe('SyncRecordClient', () => {
     expect(invoke).toHaveBeenNthCalledWith(3, 'sync_list_conflicts', { includeResolved: false });
     expect(invoke).toHaveBeenNthCalledWith(4, 'sync_resolve_conflict', { conflictId: 'conflict-1' });
   });
+
+  it('exposes one cancellable sync task and on-demand content downloads', async () => {
+    const invoke = vi.fn().mockResolvedValue({ state: 'success', uploaded: 1, downloaded: 0, conflicts: 0 });
+    const client = new SyncRecordClient({ invoke } as SyncRecordClientInvoker);
+    await client.status();
+    await client.run();
+    await client.cancel();
+    await client.downloadBook('managed:abc');
+    await client.downloadDraft('draft-1');
+    expect(invoke).toHaveBeenNthCalledWith(1, 'sync_status');
+    expect(invoke).toHaveBeenNthCalledWith(2, 'sync_run');
+    expect(invoke).toHaveBeenNthCalledWith(3, 'sync_cancel');
+    expect(invoke).toHaveBeenNthCalledWith(4, 'sync_download_book', { itemId: 'managed:abc' });
+    expect(invoke).toHaveBeenNthCalledWith(5, 'sync_download_draft', { draftId: 'draft-1' });
+  });
 });

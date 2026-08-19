@@ -72,3 +72,15 @@ describe('LibraryClient groups', () => {
     });
   });
 });
+
+describe('LibraryClient offline retention', () => {
+  it('delegates offline pinning without changing the item id', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const client = new LibraryClient({ invoke } as LibraryClientInvoker);
+    await client.setOfflinePinned('managed:abc', true);
+    expect(invoke).toHaveBeenCalledWith('library_set_offline_pinned', {
+      itemId: 'managed:abc',
+      pinned: true,
+    });
+  });
+});

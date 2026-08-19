@@ -28,6 +28,18 @@ export interface SyncConflict {
   readonly resolvedAt?: number;
 }
 
+export type SyncRunState = 'idle' | 'running' | 'success' | 'error' | 'cancelled';
+
+export interface SyncStatus {
+  readonly state: SyncRunState;
+  readonly startedAt?: number;
+  readonly finishedAt?: number;
+  readonly lastError?: string;
+  readonly uploaded: number;
+  readonly downloaded: number;
+  readonly conflicts: number;
+}
+
 export interface SyncRecordClientInvoker {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
@@ -70,6 +82,26 @@ export class SyncRecordClient {
 
   resolveConflict(conflictId: string): Promise<void> {
     return this.invoker.invoke<void>('sync_resolve_conflict', { conflictId });
+  }
+
+  status(): Promise<SyncStatus> {
+    return this.invoker.invoke<SyncStatus>('sync_status');
+  }
+
+  run(): Promise<SyncStatus> {
+    return this.invoker.invoke<SyncStatus>('sync_run');
+  }
+
+  cancel(): Promise<void> {
+    return this.invoker.invoke<void>('sync_cancel');
+  }
+
+  downloadBook(itemId: string): Promise<string> {
+    return this.invoker.invoke<string>('sync_download_book', { itemId });
+  }
+
+  downloadDocument(documentId: string): Promise<string> {
+    return this.invoker.invoke<string>('sync_download_document', { documentId });
   }
 }
 

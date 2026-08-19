@@ -4,12 +4,14 @@
 //! 合并及本地数据库记录由 `sync.rs` 提供；这样网络错误不会直接污染书库。
 
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, DESTINATION};
+use quick_xml::events::Event;
+use quick_xml::Reader;
+use reqwest::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, DESTINATION};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
@@ -480,6 +482,64 @@ impl WebDavClient {
         .await
     }
 
+    pub async fn list_hrefs(&self, relative: &str) -> Result<Vec<String>, WebDavError> {
+        let response = self.propfind(relative, "1").await?;
+        let bytes = response.bytes().await.map_err(|error| {
+            WebDavError::new(
+                "SYNC_NETWORK_ERROR",
+                format!("无法读取 WebDAV 目录: {error}"),
+            )
+        })?;
+        if bytes.len() as u64 > MAX_SYNC_RESPONSE_BYTES {
+            return Err(WebDavError::new(
+                "SYNC_RESPONSE_TOO_LARGE",
+                "WebDAV 目录响应超过大小限制",
+            ));
+        }
+        let mut reader = Reader::from_reader(bytes.as_ref());
+        reader.config_mut().trim_text(true);
+        let mut buffer = Vec::new();
+        let mut hrefs = Vec::new();
+        let mut in_href = false;
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(event))
+                    if event.name().as_ref().rsplit(|byte| *byte == b':').next()
+                        == Some(b"href") =>
+                {
+                    in_href = true;
+                }
+                Ok(Event::Text(text)) if in_href => {
+                    let value = text.decode().map_err(|error| {
+                        WebDavError::new(
+                            "SYNC_RESPONSE_INVALID",
+                            format!("WebDAV href 无效: {error}"),
+                        )
+                    })?;
+                    if !value.trim().is_empty() {
+                        hrefs.push(value.into_owned());
+                    }
+                }
+                Ok(Event::End(event))
+                    if event.name().as_ref().rsplit(|byte| *byte == b':').next()
+                        == Some(b"href") =>
+                {
+                    in_href = false;
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(WebDavError::new(
+                        "SYNC_RESPONSE_INVALID",
+                        format!("WebDAV 目录 XML 无效: {error}"),
+                    ))
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+        Ok(hrefs)
+    }
+
     pub async fn mkcol(&self, relative: &str) -> Result<(), WebDavError> {
         let url = self.url_for(relative)?;
         let response = self
@@ -764,6 +824,17 @@ pub fn profile_with_credential(
     }
     let _ = app;
     WebDavClient::new(url, credential)
+}
+
+pub(crate) fn active_profile_client(
+    app: &AppHandle,
+    state: &WebDavState,
+) -> Result<(SyncProfile, WebDavClient), WebDavError> {
+    let profile = load_persisted(app)?
+        .map(|value| value.profile)
+        .ok_or_else(|| WebDavError::new("SYNC_PROFILE_MISSING", "尚未配置 WebDAV 同步目标"))?;
+    let client = profile_with_credential(app, state, &profile)?;
+    Ok((profile, client))
 }
 
 #[tauri::command]
