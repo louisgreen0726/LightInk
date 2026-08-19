@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager};
 pub const DATABASE_FILE: &str = "library.sqlite3";
 pub const CACHE_DIRECTORY: &str = "remote-cache";
 pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 const CACHE_LIMIT_KEY: &str = "cache_limit_bytes";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,6 +309,43 @@ fn migrate_schema(connection: &mut Connection) -> Result<(), String> {
                     )
                     .map_err(|error| format!("无法创建书架分组表: {error}"))?;
             }
+            7 => {
+                transaction
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS sync_records (
+                           record_id TEXT PRIMARY KEY NOT NULL,
+                           object_id TEXT NOT NULL,
+                           field TEXT NOT NULL,
+                           value_json TEXT,
+                           device_id TEXT NOT NULL,
+                           version INTEGER NOT NULL CHECK(version >= 0),
+                           context_json TEXT NOT NULL DEFAULT '{}',
+                           modified_at INTEGER NOT NULL,
+                           tombstone INTEGER NOT NULL DEFAULT 0 CHECK(tombstone IN (0,1)),
+                           UNIQUE(object_id, field, device_id)
+                         );
+                         CREATE INDEX IF NOT EXISTS sync_records_object_idx
+                           ON sync_records(object_id, field, modified_at DESC);
+                         CREATE TABLE IF NOT EXISTS sync_conflicts (
+                           id TEXT PRIMARY KEY NOT NULL,
+                           object_id TEXT NOT NULL,
+                           field TEXT NOT NULL,
+                           winner_json TEXT,
+                           loser_json TEXT,
+                           winner_device_id TEXT NOT NULL,
+                           loser_device_id TEXT NOT NULL,
+                           created_at INTEGER NOT NULL,
+                           resolved_at INTEGER
+                         );
+                         CREATE INDEX IF NOT EXISTS sync_conflicts_open_idx
+                           ON sync_conflicts(resolved_at, created_at DESC);
+                         CREATE TABLE IF NOT EXISTS sync_meta (
+                           key TEXT PRIMARY KEY NOT NULL,
+                           value TEXT NOT NULL
+                         );",
+                    )
+                    .map_err(|error| format!("无法创建同步记录表: {error}"))?;
+            }
             _ => return Err(format!("缺少书库数据库 v{target} 迁移实现")),
         }
         transaction
@@ -473,7 +510,38 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
             );
             CREATE INDEX IF NOT EXISTS library_group_members_item_idx
               ON library_group_members(item_id, group_id);
-            INSERT INTO schema_meta(key, value) VALUES ('version', '6')
+            CREATE TABLE IF NOT EXISTS sync_records (
+              record_id TEXT PRIMARY KEY NOT NULL,
+              object_id TEXT NOT NULL,
+              field TEXT NOT NULL,
+              value_json TEXT,
+              device_id TEXT NOT NULL,
+              version INTEGER NOT NULL CHECK(version >= 0),
+              context_json TEXT NOT NULL DEFAULT '{}',
+              modified_at INTEGER NOT NULL,
+              tombstone INTEGER NOT NULL DEFAULT 0 CHECK(tombstone IN (0,1)),
+              UNIQUE(object_id, field, device_id)
+            );
+            CREATE INDEX IF NOT EXISTS sync_records_object_idx
+              ON sync_records(object_id, field, modified_at DESC);
+            CREATE TABLE IF NOT EXISTS sync_conflicts (
+              id TEXT PRIMARY KEY NOT NULL,
+              object_id TEXT NOT NULL,
+              field TEXT NOT NULL,
+              winner_json TEXT,
+              loser_json TEXT,
+              winner_device_id TEXT NOT NULL,
+              loser_device_id TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              resolved_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS sync_conflicts_open_idx
+              ON sync_conflicts(resolved_at, created_at DESC);
+            CREATE TABLE IF NOT EXISTS sync_meta (
+              key TEXT PRIMARY KEY NOT NULL,
+              value TEXT NOT NULL
+            );
+            INSERT INTO schema_meta(key, value) VALUES ('version', '7')
               ON CONFLICT(key) DO NOTHING;
             INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', '2147483648')
               ON CONFLICT(key) DO NOTHING;
@@ -1181,6 +1249,68 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cache_limit, DEFAULT_CACHE_LIMIT_BYTES as i64);
+    }
+
+    #[test]
+    fn migrates_v6_to_sync_record_schema_without_losing_library_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = Connection::open(directory.path().join(DATABASE_FILE)).unwrap();
+        legacy
+            .execute_batch(
+                "
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                INSERT INTO schema_meta(key, value) VALUES ('version', '6');
+                CREATE TABLE opds_sources (
+                  id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+                  credential_ref TEXT, allow_http INTEGER NOT NULL DEFAULT 0,
+                  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE library_items (
+                  id TEXT PRIMARY KEY NOT NULL, source_id TEXT, source_kind TEXT NOT NULL,
+                  title TEXT NOT NULL, authors_json TEXT NOT NULL, cover_url TEXT,
+                  local_path TEXT, acquisition_url TEXT, media_type TEXT, extension TEXT,
+                  size INTEGER, etag TEXT, last_modified TEXT, series TEXT, number TEXT,
+                  volume TEXT, page_count INTEGER, reading_direction TEXT, cover_page INTEGER,
+                  blob_hash TEXT, availability TEXT NOT NULL DEFAULT 'external',
+                  offline_pinned INTEGER NOT NULL DEFAULT 0,
+                  subjects_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL
+                );
+                INSERT INTO library_items(id,source_kind,title,authors_json,updated_at)
+                  VALUES ('managed:old','managed','旧书','[]',1);
+                CREATE TABLE managed_blobs (
+                  hash TEXT PRIMARY KEY NOT NULL, relative_path TEXT NOT NULL UNIQUE,
+                  size INTEGER NOT NULL, created_at INTEGER NOT NULL,last_verified_at INTEGER NOT NULL
+                );
+                CREATE TABLE library_item_aliases (alias_id TEXT PRIMARY KEY NOT NULL,item_id TEXT NOT NULL);
+                CREATE TABLE library_groups (
+                  id TEXT PRIMARY KEY NOT NULL,parent_id TEXT,name TEXT NOT NULL,kind TEXT NOT NULL,
+                  rule_json TEXT,sort_order INTEGER NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE library_group_members (
+                  group_id TEXT NOT NULL,item_id TEXT NOT NULL,created_at INTEGER NOT NULL,
+                  PRIMARY KEY(group_id,item_id)
+                );
+                ",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let migrated = database_for_tests(directory.path()).unwrap();
+        assert_eq!(schema_version(&migrated).unwrap(), 7);
+        assert!(table_has_column(&migrated, "sync_records", "context_json"));
+        assert!(table_has_column(
+            &migrated,
+            "sync_conflicts",
+            "winner_device_id"
+        ));
+        let title: String = migrated
+            .query_row(
+                "SELECT title FROM library_items WHERE id='managed:old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "旧书");
     }
 
     #[test]

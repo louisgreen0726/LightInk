@@ -18,6 +18,7 @@ mod opds;
 mod recents;
 mod remote;
 mod snapshot;
+mod sync;
 mod webdav;
 mod window_chrome;
 
@@ -107,6 +108,11 @@ pub fn run() {
             webdav::sync_test_profile,
             webdav::sync_forget_profile,
             webdav::sync_store_credential,
+            sync::sync_device_id,
+            sync::sync_list_records,
+            sync::sync_write_record,
+            sync::sync_list_conflicts,
+            sync::sync_resolve_conflict,
             archive::archive_open,
             archive::archive_open_nested,
             archive::archive_stage_nested,
