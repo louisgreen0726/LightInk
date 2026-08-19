@@ -203,7 +203,7 @@ describe('exportActiveTabPdf', () => {
   });
 
   it('macOS 原生成功 → 一次保存框直接得 PDF，不触发 printHtml（R1/T6）', async () => {
-    const printPdfNative = vi.fn(async () => undefined);
+    const printPdfNative = vi.fn(async (_html: string, _path: string) => undefined);
     const showPdfSaveDialog = vi.fn(async () => '/Users/me/笔记.pdf');
     const deps = makeDeps({
       printPdfNative,

@@ -30,6 +30,7 @@ import {
   parseAnnotations,
   serializeAnnotations,
   type Annotation,
+  type AnnotationColor,
   type AnnotationKind,
   type Locator,
 } from './annotations.js';
@@ -335,7 +336,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   const initialTheme = loadReaderTheme(typographyStorage());
   applyReaderTheme(root, initialTheme);
   const editorPane = host.closest?.('#lightink-editor-area');
-  if (editorPane !== null && editorPane !== undefined) {
+  if (editorPane instanceof HTMLElement) {
     applyReaderTheme(editorPane, initialTheme);
   }
   host.appendChild(root);
@@ -1032,7 +1033,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     locator: Locator,
     quote: string | undefined,
     note: string | undefined,
-    color?: string,
+    color?: AnnotationColor,
   ): void => {
     annotations = [
       ...annotations,

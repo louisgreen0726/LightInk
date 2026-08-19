@@ -104,8 +104,16 @@ export function resolveReaderFontFamily(fontFamily: string): string {
   return READER_FONT_FAMILY_PRESETS.body;
 }
 
+/** Unsnapped draft accepted from storage, CSS, or tests before `snapFontScale`. */
+export interface ReaderTypographyInput {
+  readonly fontFamily?: string;
+  readonly fontScaleStep?: number;
+  readonly lineHeight?: number;
+  readonly measureRem?: number;
+}
+
 export function normalizeReaderTypography(
-  value: Partial<ReaderTypography> | null | undefined,
+  value: ReaderTypographyInput | null | undefined,
 ): ReaderTypography {
   const fallback = defaultReaderTypography();
   if (value == null) {
@@ -160,7 +168,7 @@ export function loadReaderTypography(
 
 export function saveReaderTypography(
   storage: ReaderTypographyStorage | null | undefined,
-  typography: Partial<ReaderTypography>,
+  typography: ReaderTypographyInput,
 ): ReaderTypography {
   const next = normalizeReaderTypography({
     ...loadReaderTypography(storage),

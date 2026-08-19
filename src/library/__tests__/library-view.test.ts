@@ -4,7 +4,11 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { bindLibraryProgress, saveLibraryProgressAlias } from '../library-progress.js';
+import {
+  bindLibraryProgress,
+  saveLibraryProgressAlias,
+  type LibraryProgressQuery,
+} from '../library-progress.js';
 import { createLibraryView, type LibraryViewDependencies } from '../library-view.js';
 import type { LibraryItem } from '../library-client.js';
 import type { OpdsEntry, OpdsFeed, OpdsSource } from '../opds-client.js';
@@ -174,7 +178,7 @@ describe('LibraryView my-books home', () => {
       coverUrl: 'https://covers.example/novel.jpg',
     });
     const comic = comicItem();
-    const getProgress = vi.fn((item: LibraryItem) =>
+    const getProgress = vi.fn((item: LibraryProgressQuery) =>
       item.id === comic.id
         ? { status: 'in-progress' as const, unit: 'page' as const, index: 12, ratio: 0, percent: 37 }
         : { status: 'not-started' as const },
@@ -314,7 +318,7 @@ describe('LibraryView my-books home', () => {
       localPath: '/books/c.epub',
     });
     const comic = comicItem();
-    const getProgress = vi.fn((item: LibraryItem) => {
+    const getProgress = vi.fn((item: LibraryProgressQuery) => {
       if (item.id === unread.id) return { status: 'not-started' as const };
       if (item.id === comic.id) {
         return { status: 'in-progress' as const, unit: 'page' as const, index: 4, ratio: 0, percent: 20 };
@@ -898,7 +902,9 @@ describe('LibraryView manage and catalog', () => {
     await openCatalog(host);
     expect(host.textContent).toContain('远程漫画');
     expect(host.querySelector('[data-item-id="item-1"]')?.textContent).not.toContain('已读');
-    expect(host.querySelector('[data-item-id="item-1"]')?.dataset.progressStatus).toBeUndefined();
+    expect(
+      host.querySelector<HTMLElement>('[data-item-id="item-1"]')?.dataset.progressStatus,
+    ).toBeUndefined();
     view.destroy();
   });
 });

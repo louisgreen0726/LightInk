@@ -1553,14 +1553,15 @@ export function createLibraryView(
   renderSourceForm();
   retranslate();
 
-  function hide(options?: LibraryHideOptions): void {
+  function hide(options?: LibraryHideOptions | Event): void {
     requestGeneration += 1;
     for (const controller of activeOperations) controller.abort();
     activeOperations.clear();
     root.hidden = true;
-    if (options?.notifyVisibility !== false) {
-      deps.onVisibilityChange?.(false);
+    if (!(options instanceof Event) && options?.notifyVisibility === false) {
+      return;
     }
+    deps.onVisibilityChange?.(false);
   }
 
   return {

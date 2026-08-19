@@ -245,7 +245,7 @@ describe('createWorkspaceMode', () => {
       getItem: vi.fn(() => 'editor'),
       setItem: vi.fn(),
     };
-    const original = (globalThis as { localStorage?: typeof storage }).localStorage;
+    const original = (globalThis as unknown as { localStorage?: typeof storage }).localStorage;
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       value: storage,
@@ -261,7 +261,7 @@ describe('createWorkspaceMode', () => {
       expect(storage.getItem).not.toHaveBeenCalled();
     } finally {
       if (original === undefined) {
-        delete (globalThis as { localStorage?: typeof storage }).localStorage;
+        delete (globalThis as unknown as { localStorage?: typeof storage }).localStorage;
       } else {
         Object.defineProperty(globalThis, 'localStorage', {
           configurable: true,

@@ -4,5 +4,5 @@
  * 只声明测试用到的单个函数签名。
  */
 declare module 'node:fs' {
-  export function readFileSync(path: URL, encoding: 'utf-8'): string;
+  export function readFileSync(path: string | URL, encoding: 'utf-8'): string;
 }

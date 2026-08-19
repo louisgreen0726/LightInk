@@ -12,7 +12,7 @@ import type { OutlineItem } from '../../outline/outline-model.js';
 import { outlineFromPdf } from '../outline.js';
 import { ParseError } from './types.js';
 import { enforcePageCount } from './page-limits.js';
-import { findPdfMatches } from '../search-panel.js';
+import { findPdfMatches, type PdfSearchMatch } from '../search-panel.js';
 import { bindTextLayerSelection } from '../text-layer-selection.js';
 import {
   isReaderLoadCancelled,
@@ -190,12 +190,7 @@ export interface PdfRenderHandle {
   destroy(): Promise<void>;
 }
 
-/** PDF 搜索命中：偏移与文本层 anchor 同一坐标系（该页拼接文本）。 */
-export interface PdfSearchMatch {
-  page: number;
-  start: number;
-  end: number;
-}
+export type { PdfSearchMatch };
 
 /** 当前设备像素比（WebView2 下读 window.devicePixelRatio）。 */
 function devicePixelRatio(): number {
