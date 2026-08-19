@@ -431,6 +431,8 @@ function itemFromEntry(sourceId: string, entry: OpdsEntry): DisplayItem {
       title: entry.title,
       authors: entry.authors,
       coverUrl: entry.coverUrl,
+      subjects: entry.subjects,
+      series: entry.series,
       acquisitionUrl: primary?.href,
       mediaType: primary?.mediaType,
       extension: primary?.extension,
@@ -1475,7 +1477,9 @@ export function createLibraryView(
     text.append(title, meta);
     appendImportedProgress(row, text, display, { continueCue: false });
     row.append(cover, text);
-    row.addEventListener('click', () => void selectItem(display));
+    row.addEventListener('click', () =>
+      display.entry?.kind === 'navigation' ? void openSelected(display) : void selectItem(display),
+    );
     row.addEventListener('dblclick', () => void openSelected(display));
     return row;
   }
@@ -1580,6 +1584,11 @@ export function createLibraryView(
 
   async function openSelected(display = selected): Promise<void> {
     if (display === null) return;
+    if (display.entry?.kind === 'navigation' && display.entry.navigationUrl !== undefined) {
+      trail.push({ title: display.item.title, url: display.entry.navigationUrl });
+      await loadFeed(display.entry.navigationUrl, false);
+      return;
+    }
     const request = requestFor(display);
     if (!isLocalItem(display.item) && request.acquisition === undefined) {
       deps.notify(labels().noAcquisition, 'warning');
@@ -1677,7 +1686,10 @@ export function createLibraryView(
       selectedProgress?.status === 'in-progress' ? labels().continueReading : labels().open,
       'lightink-library-primary',
     );
-    open.disabled = !isLocalItem(selected.item) && selected.links.length === 0;
+    open.disabled =
+      selected.entry?.kind === 'navigation'
+        ? selected.entry.navigationUrl === undefined
+        : !isLocalItem(selected.item) && selected.links.length === 0;
     open.addEventListener('click', () => void openSelected());
     actions.appendChild(open);
     if (!isLocalItem(selected.item)) {
