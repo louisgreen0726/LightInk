@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 /**
- * setTabActive 回归：侧栏 portal 到共享 chrome（#lightink-main），不随标签宿主
- * display:none 一起隐藏；切走标签必须显式隐藏，切回按原偏好恢复。
+ * setTabActive 回归：侧栏挂在阅读根上，切走标签必须显式隐藏，切回按原偏好恢复。
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -17,7 +16,7 @@ describe('setTabActive 覆盖层同步', () => {
     const host = document.getElementById('host')!;
     const view = createReaderView(host, { t: (key) => key });
 
-    view.toggleSidebar(); // 打开侧栏（portal 到 #lightink-main）
+    view.toggleSidebar();
     const sidebar = document.querySelector<HTMLElement>('.lightink-reader-sidebar');
     expect(sidebar).not.toBeNull();
     expect(sidebar!.hidden).toBe(false);

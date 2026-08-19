@@ -238,6 +238,74 @@ describe('LibraryView my-books home', () => {
     view.destroy();
   });
 
+  it('renders a local data-URL cover on the wall', async () => {
+    const cover = localItem({
+      title: '河山记',
+      coverUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    const base = dependencies();
+    const deps = dependencies({
+      library: { ...base.library, listItems: vi.fn(async () => [cover]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+    expect(itemRow(host, cover.id).querySelector('img')?.src).toContain('data:image/png');
+    view.destroy();
+  });
+
+  it('places the workspace travel control in the my-books header with 管理', async () => {
+    const travel = document.createElement('button');
+    travel.type = 'button';
+    travel.id = 'lightink-enter-editor';
+    travel.className = 'lightink-workspace-travel';
+    travel.textContent = '编辑';
+    const deps = dependencies({ workspaceTravel: travel });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    const toolbar = host.querySelector('.lightink-library-toolbar');
+    expect(toolbar?.contains(travel)).toBe(true);
+    expect(travel.classList.contains('lightink-library-edit')).toBe(true);
+    expect(isShown(travel)).toBe(true);
+    expect(isShown(host.querySelector('.lightink-library-manage-entry'))).toBe(true);
+
+    await openManage(host);
+    expect(libraryPage(host)).toBe('manage');
+    expect(isShown(travel)).toBe(false);
+    expect(
+      Array.from(host.querySelectorAll('.lightink-library-toolbar button')).some(
+        (button) => button.textContent === '编辑' && isShown(button),
+      ),
+    ).toBe(false);
+    view.destroy();
+    expect(travel.isConnected).toBe(false);
+  });
+
+  it('renders imported items when title or comic metadata is null', async () => {
+    const broken = {
+      ...localItem({ id: 'local:/books/null.epub' }),
+      title: null,
+      authors: null,
+      series: null,
+    } as unknown as LibraryItem;
+    const base = dependencies();
+    const deps = dependencies({
+      library: { ...base.library, listItems: vi.fn(async () => [broken]) },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    expect(itemRow(host, broken.id)).toBeTruthy();
+    expect(host.querySelector('.lightink-library-status')?.textContent).toBe('');
+    view.destroy();
+  });
+
   it('filters the cover wall with 全部 / 在读 / 未读 / 文字书 / 漫画', async () => {
     const unread = localItem();
     const novel = localItem({
@@ -450,6 +518,26 @@ describe('LibraryView my-books home', () => {
 });
 
 describe('LibraryView manage and catalog', () => {
+  it('hides the library search on manage and keeps the submit control out of the chrome', async () => {
+    const deps = dependencies();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createLibraryView(host, deps);
+    await view.show();
+
+    await openManage(host);
+    const search = host.querySelector<HTMLFormElement>('.lightink-library-search');
+    const submit = host.querySelector<HTMLButtonElement>('.lightink-library-search-submit');
+    expect(search?.hidden).toBe(true);
+    expect(isShown(search)).toBe(false);
+    expect(submit?.type).toBe('submit');
+    expect(host.querySelector('.lightink-library-source-row')?.textContent).toContain('测试书库');
+    expect(host.querySelector('.lightink-library-source-url')?.textContent).toContain(
+      'https://books.example/opds',
+    );
+    view.destroy();
+  });
+
   it('imports a local book from manage and returns it to the cover wall', async () => {
     const imported = localItem({
       id: 'local:/books/new.epub',
@@ -625,6 +713,7 @@ describe('LibraryView manage and catalog', () => {
     expect(libraryPage(host)).toBe('catalog');
     expect(deps.opds.browse).toHaveBeenCalledWith('source-1', undefined);
     expect(host.textContent).toContain('远程漫画');
+    expect(host.querySelector('.lightink-library-item--row')).not.toBeNull();
 
     shownButtonWithText(host, '下一页').click();
     await settle();
@@ -696,6 +785,9 @@ describe('LibraryView manage and catalog', () => {
     expect(host.textContent).toContain('远程漫画');
 
     const css = readFileSync(resolve(process.cwd(), 'src/library/library.css'), 'utf-8');
+    expect(css).not.toMatch(/--lightink-reader-/);
+    expect(css).not.toMatch(/--lightink-measure/);
+    expect(css).not.toMatch(/--lightink-page-pad/);
     const [baseCss, narrowCss = ''] = css.split('@media (max-width: 760px)');
     expect(baseCss).toMatch(
       /\[data-library-page='catalog'\] \.lightink-library-body[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/,

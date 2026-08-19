@@ -20,6 +20,10 @@ import {
   type ReaderFlowLayout,
 } from '../reader/reader-layout.js';
 import {
+  applyReaderTheme,
+  loadReaderTheme,
+} from '../reader/reader-theme.js';
+import {
   applyReaderTypography,
   defaultReaderTypography,
   loadReaderTypography,
@@ -75,11 +79,13 @@ function applyReaderShellChrome(
   target: HTMLElement,
   layout: ReaderFlowLayout,
   prefs: ReaderTypography,
+  storage?: StorageLike | null,
 ): void {
   applyReaderLayout(target, layout);
   target.dataset.readerFlowLayout = layout;
   if (canSetCssVars(target)) {
     applyReaderTypography(target, prefs);
+    applyReaderTheme(target, loadReaderTheme(storage));
   }
 }
 
@@ -295,6 +301,8 @@ export interface AppShell {
   setReaderTypography(patch: Partial<ReaderTypography>): void;
   /** Stamp workspace mode/surface on the shell root (dataset + class). */
   applyWorkspace(snapshot: Pick<WorkspaceSnapshot, 'mode' | 'surface'>): void;
+  /** Shelf header travel control; library view relocates this into its toolbar. */
+  readonly enterEditorButton: HTMLButtonElement;
   /** 按当前标签状态重绘标签栏。 */
   renderTabBar(
     tabs: readonly ShellTabInfo[],
@@ -945,10 +953,8 @@ export function createAppShell(
   const applyReaderChrome = (): void => {
     const layout = currentReaderLayout();
     const prefs = currentReaderTypography();
-    applyReaderShellChrome(root, layout, prefs);
-    applyReaderShellChrome(editorArea, layout, prefs);
     for (const reader of collectReaderHosts(editorArea)) {
-      applyReaderShellChrome(reader, layout, prefs);
+      applyReaderShellChrome(reader, layout, prefs, storage);
     }
     const workspace =
       actions.getWorkspaceMode?.() ?? actions.getWorkspaceSnapshot?.()?.mode ?? 'editor';
@@ -1077,7 +1083,11 @@ export function createAppShell(
     const editorLabel = workspaceTravelLabel('editor', locale);
     const readerHomeLabel = workspaceTravelLabel('readerHome', locale);
     enterEditorBtn.textContent = editorLabel;
+    enterEditorBtn.title = editorLabel;
+    enterEditorBtn.setAttribute('aria-label', editorLabel);
     enterReaderHomeBtn.textContent = readerHomeLabel;
+    enterReaderHomeBtn.title = readerHomeLabel;
+    enterReaderHomeBtn.setAttribute('aria-label', readerHomeLabel);
   }
   syncTravelLabels();
 
@@ -1418,6 +1428,7 @@ export function createAppShell(
       menuActions.onSetReaderTypography?.(patch);
     },
     applyWorkspace,
+    enterEditorButton: enterEditorBtn,
     renderTabBar,
     destroy: () => {
       if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {

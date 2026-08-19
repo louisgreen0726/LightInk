@@ -171,6 +171,7 @@ export function isFormControlTarget(target: unknown): boolean {
 export function isModalTarget(target: unknown): boolean {
   let current = target as {
     getAttribute?: (name: string) => string | null;
+    classList?: { contains?: (name: string) => boolean };
     parentElement?: unknown;
     parentNode?: unknown;
   } | null;
@@ -178,6 +179,12 @@ export function isModalTarget(target: unknown): boolean {
   while (current !== null && typeof current === 'object' && !visited.has(current)) {
     visited.add(current);
     if (current.getAttribute?.('aria-modal') === 'true') return true;
+    if (
+      current.classList?.contains?.('lightink-reader-chrome-panel') === true ||
+      current.classList?.contains?.('lightink-reader-sidebar') === true
+    ) {
+      return true;
+    }
     current = (current.parentElement ?? current.parentNode ?? null) as typeof current;
   }
   return false;

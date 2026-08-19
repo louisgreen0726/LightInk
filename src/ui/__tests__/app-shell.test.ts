@@ -458,6 +458,9 @@ describe('createAppShell immersive chrome', () => {
     expect(fakeRoot.querySelector('#lightink-tabs-host')?.hidden).toBe(false);
     expect(fakeRoot.querySelector('#lightink-reader-shell')?.hidden).toBe(true);
     expect(readBtn?.textContent).toBe('阅读/书架');
+    expect(readBtn?.className).toContain('lightink-workspace-travel');
+    expect(fakeRoot.querySelector('#lightink-toolbar')?.contains(readBtn)).toBe(true);
+    expect(shell.enterEditorButton.id).toBe('lightink-enter-editor');
     readBtn?.click();
     expect(calls).toEqual(['editor', 'shelf']);
   });

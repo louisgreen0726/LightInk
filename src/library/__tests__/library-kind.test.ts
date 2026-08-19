@@ -62,6 +62,14 @@ describe('classifyLibraryKind', () => {
         volume: '',
       }),
     ).toBe('text');
+    expect(
+      classifyLibraryKind({
+        extension: 'epub',
+        series: null as unknown as string,
+        number: null as unknown as string,
+        volume: null as unknown as string,
+      }),
+    ).toBe('text');
   });
 
   it('lets comic archive markers win over a text-like extension leftover', () => {

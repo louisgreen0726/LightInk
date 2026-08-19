@@ -133,6 +133,8 @@ describe('wheelPagingShouldIgnoreTarget', () => {
     expect(wheelPagingShouldIgnoreTarget({ isContentEditable: true })).toBe(false);
     expect(wheelPagingShouldIgnoreTarget({ tagName: 'DIV' })).toBe(false);
     expect(wheelPagingShouldIgnoreTarget(null)).toBe(false);
+    const toc = { classList: { contains: (name: string) => name === 'lightink-reader-chrome-panel' } };
+    expect(wheelPagingShouldIgnoreTarget({ parentElement: toc })).toBe(true);
   });
 });
 

@@ -69,6 +69,8 @@ export interface ReaderChromeDeps {
   isSidebarVisible?: () => boolean;
   isSelectionToolbarVisible?: () => boolean;
   hideSelectionToolbar?: () => void;
+  /** When true, an already-revealed bar does not auto-hide (e.g. scroll at top). */
+  stayRevealed?: () => boolean;
 }
 
 export interface ReaderChrome {
@@ -78,6 +80,8 @@ export interface ReaderChrome {
   reveal(): void;
   dismiss(): void;
   toggle(): void;
+  /** Re-apply stay-revealed (scroll at top) vs idle auto-hide. */
+  syncStayRevealed(): void;
   /**
    * One-step back. Never calls `returnToShelf`. True when a layer closed;
    * false when nothing is open (window leftover Escape may 合书).
@@ -112,6 +116,25 @@ export function isReaderChromeEdge(
   return y <= band || y >= bounds.height - band;
 }
 
+/**
+ * Visible slice of the reading host. Scroll mode grows the host taller than
+ * the window; edge-reveal must use the on-screen top/bottom, not the
+ * document top that has already scrolled away.
+ */
+export function visibleReaderChromeBounds(host: HTMLElement | null): ReaderChromeBounds {
+  if (host === null || typeof host.getBoundingClientRect !== 'function') {
+    return { top: 0, height: 0 };
+  }
+  const rect = host.getBoundingClientRect();
+  const viewportBottom =
+    typeof window !== 'undefined' && Number.isFinite(window.innerHeight)
+      ? window.innerHeight
+      : rect.bottom;
+  const top = Math.max(0, rect.top);
+  const bottom = Math.min(viewportBottom, rect.bottom);
+  return { top, height: Math.max(0, bottom - top) };
+}
+
 function isElementHost(value: HTMLElement | ReaderChromeDeps): value is HTMLElement {
   return typeof (value as HTMLElement).appendChild === 'function';
 }
@@ -131,14 +154,15 @@ function defaultCancel(id: number): void {
 }
 
 function applyOverlayLayout(element: HTMLElement): void {
-  // Out of flow so reveal/dismiss cannot change the reading surface height.
-  element.style.position = 'absolute';
+  // Sticky to the visible scrollport so the bar stays on screen in scroll
+  // mode. Height 0 keeps it out of flow (reveal cannot shift the page).
+  element.style.position = 'sticky';
   element.style.left = '0';
   element.style.right = '0';
   element.style.top = '0';
-  element.style.bottom = '0';
+  element.style.bottom = 'auto';
   element.style.width = 'auto';
-  element.style.height = 'auto';
+  element.style.height = '0';
   element.style.margin = '0';
   element.style.padding = '0';
   element.style.border = '0';
@@ -152,30 +176,12 @@ function applyBarLayout(bar: HTMLElement): void {
   bar.style.top = '0';
   bar.style.left = '0';
   bar.style.right = '0';
-  bar.style.display = 'flex';
-  bar.style.flexWrap = 'wrap';
-  bar.style.alignItems = 'center';
-  bar.style.gap = '0.5rem';
-  bar.style.padding = '0.45rem 0.75rem';
   bar.style.pointerEvents = 'auto';
   bar.style.boxSizing = 'border-box';
-  bar.style.background = 'color-mix(in srgb, var(--lightink-bg-elevated, #fff) 92%, transparent)';
-  bar.style.color = 'var(--lightink-fg, inherit)';
-  bar.style.borderBottom = '1px solid var(--lightink-border, rgba(0,0,0,0.12))';
-  bar.style.boxShadow = 'var(--lightink-shadow, 0 8px 24px rgba(0,0,0,0.12))';
-  bar.style.font = 'inherit';
-  bar.style.fontSize = 'var(--lightink-font-size-ui, 0.8rem)';
 }
 
 function applyButtonLayout(button: HTMLButtonElement): void {
   button.style.pointerEvents = 'auto';
-  button.style.padding = '0.25rem 0.65rem';
-  button.style.border = '1px solid transparent';
-  button.style.borderRadius = '4px';
-  button.style.background = 'transparent';
-  button.style.color = 'inherit';
-  button.style.font = 'inherit';
-  button.style.cursor = 'pointer';
 }
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
@@ -202,11 +208,7 @@ function resolveBounds(host: HTMLElement | null, fallback?: ReaderChromeBounds):
   if (fallback !== undefined) {
     return fallback;
   }
-  if (host !== null && typeof host.getBoundingClientRect === 'function') {
-    const rect = host.getBoundingClientRect();
-    return { top: rect.top, height: rect.height };
-  }
-  return { top: 0, height: 0 };
+  return visibleReaderChromeBounds(host);
 }
 
 export function createReaderChrome(
@@ -241,6 +243,10 @@ export function createReaderChrome(
     button.className = `lightink-reader-chrome-action lightink-reader-chrome-action--${action}`;
     button.dataset.readerChromeAction = action;
     button.textContent = label;
+    if (action === 'toc' || action === 'typography') {
+      button.setAttribute('aria-haspopup', 'dialog');
+      button.setAttribute('aria-expanded', 'false');
+    }
     applyButtonLayout(button);
     return button;
   };
@@ -259,6 +265,7 @@ export function createReaderChrome(
   let destroyed = false;
 
   const overlayOpen = (): boolean => deps.isOverlayOpen?.() === true;
+  const stayRevealed = (): boolean => deps.stayRevealed?.() === true;
 
   const clearHideTimer = (): void => {
     if (hideTimer !== null) {
@@ -281,13 +288,13 @@ export function createReaderChrome(
   };
 
   const scheduleHide = (): void => {
-    if (destroyed || overlayOpen() || pointerInsideBar || !revealed) {
+    if (destroyed || overlayOpen() || pointerInsideBar || !revealed || stayRevealed()) {
       return;
     }
     clearHideTimer();
     hideTimer = schedule(() => {
       hideTimer = null;
-      if (destroyed || overlayOpen() || pointerInsideBar) {
+      if (destroyed || overlayOpen() || pointerInsideBar || stayRevealed()) {
         return;
       }
       revealed = false;
@@ -350,10 +357,21 @@ export function createReaderChrome(
     if (target instanceof Node && element.contains(target)) {
       return;
     }
+    if (
+      target instanceof Element &&
+      typeof target.closest === 'function' &&
+      target.closest('.lightink-reader-chrome-panel')
+    ) {
+      return;
+    }
     if (isInteractiveTarget(target) || hasNonCollapsedSelection()) {
       return;
     }
     if (revealed) {
+      if (overlayOpen()) {
+        deps.dismissOverlay?.();
+        return;
+      }
       dismiss();
       return;
     }
@@ -414,7 +432,11 @@ export function createReaderChrome(
   const attach = (host: HTMLElement): void => {
     detach();
     attachedHost = host;
-    if (element.parentNode !== host) {
+    if (typeof host.insertBefore === 'function') {
+      if (host.firstChild !== element) {
+        host.insertBefore(element, host.firstChild);
+      }
+    } else if (element.parentNode !== host) {
       host.appendChild(element);
     }
     host.addEventListener('click', onHostClick);
@@ -465,6 +487,13 @@ export function createReaderChrome(
     bar,
     isRevealed: () => revealed,
     reveal,
+    syncStayRevealed: () => {
+      if (stayRevealed()) {
+        reveal();
+        return;
+      }
+      scheduleHide();
+    },
     dismiss,
     toggle() {
       if (revealed) {

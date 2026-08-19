@@ -1,5 +1,6 @@
 import type { AcquisitionLink, LibraryClient, LibraryItem } from './library-client.js';
 import { classifyLibraryKind } from './library-kind.js';
+import { isShelfCoverUrl } from './local-book-meta.js';
 import type {
   LibraryProgress,
   LibraryProgressQuery,
@@ -38,6 +39,7 @@ interface Labels {
   searchPlaceholder: string;
   clear: string;
   empty: string;
+  emptySources: string;
   loading: string;
   retry: string;
   open: string;
@@ -105,6 +107,7 @@ const LABELS: Record<Locale, Labels> = {
     searchPlaceholder: 'Search this library',
     clear: 'Clear',
     empty: 'No books found',
+    emptySources: 'No library sources yet. Use + to add one.',
     loading: 'Loading…',
     retry: 'Retry',
     open: 'Open',
@@ -170,6 +173,7 @@ const LABELS: Record<Locale, Labels> = {
     searchPlaceholder: '搜索当前书库',
     clear: '清除',
     empty: '暂无作品',
+    emptySources: '还没有书库源，点 + 添加。',
     loading: '正在加载…',
     retry: '重试',
     open: '打开阅读',
@@ -248,6 +252,10 @@ export interface LibraryViewDependencies {
     item: LibraryProgressQuery,
     options?: ProjectLibraryProgressOptions,
   ) => LibraryProgress | null;
+  /** Workspace travel control owned by the app shell (「编辑」). */
+  readonly workspaceTravel?: HTMLElement;
+  /** Fill missing local EPUB/CBZ title and cover after import or cold start. */
+  readonly enrichLocalItem?: (item: LibraryItem) => Promise<LibraryItem>;
 }
 
 export interface LibraryHideOptions {
@@ -321,9 +329,12 @@ function itemFromEntry(sourceId: string, entry: OpdsEntry): DisplayItem {
 }
 
 function safeCoverUrl(item: LibraryItem, sources: readonly OpdsSource[]): string | undefined {
-  if (item.coverUrl === undefined) return undefined;
+  if (!isShelfCoverUrl(item.coverUrl)) return undefined;
+  if (item.coverUrl!.startsWith('data:image/') || item.coverUrl!.startsWith('blob:')) {
+    return item.coverUrl;
+  }
   try {
-    const url = new URL(item.coverUrl);
+    const url = new URL(item.coverUrl!);
     if (url.protocol === 'https:') return url.href;
     const source = sources.find((candidate) => candidate.id === item.sourceId);
     return url.protocol === 'http:' && source?.allowHttp === true ? url.href : undefined;
@@ -349,14 +360,27 @@ function displayLocation(progress: Extract<LibraryProgress, { status: 'in-progre
   return { kind: 'page', current: progress.index < 1 ? 1 : progress.index };
 }
 
+function isTransportError(text: string): boolean {
+  return /error sending request|failed to fetch|network error|connection refused|timed out|dns|reading 'invoke'|cannot read properties of undefined/i.test(
+    text,
+  );
+}
+
 function errorText(error: unknown, fallback: string): string {
+  let message = '';
   if (error !== null && typeof error === 'object') {
     const value = error as Record<string, unknown>;
     if (typeof value['message'] === 'string' && value['message'].trim() !== '') {
-      return value['message'];
+      message = value['message'];
     }
   }
-  return error instanceof Error && error.message !== '' ? error.message : fallback;
+  if (message === '' && error instanceof Error && error.message !== '') {
+    message = error.message;
+  }
+  if (message === '' || isTransportError(message)) {
+    return fallback;
+  }
+  return message;
 }
 
 function button(doc: Document, text: string, className = ''): HTMLButtonElement {
@@ -365,6 +389,14 @@ function button(doc: Document, text: string, className = ''): HTMLButtonElement 
   element.className = className;
   element.textContent = text;
   return element;
+}
+
+function itemTitle(item: LibraryItem): string {
+  return typeof item.title === 'string' ? item.title : '';
+}
+
+function itemAuthors(item: LibraryItem): readonly string[] {
+  return Array.isArray(item.authors) ? item.authors : [];
 }
 
 const SHELF_GROUPS: readonly ShelfGroup[] = ['all', 'in-progress', 'unread', 'text', 'comic'];
@@ -403,8 +435,12 @@ export function createLibraryView(
   searchForm.className = 'lightink-library-search';
   searchForm.setAttribute('role', 'search');
   const searchInput = doc.createElement('input');
-  searchInput.type = 'search';
-  const searchButton = button(doc, '', 'lightink-library-primary');
+  searchInput.type = 'text';
+  searchInput.setAttribute('role', 'searchbox');
+  const searchButton = button(doc, '', 'lightink-library-search-submit');
+  searchButton.type = 'submit';
+  searchButton.tabIndex = -1;
+  searchButton.setAttribute('aria-hidden', 'true');
   searchForm.append(searchInput, searchButton);
   const toolbar = doc.createElement('div');
   toolbar.className = 'lightink-library-toolbar';
@@ -611,6 +647,24 @@ export function createLibraryView(
     }
   }
 
+  function parkWorkspaceTravel(): void {
+    const travel = deps.workspaceTravel;
+    if (travel === undefined) return;
+    travel.classList.add('lightink-library-edit');
+    travel.hidden = true;
+    if (travel.parentElement !== root) {
+      root.appendChild(travel);
+    }
+  }
+
+  function workspaceTravelSlot(): HTMLElement[] {
+    const travel = deps.workspaceTravel;
+    if (travel === undefined) return [];
+    travel.classList.add('lightink-library-edit');
+    travel.hidden = false;
+    return [travel];
+  }
+
   function syncPageChrome(): void {
     root.dataset.libraryPage = libraryPage;
     root.classList.toggle('lightink-library--my-books', libraryPage === 'my-books');
@@ -619,7 +673,7 @@ export function createLibraryView(
     searchForm.hidden = libraryPage === 'manage';
     if (libraryPage === 'my-books') {
       heading.textContent = labels().myBooks;
-      toolbar.replaceChildren(manageButton);
+      toolbar.replaceChildren(manageButton, ...workspaceTravelSlot());
       itemList.classList.add('lightink-library-cover-wall');
       content.replaceChildren(continueHost, status, itemList);
       body.replaceChildren(groupPane, content);
@@ -627,12 +681,14 @@ export function createLibraryView(
       selected = null;
     } else if (libraryPage === 'manage') {
       heading.textContent = labels().manage;
-      toolbar.replaceChildren(importButton, clearCacheButton, backButton);
+      parkWorkspaceTravel();
+      toolbar.replaceChildren(importButton, clearCacheButton, cacheSummary, backButton);
       itemList.classList.remove('lightink-library-cover-wall');
-      content.replaceChildren(cacheSummary, status);
+      content.replaceChildren(status);
       body.replaceChildren(sourcePane, content);
     } else {
       heading.textContent = selectedSource()?.title ?? labels().library;
+      parkWorkspaceTravel();
       toolbar.replaceChildren(backButton);
       itemList.classList.remove('lightink-library-cover-wall');
       workArea.replaceChildren(itemList, detail);
@@ -649,7 +705,11 @@ export function createLibraryView(
       const row = button(doc, groupLabel(labels(), group), 'lightink-library-group');
       row.dataset.shelfGroup = group;
       row.classList.toggle('is-active', selectedGroup === group);
-      row.setAttribute('aria-current', selectedGroup === group ? 'true' : 'false');
+      if (selectedGroup === group) {
+        row.setAttribute('aria-current', 'true');
+      } else {
+        row.removeAttribute('aria-current');
+      }
       row.addEventListener('click', () => {
         selectedGroup = group;
         renderGroups();
@@ -662,24 +722,39 @@ export function createLibraryView(
 
   function renderSources(): void {
     sourceList.replaceChildren();
+    if (sources.length === 0) {
+      const empty = doc.createElement('p');
+      empty.className = 'lightink-library-source-empty';
+      empty.textContent = labels().emptySources;
+      sourceList.appendChild(empty);
+      return;
+    }
     for (const source of sources) {
       const row = doc.createElement('div');
       row.className = 'lightink-library-source-row';
+      const stack = doc.createElement('div');
+      stack.className = 'lightink-library-source-stack';
       const choose = button(doc, source.title, 'lightink-library-source');
       choose.dataset.sourceId = source.id;
       choose.title = source.url;
       choose.classList.toggle('is-active', selectedSourceId === source.id);
-      choose.setAttribute('aria-current', selectedSourceId === source.id ? 'page' : 'false');
+      if (selectedSourceId === source.id) {
+        choose.setAttribute('aria-current', 'page');
+      }
       choose.addEventListener('click', () => void openCatalog(source.id));
-      const edit = button(doc, '✎', 'lightink-library-icon-button');
+      const url = doc.createElement('span');
+      url.className = 'lightink-library-source-url';
+      url.textContent = source.url;
+      stack.append(choose, url);
+      const edit = button(doc, '', 'lightink-library-icon-button lightink-library-source-edit');
       edit.title = labels().editSource;
       edit.setAttribute('aria-label', `${labels().editSource}: ${source.title}`);
       edit.addEventListener('click', () => openSourceForm(source));
-      const remove = button(doc, '×', 'lightink-library-icon-button');
+      const remove = button(doc, '', 'lightink-library-icon-button lightink-library-source-remove');
       remove.title = labels().deleteSource;
       remove.setAttribute('aria-label', `${labels().deleteSource}: ${source.title}`);
       remove.addEventListener('click', () => void removeSource(source));
-      row.append(choose, edit, remove);
+      row.append(stack, edit, remove);
       sourceList.appendChild(row);
     }
   }
@@ -687,23 +762,26 @@ export function createLibraryView(
   function renderBreadcrumbs(): void {
     breadcrumbs.replaceChildren();
     const source = selectedSource();
-    const rootCrumb = button(doc, source?.title ?? labels().allBooks);
-    rootCrumb.addEventListener('click', () => {
-      if (source !== undefined) void openCatalog(source.id);
-    });
-    breadcrumbs.appendChild(rootCrumb);
-    for (const [index, crumb] of trail.entries()) {
-      const separator = doc.createElement('span');
-      separator.textContent = '/';
-      const crumbButton = button(doc, crumb.title);
-      crumbButton.addEventListener('click', () => {
-        trail.splice(index + 1);
-        void loadFeed(crumb.url, false);
+    if (trail.length > 0) {
+      const rootCrumb = button(doc, source?.title ?? labels().allBooks);
+      rootCrumb.addEventListener('click', () => {
+        if (source !== undefined) void openCatalog(source.id);
       });
-      breadcrumbs.append(separator, crumbButton);
+      breadcrumbs.appendChild(rootCrumb);
+      for (const [index, crumb] of trail.entries()) {
+        const separator = doc.createElement('span');
+        separator.textContent = '/';
+        const crumbButton = button(doc, crumb.title);
+        crumbButton.addEventListener('click', () => {
+          trail.splice(index + 1);
+          void loadFeed(crumb.url, false);
+        });
+        breadcrumbs.append(separator, crumbButton);
+      }
     }
     previousButton.disabled = feed?.previousUrl === undefined;
     nextButton.disabled = feed?.nextUrl === undefined;
+    pager.hidden = previousButton.disabled && nextButton.disabled;
   }
 
   function appendCover(cover: HTMLElement, display: DisplayItem): void {
@@ -716,7 +794,8 @@ export function createLibraryView(
       image.referrerPolicy = 'no-referrer';
       cover.appendChild(image);
     } else {
-      cover.textContent = display.item.title.slice(0, 1).toUpperCase();
+      const initial = itemTitle(display.item).slice(0, 1);
+      cover.textContent = initial === '' ? '?' : initial.toUpperCase();
     }
   }
 
@@ -739,19 +818,6 @@ export function createLibraryView(
       cue.textContent = labels().continueReading;
       text.appendChild(cue);
     }
-    if (shelfProgress.status === 'in-progress' && isDisplayablePercent(shelfProgress.percent)) {
-      const bar = doc.createElement('span');
-      bar.className = 'lightink-library-item-progress-bar';
-      bar.setAttribute('aria-hidden', 'true');
-      const fill = doc.createElement('span');
-      fill.className = 'lightink-library-item-progress-fill';
-      fill.style.setProperty(
-        '--library-progress',
-        `${Math.min(100, Math.round(shelfProgress.percent))}%`,
-      );
-      bar.appendChild(fill);
-      row.appendChild(bar);
-    }
   }
 
   function renderCoverCard(display: DisplayItem): HTMLButtonElement {
@@ -766,24 +832,24 @@ export function createLibraryView(
     const text = doc.createElement('span');
     text.className = 'lightink-library-item-text';
     const title = doc.createElement('strong');
-    title.textContent = display.item.title;
+    title.textContent = itemTitle(display.item);
     text.append(title);
-    const metaParts = [display.item.authors.join(', '), display.item.series].filter(
-      (part): part is string => part !== undefined && part !== '',
+    const metaParts = [itemAuthors(display.item).join(', '), display.item.series].filter(
+      (part): part is string => typeof part === 'string' && part !== '',
     );
     if (metaParts.length > 0) {
       const meta = doc.createElement('span');
       meta.textContent = metaParts.join(' · ');
       text.appendChild(meta);
     }
-    appendImportedProgress(row, text, display, { continueCue: true });
+    appendImportedProgress(row, text, display, { continueCue: false });
     row.append(cover, text);
     row.addEventListener('click', () => void openSelected(display));
     return row;
   }
 
   function renderCatalogRow(display: DisplayItem): HTMLButtonElement {
-    const row = button(doc, '', 'lightink-library-item');
+    const row = button(doc, '', 'lightink-library-item lightink-library-item--row');
     row.dataset.itemId = display.item.id;
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', selected?.item.id === display.item.id ? 'true' : 'false');
@@ -794,15 +860,15 @@ export function createLibraryView(
     const text = doc.createElement('span');
     text.className = 'lightink-library-item-text';
     const title = doc.createElement('strong');
-    title.textContent = display.item.title;
+    title.textContent = itemTitle(display.item);
     const meta = doc.createElement('span');
     meta.textContent = [
-      display.item.authors.join(', '),
+      itemAuthors(display.item).join(', '),
       display.item.series,
       display.item.extension?.toUpperCase(),
       display.item.size === undefined ? undefined : bytesLabel(display.item.size),
     ]
-      .filter((part): part is string => part !== undefined && part !== '')
+      .filter((part): part is string => typeof part === 'string' && part !== '')
       .join(' · ');
     text.append(title, meta);
     appendImportedProgress(row, text, display, { continueCue: false });
@@ -830,7 +896,7 @@ export function createLibraryView(
     const text = doc.createElement('span');
     text.className = 'lightink-library-continue-text';
     const title = doc.createElement('strong');
-    title.textContent = latest.item.title;
+    title.textContent = itemTitle(latest.item);
     text.append(title);
     if (progress !== null) {
       const meta = doc.createElement('span');
@@ -846,6 +912,9 @@ export function createLibraryView(
 
   function renderItems(): void {
     itemList.replaceChildren();
+    if (!status.hidden) {
+      return;
+    }
     const shown = visibleItems();
     if (shown.length === 0) {
       const empty = doc.createElement('div');
@@ -932,10 +1001,10 @@ export function createLibraryView(
     const detailHeading = doc.createElement('h2');
     detailHeading.textContent = labels().details;
     const title = doc.createElement('h3');
-    title.textContent = selected.item.title;
+    title.textContent = itemTitle(selected.item);
     const authors = doc.createElement('p');
     authors.className = 'lightink-library-detail-authors';
-    authors.textContent = selected.item.authors.join(', ');
+    authors.textContent = itemAuthors(selected.item).join(', ');
     detail.append(detailHeading, title, authors);
     const facts: Array<[string, string | undefined]> = [
       [labels().series, selected.item.series],
@@ -1031,6 +1100,37 @@ export function createLibraryView(
     detail.appendChild(actions);
   }
 
+  function needsLocalEnrich(item: LibraryItem): boolean {
+    const extension = (item.extension ?? '').toLowerCase();
+    return (
+      item.sourceKind === 'local' &&
+      item.localPath !== undefined &&
+      !isShelfCoverUrl(item.coverUrl) &&
+      (extension === 'epub' || extension === 'cbz')
+    );
+  }
+
+  async function hydrateLocalCovers(generation: number): Promise<void> {
+    if (deps.enrichLocalItem === undefined) return;
+    for (const display of [...items]) {
+      if (generation !== requestGeneration) return;
+      if (!needsLocalEnrich(display.item)) continue;
+      try {
+        const next = await deps.enrichLocalItem(display.item);
+        if (generation !== requestGeneration) return;
+        const index = items.findIndex((candidate) => candidate.item.id === next.id);
+        if (index >= 0) {
+          items[index] = { ...items[index]!, item: next };
+        }
+      } catch {
+        /* keep the placeholder cover */
+      }
+    }
+    if (generation !== requestGeneration) return;
+    renderContinueBar();
+    renderItems();
+  }
+
   async function loadPersistedItems(): Promise<void> {
     const generation = ++requestGeneration;
     setStatus(labels().loading);
@@ -1046,12 +1146,13 @@ export function createLibraryView(
       setStatus('');
       renderContinueBar();
       renderItems();
+      void hydrateLocalCovers(generation);
     } catch (error) {
       if (generation !== requestGeneration) return;
       items = [];
+      setStatus(errorText(error, labels().offline), true);
       renderContinueBar();
       renderItems();
-      setStatus(errorText(error, labels().offline), true);
     }
   }
 
@@ -1075,8 +1176,9 @@ export function createLibraryView(
     } catch (error) {
       if (generation !== requestGeneration) return;
       items = [];
-      renderItems();
       setStatus(errorText(error, labels().offline), true);
+      renderBreadcrumbs();
+      renderItems();
     }
   }
 
@@ -1101,6 +1203,7 @@ export function createLibraryView(
     trail.splice(0);
     searchInput.value = '';
     closeSourceForm();
+    setStatus('');
     syncPageChrome();
     renderSources();
     await updateCacheSummary();
@@ -1131,7 +1234,9 @@ export function createLibraryView(
       const lowered = query.toLocaleLowerCase();
       const loaded = await deps.library.listItems();
       items = loaded
-        .filter((item) => `${item.title}\n${item.authors.join('\n')}`.toLocaleLowerCase().includes(lowered))
+        .filter((item) =>
+          `${itemTitle(item)}\n${itemAuthors(item).join('\n')}`.toLocaleLowerCase().includes(lowered),
+        )
         .map((item) => ({ item, links: [] }));
       selected = null;
       renderContinueBar();
@@ -1153,7 +1258,9 @@ export function createLibraryView(
       renderItems();
     } catch (error) {
       if (generation !== requestGeneration) return;
+      items = [];
       setStatus(errorText(error, labels().offline), true);
+      renderItems();
     }
   }
 
@@ -1167,10 +1274,19 @@ export function createLibraryView(
       input.placeholder = labels()[name as keyof Labels] ?? name;
       return input;
     };
+    const labeled = (field: HTMLElement, text: string): HTMLLabelElement => {
+      const wrap = doc.createElement('label');
+      wrap.className = 'lightink-library-field';
+      const caption = doc.createElement('span');
+      caption.textContent = text;
+      wrap.append(caption, field);
+      return wrap;
+    };
     const title = makeInput('title');
     const url = makeInput('url', 'url');
     const auth = doc.createElement('select');
     auth.name = 'auth';
+    auth.setAttribute('aria-label', labels().auth);
     if (source?.credentialRef !== undefined) {
       const option = doc.createElement('option');
       option.value = 'keep';
@@ -1203,7 +1319,18 @@ export function createLibraryView(
       closeSourceForm();
     });
     actions.append(save, cancel);
-    sourceForm.append(title, url, auth, username, password, token, allowLabel, actions);
+    sourceForm.setAttribute('role', 'dialog');
+    sourceForm.setAttribute('aria-label', source === undefined ? labels().addSource : labels().editSource);
+    sourceForm.append(
+      labeled(title, labels().title),
+      labeled(url, labels().url),
+      labeled(auth, labels().auth),
+      username,
+      password,
+      token,
+      allowLabel,
+      actions,
+    );
     auth.addEventListener('change', () => {
       username.hidden = password.hidden = auth.value !== 'basic';
       token.hidden = auth.value !== 'bearer';
@@ -1220,6 +1347,7 @@ export function createLibraryView(
     editingSourceId = null;
     sourceForm.reset();
     sourceForm.hidden = true;
+    addSourceButton.classList.remove('is-open');
     addSourceButton.focus();
   }
 
@@ -1227,6 +1355,7 @@ export function createLibraryView(
     editingSourceId = source?.id ?? null;
     renderSourceForm(source);
     sourceForm.hidden = false;
+    addSourceButton.classList.add('is-open');
     sourceForm.querySelector<HTMLInputElement>('input')?.focus();
   }
 
@@ -1320,6 +1449,8 @@ export function createLibraryView(
     const l = labels();
     root.setAttribute('aria-label', l.library);
     manageButton.textContent = l.manage;
+    manageButton.title = l.manage;
+    manageButton.setAttribute('aria-label', l.manage);
     backButton.textContent = l.backToShelf;
     sourceTitle.textContent = l.sources;
     searchInput.placeholder = l.searchPlaceholder;
@@ -1457,6 +1588,7 @@ export function createLibraryView(
       requestGeneration += 1;
       for (const controller of activeOperations) controller.abort();
       activeOperations.clear();
+      deps.workspaceTravel?.remove();
       root.remove();
     },
   };

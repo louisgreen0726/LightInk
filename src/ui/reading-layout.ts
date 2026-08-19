@@ -97,20 +97,31 @@ export function readingColumnLayout(
   options?: ReadingColumnLayoutOptions,
 ): { columnWidth: number; columns: number; gap: number } {
   const minRem = options?.minRem ?? DEFAULT_READING_MEASURE_REM;
+  const optRem = options?.optRem;
   const gap = options?.gapPx ?? 24;
   const maxColumns = options?.maxColumns ?? 2;
   const width = Math.max(1, containerWidth);
   const size = Number.isFinite(fontSizePx) && fontSizePx > 0 ? fontSizePx : 16;
   const minColumn = minRem * size;
+  const maxColumn =
+    optRem !== undefined && Number.isFinite(optRem) && optRem > 0 ? optRem * size : undefined;
   const columns = Math.max(
     1,
     Math.min(maxColumns, Math.floor((width + gap) / (minColumn + gap))),
   );
   if (columns === 1) {
-    return { columnWidth: width, columns: 1, gap: 0 };
+    return {
+      columnWidth: maxColumn === undefined ? width : Math.min(width, maxColumn),
+      columns: 1,
+      gap: 0,
+    };
   }
-  const columnWidth = Math.max(1, (width - (columns - 1) * gap) / columns);
-  return { columnWidth, columns, gap };
+  const filled = Math.max(1, (width - (columns - 1) * gap) / columns);
+  return {
+    columnWidth: maxColumn === undefined ? filled : Math.min(filled, maxColumn),
+    columns,
+    gap,
+  };
 }
 
 export function pageStepSize(scroller: { clientWidth: number; clientHeight: number }): {
@@ -145,6 +156,66 @@ export function pagedColumnStep(viewportWidth: number, gapPx = 0): number {
   return Math.max(1, viewportWidth + Math.max(0, gapPx));
 }
 
+const PAGE_STEP_VAR = '--lightink-reader-page-step';
+
+export function applyPagedPageStep(
+  target: { style: { setProperty(name: string, value: string): void } },
+  step: number,
+): void {
+  target.style.setProperty(PAGE_STEP_VAR, `${Math.max(1, Math.round(step))}px`);
+}
+
+/**
+ * Page-turn distance for a columnized iframe root.
+ * Never parse `style.width` as a number: `parseFloat('100%') === 100` and
+ * then every wheel tick either jitters 100px or falls through to the next chapter.
+ */
+export function pagedFrameStep(scroller: {
+  style: { width: string; getPropertyValue(name: string): string };
+  clientWidth: number;
+}): number {
+  const stored = Number.parseFloat(scroller.style.getPropertyValue(PAGE_STEP_VAR));
+  if (Number.isFinite(stored) && stored > 1) {
+    return stored;
+  }
+  const gap = Number.parseFloat(scroller.style.getPropertyValue('--lightink-reader-column-gap'));
+  const gapPx = Number.isFinite(gap) && gap > 0 ? gap : 0;
+  const widthDecl = scroller.style.width.trim();
+  if (widthDecl.endsWith('px')) {
+    const px = Number.parseFloat(widthDecl);
+    if (Number.isFinite(px) && px > 1) {
+      return pagedColumnStep(px, gapPx);
+    }
+  }
+  return pagedColumnStep(Math.max(1, scroller.clientWidth), gapPx);
+}
+
+function resolvePagedStep(
+  scroller: {
+    clientWidth: number;
+    style?: { width?: string; getPropertyValue?(name: string): string };
+  },
+  stepSize?: number,
+): number {
+  if (stepSize !== undefined && Number.isFinite(stepSize) && stepSize > 0) {
+    return Math.max(1, stepSize);
+  }
+  if (
+    scroller.style !== undefined &&
+    typeof scroller.style.getPropertyValue === 'function' &&
+    typeof scroller.style.width === 'string'
+  ) {
+    return pagedFrameStep({
+      style: {
+        width: scroller.style.width,
+        getPropertyValue: (name: string) => scroller.style!.getPropertyValue!(name),
+      },
+      clientWidth: scroller.clientWidth,
+    });
+  }
+  return Math.max(1, scroller.clientWidth);
+}
+
 /**
  * Integer-aligned facing-page metrics. Shrinking the used width by a few
  * pixels keeps `columns * columnWidth + (columns - 1) * gap === width`,
@@ -158,10 +229,7 @@ export function pagedSpreadMetrics(
   const layout = readingColumnLayout(containerWidth, fontSizePx, options);
   const columns = layout.columns;
   const gap = columns === 1 ? 0 : layout.gap;
-  const columnWidth = Math.max(
-    1,
-    Math.floor((Math.max(1, containerWidth) - (columns - 1) * gap) / columns),
-  );
+  const columnWidth = Math.max(1, Math.floor(layout.columnWidth));
   const width = columnWidth * columns + (columns - 1) * gap;
   return { width, columnWidth, columns, gap, step: pagedColumnStep(width, gap) };
 }
@@ -218,7 +286,7 @@ export function applyPagedProgress(
     scroller.scrollLeft = max;
     return;
   }
-  const step = Math.max(1, stepSize ?? scroller.clientWidth);
+  const step = resolvePagedStep(scroller, stepSize);
   scroller.scrollLeft = Math.min(max, Math.max(0, Math.round((max * safe) / step) * step));
 }
 
@@ -227,7 +295,7 @@ export function snapPagedScroller(
   scroller: { scrollLeft: number; scrollWidth: number; clientWidth: number },
   stepSize?: number,
 ): void {
-  const step = Math.max(1, stepSize ?? scroller.clientWidth);
+  const step = resolvePagedStep(scroller, stepSize);
   const max = pagedScrollMax(scroller);
   if (max <= 0) {
     scroller.scrollLeft = 0;
@@ -242,7 +310,7 @@ export function advancePagedScroller(
   direction: 1 | -1,
   stepSize?: number,
 ): boolean {
-  const step = Math.max(1, stepSize ?? scroller.clientWidth);
+  const step = resolvePagedStep(scroller, stepSize);
   const max = pagedScrollMax(scroller);
   if (max <= 0) {
     return false;

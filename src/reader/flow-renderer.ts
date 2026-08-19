@@ -21,12 +21,14 @@ import {
 } from '../media/remote-image-policy.js';
 import {
   advancePagedScroller,
+  applyPagedPageStep,
   applyPagedProgress,
   applyPagedSpreadVars,
   clearPagedSpreadVars,
   createPagedWheelGate,
   isReadingNavKey,
   pagedColumnStep,
+  pagedFrameStep,
   pagedProgressRatio,
   readingNavDirection,
   snapPagedScroller,
@@ -61,10 +63,29 @@ const FLOW_FRAME_CSP = [
 
 const FLOW_FRAME_CSS = `
 :root { color-scheme: light dark; }
-html, body { margin: 0; }
+html, body {
+  margin: 0;
+  width: auto !important;
+  max-width: none !important;
+  color: var(--lightink-fg, inherit);
+  background: var(--lightink-bg, transparent) !important;
+  border: 0 !important;
+  outline: none;
+  box-shadow: none !important;
+}
+html[data-reading-layout='paginated'] body div,
+html[data-reading-layout='paginated'] body section,
+html[data-reading-layout='paginated'] body article,
+html[data-reading-layout='paginated'] body main {
+  width: auto !important;
+  max-width: none !important;
+  float: none !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
 body {
   color: inherit;
-  background: transparent;
   font: inherit;
   line-height: var(--lightink-reader-line-height, 1.8);
 }
@@ -97,14 +118,31 @@ html[data-reading-layout='scroll'] body::-webkit-scrollbar {
 html[data-reading-layout='paginated'] {
   box-sizing: border-box;
   width: 100%;
+  max-width: none !important;
   height: 100%;
+  margin-inline: 0;
+  padding: 0;
   overflow: hidden;
   overscroll-behavior: none;
+  background: var(--lightink-bg, transparent) !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  scrollbar-width: none;
+}
+/* Columns on a block box, not <html>: the iframe root is the viewport and
+   does not create extra pages, so every turn jumped to the next chapter. */
+html[data-reading-layout='paginated'] .lightink-reader-spread {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
   column-width: var(--lightink-reader-column-width, 100%);
-  column-count: auto;
+  column-count: var(--lightink-reader-column-count, 1);
   column-gap: var(--lightink-reader-column-gap, 0px);
   column-fill: auto;
-  scrollbar-width: none;
+  overflow: hidden;
+  background: var(--lightink-bg, transparent) !important;
+  box-shadow: none !important;
 }
 html[data-reading-layout='paginated']::-webkit-scrollbar {
   width: 0;
@@ -114,45 +152,80 @@ html[data-reading-layout='paginated'] body {
   box-sizing: border-box;
   height: auto;
   min-height: 100%;
-  max-width: none;
-  margin: 0;
-  overflow: visible;
+  width: auto !important;
+  max-width: none !important;
+  margin-inline: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 /* 只锁单张图/标题不被拦腰切断。figure 整块 avoid 会把「图+后面文字」一起推到下一栏，左栏变空。 */
 img, table, pre, h1, h2, h3, h4, h5, h6 { break-inside: avoid; }
 img, svg {
+  box-sizing: border-box;
   max-width: 100% !important;
   width: auto !important;
   height: auto !important;
   display: block;
   margin: 1.1rem auto;
   object-fit: contain;
+  touch-action: pan-y;
+}
+/* Scroll: never use vh inside the iframe (Readium). vh is the iframe
+   viewport — often 150px — so covers shrink to thumbnails and plates
+   either clip or overflow. JS writes absolute px onto these variables. */
+html[data-reading-layout='scroll'] img,
+html[data-reading-layout='scroll'] svg {
+  max-width: min(100%, var(--lightink-reader-image-max-width, 100%)) !important;
+  max-height: var(--lightink-reader-image-max-height, none) !important;
+}
+html[data-reading-layout='scroll'] img.lightink-reader-media--page,
+html[data-reading-layout='scroll'] svg.lightink-reader-media--page {
+  width: var(--lightink-reader-image-max-width, 100%) !important;
+  height: var(--lightink-reader-image-max-height, auto) !important;
+  max-width: var(--lightink-reader-image-max-width, 100%) !important;
+  max-height: var(--lightink-reader-image-max-height, none) !important;
+  margin-top: 0;
+  margin-bottom: 0;
+  object-fit: contain !important;
 }
 html[data-reading-layout='paginated'] img,
 html[data-reading-layout='paginated'] svg {
   /* 一图一栏：双栏时一页两张。不给 figure 写 avoid，避免整块内容被推走。 */
   max-width: var(--lightink-reader-column-width, 100%) !important;
-  max-height: var(--lightink-reader-page-height, 100%) !important;
+  max-height: var(--lightink-reader-image-max-height, var(--lightink-reader-page-height, 100%)) !important;
   width: auto !important;
   height: auto !important;
   box-sizing: border-box;
+  margin-top: 0;
+  margin-bottom: 0;
   break-inside: avoid;
   column-span: none;
 }
 html[data-reading-layout='paginated'] figure {
   max-width: var(--lightink-reader-column-width, 100%);
-  margin: 1.1rem auto;
+  margin: 0 auto;
   break-inside: auto;
 }
 table { max-width: 100%; border-collapse: collapse; }
 th, td { padding: 0.35rem 0.5rem; border: 1px solid currentColor; }
 pre { overflow-x: auto; white-space: pre-wrap; }
 a { color: inherit; text-decoration: underline; }
-mark.lightink-reader-highlight { background: #f2d675; color: #111; }
+mark.lightink-reader-highlight {
+  background: var(--lightink-annotation-color, #f2d675);
+  color: #111;
+  border-radius: 2px;
+}
 mark.lightink-reader-highlight[data-annotation-kind='note'] {
-  background: rgba(154, 88, 40, 0.22);
-  box-shadow: inset 0 -0.12em 0 #9a5828;
+  background: color-mix(in srgb, var(--lightink-annotation-color, #9a5828) 28%, transparent);
+  box-shadow: inset 0 -0.14em 0 var(--lightink-annotation-color, #9a5828);
   cursor: pointer;
+}
+mark.lightink-reader-highlight[data-annotation-kind='note']::after {
+  content: '✎';
+  font-size: 0.7em;
+  margin-left: 0.15em;
+  opacity: 0.8;
 }
 .lightink-reader-search-mark { background: rgba(154, 88, 40, 0.22); border-radius: 2px; }
 .lightink-reader-search-mark--current {
@@ -191,6 +264,46 @@ function ensureReaderFlowChrome(root: HTMLElement): void {
 function isFlowPaginated(root: HTMLElement): boolean {
   ensureReaderFlowChrome(root);
   return parseReaderLayout(root.dataset.readingLayout) === 'paginated';
+}
+
+/** Apply an iframe wheel delta to the host scroller (same path as Markdown). */
+export function applyFrameWheelToScroller(
+  event: { deltaX: number; deltaY: number; deltaMode: number; ctrlKey: boolean; metaKey: boolean },
+  scroller: { scrollTop: number; scrollLeft: number; clientHeight: number },
+): boolean {
+  if (event.ctrlKey || event.metaKey) {
+    return false;
+  }
+  const line = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1;
+  if (event.deltaY === 0 && event.deltaX === 0) {
+    return false;
+  }
+  scroller.scrollTop += event.deltaY * line;
+  scroller.scrollLeft += event.deltaX * line;
+  return true;
+}
+
+/** Map a Y inside the iframe document to the parent viewport. */
+export function mapFrameClientY(frame: HTMLElement, clientY: number): number {
+  if (typeof frame.getBoundingClientRect !== 'function') {
+    return clientY;
+  }
+  return frame.getBoundingClientRect().top + clientY;
+}
+
+function clearPaginatedMediaInline(frameDocument: Document): void {
+  for (const media of frameDocument.querySelectorAll<HTMLElement>('img, svg, figure')) {
+    media.style.removeProperty('max-height');
+    media.style.removeProperty('max-width');
+    media.style.removeProperty('width');
+    media.style.removeProperty('height');
+    media.style.removeProperty('margin-top');
+    media.style.removeProperty('margin-bottom');
+    media.style.removeProperty('break-before');
+    media.style.removeProperty('column-span');
+    media.style.removeProperty('object-fit');
+    media.classList.remove('lightink-reader-media--page');
+  }
 }
 
 function workspaceModeFromHost(root: HTMLElement): string | undefined {
@@ -270,14 +383,87 @@ function resolveReaderTypography(root: HTMLElement): ReaderTypography {
   });
 }
 
+const READER_SPREAD_CLASS = 'lightink-reader-spread';
+
+export function readerPagedScroller(frameDocument: Document): HTMLElement {
+  return (
+    frameDocument.querySelector<HTMLElement>(`.${READER_SPREAD_CLASS}`) ??
+    frameDocument.documentElement
+  );
+}
+
+function ensureReaderSpread(frameDocument: Document): HTMLElement {
+  const body = frameDocument.body;
+  const existing = body.querySelector<HTMLElement>(`:scope > .${READER_SPREAD_CLASS}`);
+  if (existing !== null) {
+    for (const node of Array.from(body.childNodes)) {
+      if (node === existing) {
+        continue;
+      }
+      existing.appendChild(node);
+    }
+    return existing;
+  }
+  const spread = frameDocument.createElement('div');
+  spread.className = READER_SPREAD_CLASS;
+  while (body.firstChild !== null) {
+    spread.appendChild(body.firstChild);
+  }
+  body.appendChild(spread);
+  return spread;
+}
+
+function readerChapterTextIsSparse(frameDocument: Document): boolean {
+  const body = frameDocument.body;
+  if (body === null) {
+    return false;
+  }
+  const blocks = body.querySelectorAll('p, li, h1, h2, h3, h4, blockquote');
+  for (const block of blocks) {
+    if ((block.textContent ?? '').replace(/\s+/g, '').length > 0) {
+      return false;
+    }
+  }
+  const text = (body.textContent ?? '').replace(/\s+/g, '');
+  return text.length < 24;
+}
+
+function readerChapterLooksLikeCover(frameDocument: Document): boolean {
+  const media = frameDocument.body?.querySelectorAll('img, svg');
+  return media !== undefined && media.length === 1 && readerChapterTextIsSparse(frameDocument);
+}
+
+/** Consecutive full-page plates: one image per page, or the next one is clipped. */
+function readerChapterLooksLikePlates(frameDocument: Document): boolean {
+  const media = frameDocument.body?.querySelectorAll('img, svg');
+  return media !== undefined && media.length >= 2 && readerChapterTextIsSparse(frameDocument);
+}
+
+function readerPaperColor(root: HTMLElement): string {
+  const computed = getComputedStyle(root);
+  const token = computed.getPropertyValue('--lightink-bg').trim();
+  if (token !== '') {
+    return token;
+  }
+  return computed.backgroundColor || 'transparent';
+}
+
 function applyFlowTypography(
   root: HTMLElement,
   frameDocument: Document,
   typography = resolveReaderTypography(root),
 ): void {
   const computed = getComputedStyle(root);
+  const paper = readerPaperColor(root);
+  const ink = computed.color || computed.getPropertyValue('--lightink-fg').trim() || 'inherit';
   applyReaderTypography(frameDocument.documentElement, typography);
-  frameDocument.body.style.color = computed.color;
+  frameDocument.documentElement.style.setProperty('--lightink-bg', paper);
+  frameDocument.documentElement.style.setProperty('--lightink-fg', ink);
+  frameDocument.documentElement.style.background = paper;
+  frameDocument.documentElement.style.color = ink;
+  frameDocument.documentElement.style.colorScheme = computed.colorScheme || '';
+  frameDocument.body.style.color = ink;
+  frameDocument.body.style.background = paper;
   frameDocument.body.style.fontFamily = resolveReaderFontFamily(typography.fontFamily);
   frameDocument.body.style.fontSize = `calc(${computed.fontSize} * ${typography.fontScaleStep})`;
   frameDocument.body.style.lineHeight = String(typography.lineHeight);
@@ -430,6 +616,8 @@ export interface FlowRendererHooks {
   advanceReading(direction: 1 | -1): boolean;
   /** 流式滚动容器（帧内滚动模式 wheel 转发目标，reader-view flowScrollContainer）。 */
   scrollContainer(): HTMLElement;
+  /** iframe 内指针移动：映射到宿主坐标后揭示顶栏（图片挡住宿主 pointermove）。 */
+  onFramePointerMove?(event: { clientY: number }): void;
   /** 滚轮翻页导航（含 trackpad 门限；移动后由编排壳隐藏划选工具栏）。 */
   advancePagedWheel(direction: 1 | -1): boolean;
   /** Escape 关闭可见的划选工具栏：返回是否可见并已隐藏。 */
@@ -459,6 +647,8 @@ export interface FlowRenderer {
   syncVisibleFrames(): void;
   /** 主题切换后重应用全部就绪帧的文字色（R4）。 */
   syncTheme(): void;
+  /** 翻页模式前/后一页（章内 scrollLeft，到头则切章）。 */
+  advancePage(direction: 1 | -1): boolean;
 }
 
 /**
@@ -557,17 +747,38 @@ export function createFlowRenderer(
   };
 
   const pagedViewport = (): { width: number; height: number; fontPx: number } => {
+    const pane =
+      typeof root.closest === 'function' ? root.closest('#lightink-editor-area') : null;
     const hostStyle = getComputedStyle(scrollHost);
     const padX = (Number.parseFloat(hostStyle.paddingLeft) || 0) + (Number.parseFloat(hostStyle.paddingRight) || 0);
     const padY = (Number.parseFloat(hostStyle.paddingTop) || 0) + (Number.parseFloat(hostStyle.paddingBottom) || 0);
+    const box = (el: Element | null): { w: number; h: number } => {
+      if (!(el instanceof HTMLElement)) {
+        return { w: 0, h: 0 };
+      }
+      return { w: el.clientWidth, h: el.clientHeight };
+    };
+    const paneBox = box(pane);
+    const rootBox = box(root);
+    const hostBox = box(scrollHost);
     const width = Math.max(
       1,
-      Math.round((scrollHost.clientWidth || root.clientWidth) - padX),
+      Math.round(Math.max(paneBox.w, rootBox.w, hostBox.w) - padX),
     );
-    const height = Math.max(
-      1,
-      Math.round((scrollHost.clientHeight || root.clientHeight) - padY),
-    );
+    // Never take scrollHost height: it can grow with chapter content and then
+    // the "page" is as tall as the chapter (left column full, right empty,
+    // every turn jumps a chapter).
+    const visibleHeight =
+      paneBox.h >= 80
+        ? paneBox.h
+        : rootBox.h >= 80
+          ? rootBox.h
+          : typeof window !== 'undefined' && window.innerHeight > 80
+            ? window.innerHeight
+            : hostBox.h >= 80
+              ? hostBox.h
+              : 1;
+    const height = Math.max(1, Math.round(visibleHeight - padY));
     const typography = resolveReaderTypography(root);
     const basePx = parseFloat(getComputedStyle(root).fontSize);
     const fontPx = readerTypographyFontSizePx(
@@ -575,6 +786,32 @@ export function createFlowRenderer(
       Number.isFinite(basePx) && basePx > 0 ? basePx : 16,
     );
     return { width, height, fontPx };
+  };
+
+  /** Pixel max-size from the parent pane. Never vh — iframe vh is not the window. */
+  const applyScrollMediaMetrics = (frameDocument: Document): void => {
+    const viewport = pagedViewport();
+    const maxWidth = Math.max(1, viewport.width);
+    const maxHeight = Math.max(1, Math.round(viewport.height * 0.92));
+    const html = frameDocument.documentElement;
+    html.style.setProperty('--lightink-reader-image-max-width', `${maxWidth}px`);
+    html.style.setProperty('--lightink-reader-image-max-height', `${maxHeight}px`);
+    const pageFit =
+      readerChapterLooksLikeCover(frameDocument) || readerChapterLooksLikePlates(frameDocument);
+    for (const media of frameDocument.querySelectorAll<HTMLElement>('img, svg')) {
+      media.style.maxWidth = `${maxWidth}px`;
+      media.style.maxHeight = `${maxHeight}px`;
+      media.style.objectFit = 'contain';
+      if (pageFit) {
+        media.style.width = `${maxWidth}px`;
+        media.style.height = `${maxHeight}px`;
+        media.classList.add('lightink-reader-media--page');
+      } else {
+        media.style.width = 'auto';
+        media.style.height = 'auto';
+        media.classList.remove('lightink-reader-media--page');
+      }
+    }
   };
 
   /**
@@ -609,7 +846,7 @@ export function createFlowRenderer(
     pad.style.overflow = 'hidden';
     pad.style.breakBefore = 'column';
     pad.style.breakInside = 'avoid';
-    frameDocument.body.appendChild(pad);
+    html.appendChild(pad);
   };
 
   const gatePagedWheel = createPagedWheelGate();
@@ -619,14 +856,11 @@ export function createFlowRenderer(
       return false;
     }
     const frame = visibleFrame();
-    const scroller = frame?.contentDocument?.documentElement;
-    const step =
-      scroller === undefined || scroller === null
-        ? 0
-        : pagedColumnStep(
-            Number.parseFloat(scroller.style.width) || scroller.clientWidth,
-            Number.parseFloat(scroller.style.columnGap) || 0,
-          );
+    const scroller =
+      frame?.contentDocument === undefined || frame.contentDocument === null
+        ? null
+        : readerPagedScroller(frame.contentDocument);
+    const step = scroller === null ? 0 : pagedFrameStep(scroller);
     if (
       scroller !== undefined &&
       scroller !== null &&
@@ -654,10 +888,9 @@ export function createFlowRenderer(
         return;
       }
       applyPaginatedDocument(nextFrame, nextDoc, { snap: false });
-      nextDoc.documentElement.scrollLeft =
-        direction < 0
-          ? Math.max(0, nextDoc.documentElement.scrollWidth - nextDoc.documentElement.clientWidth)
-          : 0;
+      const nextScroller = readerPagedScroller(nextDoc);
+      nextScroller.scrollLeft =
+        direction < 0 ? Math.max(0, nextScroller.scrollWidth - nextScroller.clientWidth) : 0;
     };
     applyChapterPage();
     if (typeof requestAnimationFrame === 'function') {
@@ -673,65 +906,149 @@ export function createFlowRenderer(
     frameDocument: Document,
     options?: { restoreRatio?: number; snap?: boolean },
   ): void => {
+    frame.style.width = '100%';
+    frame.style.maxWidth = '100%';
     const viewport = pagedViewport();
-    const layout = readerFlowSpreadFromTypography(
+    const pageWidth = Math.max(
       viewport.width,
+      Math.round(frame.getBoundingClientRect().width || 0),
+      Math.round(frame.clientWidth || 0),
+    );
+    const cover = readerChapterLooksLikeCover(frameDocument);
+    const plates = readerChapterLooksLikePlates(frameDocument);
+    const pad = Math.max(40, Math.round(viewport.fontPx * 2.5));
+    const innerWidth = Math.max(1, pageWidth - pad * 2);
+    const layout = readerFlowSpreadFromTypography(
+      innerWidth,
       viewport.fontPx,
       resolveReaderTypography(root),
     );
-    const { width, columnWidth, columns, gap, step } = layout;
+    const spread = cover || plates
+      ? {
+          ...layout,
+          width: innerWidth,
+          columns: 1,
+          columnWidth: innerWidth,
+          gap: 0,
+          step: pagedColumnStep(innerWidth, 0),
+        }
+      : layout;
+    const { columnWidth, columns, gap, step } = spread;
     const height = viewport.height;
     const html = frameDocument.documentElement;
-    const previousRatio = pagedProgressRatio(html);
+    const pageBox = ensureReaderSpread(frameDocument);
+    const previousRatio = pagedProgressRatio(pageBox);
     html.dataset.readingLayout = 'paginated';
     applyFlowTypography(root, frameDocument);
     html.style.minHeight = '0';
     html.style.overflow = 'hidden';
     html.style.overscrollBehavior = 'none';
-    html.style.boxSizing = 'border-box';
-    html.style.width = `${width}px`;
+    html.style.background = readerPaperColor(root);
+    html.style.border = '0';
+    html.style.outline = 'none';
+    html.style.boxShadow = 'none';
     html.style.height = `${height}px`;
-    html.style.columnWidth = `${columnWidth}px`;
-    html.style.columnCount = 'auto';
-    html.style.columnGap = `${gap}px`;
-    html.style.columnFill = 'auto';
+    html.style.boxSizing = 'border-box';
+    html.style.width = `${pageWidth}px`;
+    html.style.maxWidth = 'none';
+    html.style.paddingLeft = '0';
+    html.style.paddingRight = '0';
+    html.style.marginLeft = '0';
+    html.style.marginRight = '0';
+    html.style.removeProperty('column-width');
+    html.style.removeProperty('column-count');
+    html.style.removeProperty('column-gap');
+    html.style.removeProperty('column-fill');
     applyPagedSpreadVars(html, { columnWidth, columns, gap });
+    applyPagedPageStep(html, step);
     html.style.setProperty('--lightink-reader-page-height', `${height}px`);
-    html.style.removeProperty('--lightink-reader-image-max-height');
-    // 一图一栏：只钳制 img/svg。figure 保持可拆，避免「图+后文」整块被推到右栏。
-    for (const media of frameDocument.querySelectorAll<HTMLElement>('img, svg')) {
-      media.style.maxWidth = `${columnWidth}px`;
+    html.style.setProperty('--lightink-reader-image-max-height', `${height}px`);
+    pageBox.style.boxSizing = 'border-box';
+    pageBox.style.width = `${spread.width}px`;
+    pageBox.style.maxWidth = 'none';
+    pageBox.style.height = `${height}px`;
+    pageBox.style.overflow = 'hidden';
+    pageBox.style.columnWidth = `${columnWidth}px`;
+    pageBox.style.columnCount = String(columns);
+    pageBox.style.columnGap = `${gap}px`;
+    pageBox.style.columnFill = 'auto';
+    pageBox.style.paddingLeft = '0';
+    pageBox.style.paddingRight = '0';
+    applyPagedSpreadVars(pageBox, { columnWidth, columns, gap });
+    applyPagedPageStep(pageBox, step);
+    // 正文插图锁在本栏。封面铺满整页。连续插图画页各占一页，避免第二张从图缝里被裁掉。
+    const mediaMax = cover || plates ? spread.width : columnWidth;
+    const mediaList = frameDocument.querySelectorAll<HTMLElement>('img, svg');
+    mediaList.forEach((media, index) => {
+      media.style.maxWidth = `${mediaMax}px`;
       media.style.maxHeight = `${height}px`;
-      media.style.width = 'auto';
-      media.style.height = 'auto';
+      media.style.objectFit = 'contain';
+      media.style.marginTop = '0';
+      media.style.marginBottom = '0';
       media.style.breakInside = 'avoid';
-      media.style.removeProperty('break-before');
-      media.style.columnSpan = 'none';
-    }
+      if (cover || plates) {
+        // Contain-fit the page box so a small cover scales up and a
+        // large plate scales down (Kindle / Apple Books / Readium).
+        media.style.width = `${mediaMax}px`;
+        media.style.height = `${height}px`;
+        media.classList.add('lightink-reader-media--page');
+      } else {
+        media.style.width = 'auto';
+        media.style.height = 'auto';
+        media.classList.remove('lightink-reader-media--page');
+      }
+      if (cover) {
+        media.style.columnSpan = 'all';
+        media.style.marginLeft = 'auto';
+        media.style.marginRight = 'auto';
+        media.style.removeProperty('break-before');
+      } else if (plates && index > 0) {
+        media.style.columnSpan = 'none';
+        media.style.breakBefore = 'column';
+      } else {
+        media.style.columnSpan = 'none';
+        media.style.removeProperty('break-before');
+      }
+    });
     for (const figure of frameDocument.querySelectorAll<HTMLElement>('figure')) {
-      figure.style.maxWidth = `${columnWidth}px`;
+      figure.style.maxWidth = `${mediaMax}px`;
+      figure.style.marginTop = '0';
+      figure.style.marginBottom = '0';
       figure.style.breakInside = 'auto';
       figure.style.removeProperty('max-height');
       figure.style.removeProperty('break-before');
       figure.style.removeProperty('column-span');
     }
     frameDocument.body.style.boxSizing = 'border-box';
-    frameDocument.body.style.height = 'auto';
+    frameDocument.body.style.height = `${height}px`;
     frameDocument.body.style.minHeight = `${height}px`;
-    frameDocument.body.style.width = 'auto';
+    frameDocument.body.style.width = `${pageWidth}px`;
     frameDocument.body.style.maxWidth = 'none';
-    frameDocument.body.style.overflow = 'visible';
-    frameDocument.body.style.margin = '0';
-    frameDocument.body.style.padding = '0';
-    frame.style.width = `${width}px`;
+    frameDocument.body.style.overflow = 'hidden';
+    frameDocument.body.style.marginLeft = '0';
+    frameDocument.body.style.marginRight = '0';
+    frameDocument.body.style.marginTop = '0';
+    frameDocument.body.style.marginBottom = '0';
+    frameDocument.body.style.paddingLeft = `${pad}px`;
+    frameDocument.body.style.paddingRight = `${pad}px`;
+    frameDocument.body.style.paddingTop = '0';
+    frameDocument.body.style.paddingBottom = '0';
+    frameDocument.body.style.background = readerPaperColor(root);
+    frameDocument.body.style.border = '0';
+    frame.style.width = '100%';
+    frame.style.maxWidth = '100%';
     frame.style.height = `${height}px`;
-    padFinalSpread(html, frameDocument, columnWidth, columns, gap);
+    frame.style.border = '0';
+    frame.style.outline = 'none';
+    frame.style.background = readerPaperColor(root);
+    padFinalSpread(pageBox, frameDocument, columnWidth, columns, gap);
     if (options?.restoreRatio !== undefined) {
-      applyPagedProgress(html, options.restoreRatio, step);
+      applyPagedProgress(pageBox, options.restoreRatio, step);
+      snapPagedScroller(pageBox, step);
     } else if (options?.snap !== false) {
-      snapPagedScroller(html, step);
-      if (html.scrollLeft === 0 && previousRatio > 0) {
-        applyPagedProgress(html, previousRatio, step);
+      snapPagedScroller(pageBox, step);
+      if (pageBox.scrollLeft === 0 && previousRatio > 0) {
+        applyPagedProgress(pageBox, previousRatio, step);
       }
     }
   };
@@ -776,6 +1093,10 @@ export function createFlowRenderer(
         chapter.title || hooks.t('reader.chapter', { n: String(chapterIndex + 1) });
       frame.setAttribute('sandbox', 'allow-same-origin');
       frame.setAttribute('scrolling', 'no');
+      frame.setAttribute('frameborder', '0');
+      frame.style.border = '0';
+      frame.style.outline = 'none';
+      frame.style.background = readerPaperColor(root);
       frame.referrerPolicy = 'no-referrer';
 
       const win: ChapterResourceWindow = {
@@ -826,11 +1147,25 @@ export function createFlowRenderer(
             html.style.maxWidth = '100%';
             html.style.overflow = 'hidden';
             html.scrollLeft = 0;
+            const pageBox = frameDocument.querySelector<HTMLElement>(`.${READER_SPREAD_CLASS}`);
+            if (pageBox !== null) {
+              clearPagedSpreadVars(pageBox);
+              pageBox.style.removeProperty('column-width');
+              pageBox.style.removeProperty('column-count');
+              pageBox.style.removeProperty('column-gap');
+              pageBox.style.removeProperty('column-fill');
+              pageBox.style.height = 'auto';
+              pageBox.style.width = '100%';
+              pageBox.style.overflow = 'visible';
+              pageBox.scrollLeft = 0;
+            }
             frameDocument.body.style.height = 'auto';
             frameDocument.body.style.minHeight = '0';
             frameDocument.body.style.width = '100%';
             frameDocument.body.style.maxWidth = '100%';
             frameDocument.body.style.overflow = 'hidden';
+            clearPaginatedMediaInline(frameDocument);
+            applyScrollMediaMetrics(frameDocument);
             frame.style.width = '100%';
             frame.style.removeProperty('min-height');
             return;
@@ -966,7 +1301,12 @@ export function createFlowRenderer(
             );
           }
         };
+        let appliedWheel: WheelEvent | null = null;
         const onWheel = (event: WheelEvent): void => {
+          if (appliedWheel === event) {
+            return;
+          }
+          appliedWheel = event;
           if (event.ctrlKey || event.metaKey) {
             if (event.deltaY === 0) {
               return;
@@ -986,12 +1326,8 @@ export function createFlowRenderer(
             return;
           }
           if (!isFlowPaginated(root)) {
-            const scroller = hooks.scrollContainer();
-            const line = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1;
-            if (event.deltaY !== 0 || event.deltaX !== 0) {
+            if (applyFrameWheelToScroller(event, hooks.scrollContainer())) {
               event.preventDefault();
-              scroller.scrollTop += event.deltaY * line;
-              scroller.scrollLeft += event.deltaX * line;
             }
             return;
           }
@@ -1003,10 +1339,19 @@ export function createFlowRenderer(
           event.preventDefault();
           gatePagedWheel(delta > 0 ? 1 : -1, advanceFlowPage);
         };
+        const onPointerMove = (event: PointerEvent | MouseEvent): void => {
+          hooks.onFramePointerMove?.({
+            clientY: mapFrameClientY(frame, event.clientY),
+          });
+        };
         frameDocument.addEventListener('click', onClick);
         frameDocument.addEventListener('mouseup', onMouseUp);
         frameDocument.addEventListener('keydown', onKeyDown);
-        frameDocument.addEventListener('wheel', onWheel, { passive: false });
+        frameDocument.addEventListener('pointermove', onPointerMove);
+        // Capture on both: some engines skip window when the target is <img>.
+        // The same WheelEvent object is ignored the second time.
+        frameWindow.addEventListener('wheel', onWheel, { passive: false, capture: true });
+        frameDocument.addEventListener('wheel', onWheel, { passive: false, capture: true });
         const releaseImages = bindBlockedRemoteImages(
           frameDocument.body,
           hooks.t('reader.remoteImageLoad'),
@@ -1054,7 +1399,9 @@ export function createFlowRenderer(
           frameDocument.removeEventListener('click', onClick);
           frameDocument.removeEventListener('mouseup', onMouseUp);
           frameDocument.removeEventListener('keydown', onKeyDown);
-          frameDocument.removeEventListener('wheel', onWheel);
+          frameDocument.removeEventListener('pointermove', onPointerMove);
+          frameWindow.removeEventListener('wheel', onWheel, true);
+          frameDocument.removeEventListener('wheel', onWheel, true);
         });
       };
       frame.addEventListener('load', onLoad, { once: true });
@@ -1093,11 +1440,25 @@ export function createFlowRenderer(
       html.style.maxWidth = '100%';
       html.style.overflow = 'hidden';
       html.scrollLeft = 0;
+      const pageBox = frameDocument.querySelector<HTMLElement>(`.${READER_SPREAD_CLASS}`);
+      if (pageBox !== null) {
+        clearPagedSpreadVars(pageBox);
+        pageBox.style.removeProperty('column-width');
+        pageBox.style.removeProperty('column-count');
+        pageBox.style.removeProperty('column-gap');
+        pageBox.style.removeProperty('column-fill');
+        pageBox.style.height = 'auto';
+        pageBox.style.width = '100%';
+        pageBox.style.overflow = 'visible';
+        pageBox.scrollLeft = 0;
+      }
       body.style.height = 'auto';
       body.style.minHeight = '0';
       body.style.width = '100%';
       body.style.maxWidth = '100%';
       body.style.overflow = 'hidden';
+      clearPaginatedMediaInline(frameDocument);
+      applyScrollMediaMetrics(frameDocument);
       frame.style.width = '100%';
       frame.style.removeProperty('min-height');
       applyFlowTypography(root, frameDocument);
@@ -1106,6 +1467,7 @@ export function createFlowRenderer(
         frame.style.height = nextHeight;
       }
     }
+    hooks.renderHighlights();
   };
 
   const syncVisibleFrames = (): void => {
@@ -1130,15 +1492,21 @@ export function createFlowRenderer(
   };
 
   const syncTheme = (): void => {
-    const computed = getComputedStyle(root);
     for (const frame of scrollHost.querySelectorAll<HTMLIFrameElement>(
-      '.lightink-reader-chapter-frame[data-frame-ready="true"]',
+      '.lightink-reader-chapter-frame',
     )) {
       const frameDocument = frame.contentDocument;
-      if (frameDocument === null) {
+      if (frameDocument === null || frameDocument.body === null) {
         continue;
       }
-      frameDocument.body.style.color = computed.color;
+      applyFlowTypography(root, frameDocument);
+      const paper = readerPaperColor(root);
+      frame.style.background = paper;
+      const spread = frameDocument.querySelector<HTMLElement>(`.${READER_SPREAD_CLASS}`);
+      if (spread !== null) {
+        spread.style.background = paper;
+        spread.style.boxShadow = 'none';
+      }
     }
   };
 
@@ -1164,7 +1532,8 @@ export function createFlowRenderer(
     if (
       event.target instanceof Element &&
       (event.target.closest('.lightink-reader-pages') !== null ||
-        event.target.closest('.lightink-reader-sidebar') !== null)
+        event.target.closest('.lightink-reader-sidebar') !== null ||
+        event.target.closest('.lightink-reader-chrome-panel') !== null)
     ) {
       return;
     }
@@ -1239,5 +1608,6 @@ export function createFlowRenderer(
     remasureScrollFrames,
     syncVisibleFrames,
     syncTheme,
+    advancePage: advanceFlowPage,
   };
 }

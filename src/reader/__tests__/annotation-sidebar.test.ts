@@ -201,6 +201,15 @@ describe('annotation-sidebar 重做', () => {
     document.body.appendChild(sidebar.element);
     sidebar.render(annotations);
     expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-input')).not.toBeNull();
+    expect(sidebar.element.querySelector('.lightink-reader-sidebar-search-stack')).not.toBeNull();
+    expect(
+      sidebar.element.querySelector<HTMLInputElement>('.lightink-reader-sidebar-note-search-input')
+        ?.placeholder,
+    ).toBe('annotation.search.placeholder');
+    expect(
+      sidebar.element.querySelector<HTMLInputElement>('.lightink-reader-sidebar-search-input')
+        ?.placeholder,
+    ).toBe('reader.search.document');
     expect(sidebar.element.querySelectorAll('.lightink-reader-sidebar-item')).toHaveLength(3);
 
     sidebar.renderHits([]);

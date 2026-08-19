@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  setNativeCaptionColors,
   setNativeTheme,
   setNativeTitleBar,
   toggleFullscreen,
@@ -78,5 +79,28 @@ describe('setNativeTheme', () => {
       setFullscreen: vi.fn(async () => undefined),
     };
     await expect(setNativeTheme(true, async () => win)).resolves.toBeUndefined();
+  });
+});
+
+describe('setNativeCaptionColors', () => {
+  it('sends paper colors and restores the system caption', async () => {
+    const invoke = vi.fn(async () => undefined);
+    await setNativeCaptionColors({ caption: '#fbf0d9', text: '#5c4a32' }, invoke);
+    expect(invoke).toHaveBeenCalledWith('set_window_caption_color', {
+      caption: '#fbf0d9',
+      text: '#5c4a32',
+    });
+    await setNativeCaptionColors(null, invoke);
+    expect(invoke).toHaveBeenCalledWith('set_window_caption_color', {
+      caption: null,
+      text: null,
+    });
+  });
+
+  it('swallows invoke failures outside Tauri', async () => {
+    const invoke = vi.fn(async () => {
+      throw new Error('not tauri');
+    });
+    await expect(setNativeCaptionColors({ caption: '#121212', text: '#c8c8c8' }, invoke)).resolves.toBeUndefined();
   });
 });

@@ -8,8 +8,13 @@
  */
 
 import type { MessageKey } from '../i18n/messages.js';
+import { ANNOTATION_COLORS, type AnnotationColor } from './annotations.js';
 
 export type SelectionToolbarAction = 'highlight' | 'note' | 'copy' | 'removeHighlight';
+
+export interface SelectionToolbarActionDetail {
+  color?: AnnotationColor;
+}
 
 export interface SelectionToolbarRect {
   left: number;
@@ -20,7 +25,7 @@ export interface SelectionToolbarRect {
 
 export interface SelectionToolbarDeps {
   t: (key: MessageKey) => string;
-  onAction: (action: SelectionToolbarAction) => void;
+  onAction: (action: SelectionToolbarAction, detail?: SelectionToolbarActionDetail) => void;
 }
 
 export interface SelectionToolbar {
@@ -80,11 +85,30 @@ export function createSelectionToolbar(deps: SelectionToolbarDeps): SelectionToo
     return button;
   };
 
+  const colors = document.createElement('div');
+  colors.className = 'lightink-reader-selection-colors';
+  colors.setAttribute('role', 'group');
+  colors.setAttribute('aria-label', deps.t('annotation.highlight'));
+  for (const color of ANNOTATION_COLORS) {
+    const swatch = document.createElement('button');
+    swatch.type = 'button';
+    swatch.className = 'lightink-reader-selection-color';
+    swatch.dataset.annotationColor = color;
+    swatch.setAttribute('aria-label', deps.t('annotation.highlight'));
+    swatch.title = deps.t('annotation.highlight');
+    swatch.style.background = color;
+    swatch.addEventListener('click', () => {
+      hide();
+      deps.onAction('highlight', { color });
+    });
+    colors.appendChild(swatch);
+  }
+
   const highlightButton = makeButton('highlight', 'annotation.highlight');
   const noteButton = makeButton('note', 'annotation.note');
   const copyButton = makeButton('copy', 'annotation.copy');
   const removeButton = makeButton('removeHighlight', 'annotation.removeHighlight');
-  root.append(highlightButton, noteButton, copyButton, removeButton);
+  root.append(colors, highlightButton, noteButton, copyButton, removeButton);
 
   /** 显示期间点击工具栏外部即隐藏（capture：先于正文点击收尾）。 */
   const onPointerDownOutside = (event: Event): void => {

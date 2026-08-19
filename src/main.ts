@@ -69,6 +69,7 @@ import {
 import type { RemoteOpenResult } from './reader/sources/remote-source.js';
 import type { ReaderTarget, RemoteReaderTarget } from './reader/sources/types.js';
 import { readerLoadErrorDetail } from './reader/error-message.js';
+import { loadReaderTheme, readerNativeWindowChrome } from './reader/reader-theme.js';
 import { loadReaderTypography, nextReaderFontScaleStep } from './reader/reader-typography.js';
 import { TabManager, fileNameOf, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
@@ -118,7 +119,7 @@ import {
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
 import { ShortcutRegistry, pagingShouldIgnoreTarget, wheelPagingShouldIgnoreTarget } from './ui/shortcuts.js';
-import { setNativeTheme, setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
+import { setNativeCaptionColors, setNativeTheme, setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
 import { libraryClient } from './library/library-client.js';
@@ -596,6 +597,7 @@ function applyWorkspaceState(state: WorkspaceSnapshot = workspace.snapshot()): v
       revealReaderBookTab();
     }
     appliedWorkspaceSurface = state.surface;
+    syncNativeWindowChrome(state);
     if (manager !== undefined) {
       const shelf = state.surface === 'shelf';
       for (const tab of manager.tabList) {
@@ -641,6 +643,21 @@ function onLibraryVisibilityChange(visible: boolean): void {
 workspace.subscribe((state) => {
   applyWorkspaceState(state);
   shell?.rebuildMenus();
+});
+
+function syncNativeWindowChrome(state: WorkspaceSnapshot = workspace.snapshot()): void {
+  if (state.surface === 'reader') {
+    const chrome = readerNativeWindowChrome(loadReaderTheme(window.localStorage));
+    void setNativeTheme(chrome.dark);
+    void setNativeCaptionColors({ caption: chrome.caption, text: chrome.text });
+    return;
+  }
+  void setNativeCaptionColors(null);
+  void setNativeTheme(themeService.isDark());
+}
+
+document.addEventListener('lightink:reader-theme', () => {
+  syncNativeWindowChrome();
 });
 
 function libraryItemIdForTarget(target: ReaderTarget): string {
@@ -813,6 +830,39 @@ async function cacheLibraryItem(
   }
 }
 
+async function enrichLocalLibraryItem(
+  item: import('./library/library-client.js').LibraryItem,
+): Promise<import('./library/library-client.js').LibraryItem> {
+  if (item.sourceKind !== 'local' || item.localPath === undefined) {
+    return item;
+  }
+  const extension = (item.extension ?? '').toLowerCase();
+  if (extension !== 'epub' && extension !== 'cbz') {
+    return item;
+  }
+  const { extractLocalBookMeta, isShelfCoverUrl } = await import('./library/local-book-meta.js');
+  if (isShelfCoverUrl(item.coverUrl)) {
+    return item;
+  }
+  try {
+    const bytes = await readReaderBytes(item.localPath);
+    const meta = await extractLocalBookMeta(item.localPath, bytes);
+    const next = {
+      ...item,
+      title: meta.title !== undefined && meta.title !== '' ? meta.title : item.title,
+      authors: meta.authors.length > 0 ? meta.authors : item.authors,
+      coverUrl: meta.coverUrl ?? item.coverUrl,
+      updatedAt: Date.now(),
+    };
+    if (next.title !== item.title || next.coverUrl !== item.coverUrl || next.authors !== item.authors) {
+      await libraryClient.upsertItem(next);
+    }
+    return next;
+  } catch {
+    return item;
+  }
+}
+
 async function importLocalLibraryItem(): Promise<import('./library/library-client.js').LibraryItem | null> {
   let selected: string | null = null;
   try {
@@ -832,8 +882,9 @@ async function importLocalLibraryItem(): Promise<import('./library/library-clien
     extension,
     updatedAt: Date.now(),
   };
-  await libraryClient.upsertItem(item);
-  return item;
+  const enriched = await enrichLocalLibraryItem(item);
+  await libraryClient.upsertItem(enriched);
+  return enriched;
 }
 
 /**
@@ -1945,6 +1996,8 @@ libraryView = createLibraryView(shell.editorArea, {
   library: libraryClient,
   getLocale: () => i18n.locale,
   getProgress: bindLibraryProgress(window.localStorage),
+  workspaceTravel: shell.enterEditorButton,
+  enrichLocalItem: enrichLocalLibraryItem,
   onOpen: openLibraryItem,
   onCache: cacheLibraryItem,
   onImportLocal: importLocalLibraryItem,

@@ -47,8 +47,8 @@ function isComicOrZipMediaType(mediaType: string | undefined): boolean {
   return false;
 }
 
-function hasNonEmptyText(value: string | undefined): boolean {
-  return value !== undefined && value.trim() !== '';
+function hasNonEmptyText(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.trim() !== '';
 }
 
 function hasComicMetadata(query: LibraryKindQuery): boolean {

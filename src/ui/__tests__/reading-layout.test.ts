@@ -12,7 +12,9 @@ import {
   isReadingNavKey,
   loadReadingLayout,
   nearestVisibleSlot,
+  applyPagedPageStep,
   pagedColumnStep,
+  pagedFrameStep,
   pagedProgressRatio,
   pagedSpreadMetrics,
   parseReadingLayout,
@@ -86,6 +88,43 @@ describe('paged navigation', () => {
     const scroller = { scrollLeft: 430, scrollWidth: 1600, clientWidth: 800 };
     snapPagedScroller(scroller);
     expect(scroller.scrollLeft).toBe(800);
+  });
+
+  it('does not treat width:100% as a 100px page step', () => {
+    const props: Record<string, string> = {};
+    const scroller = {
+      style: {
+        width: '100%',
+        getPropertyValue: (name: string) => props[name] ?? '',
+        setProperty: (name: string, value: string) => {
+          props[name] = value;
+        },
+      },
+      clientWidth: 1100,
+    };
+    expect(Number.parseFloat(scroller.style.width)).toBe(100);
+    expect(pagedFrameStep(scroller)).toBe(1100);
+    applyPagedPageStep(scroller, 1100);
+    expect(pagedFrameStep(scroller)).toBe(1100);
+  });
+
+  it('restores saved progress on the stored page step, not clientWidth', () => {
+    const props: Record<string, string> = {
+      '--lightink-reader-page-step': '1036px',
+    };
+    const scroller = {
+      scrollLeft: 0,
+      scrollWidth: 4104,
+      clientWidth: 996,
+      style: {
+        width: '996px',
+        getPropertyValue: (name: string) => props[name] ?? '',
+      },
+    };
+    applyPagedProgress(scroller, 2072 / 3108);
+    expect(scroller.scrollLeft).toBe(2072);
+    snapPagedScroller(scroller);
+    expect(scroller.scrollLeft).toBe(2072);
   });
 
   it('turns by viewport plus column gap so a third column does not leak in', () => {
@@ -163,6 +202,15 @@ describe('readingColumnLayout', () => {
     expect(readingColumnLayout(1300, 16, { minRem: 40 }).columns).toBe(1);
     expect(pagedSpreadMetrics(1300, 16, { minRem: 40 }).columns).toBe(1);
     expect(pagedSpreadMetrics(1300, 16, { minRem: DEFAULT_READING_MEASURE_REM }).columns).toBe(2);
+  });
+
+  it('caps column width at optRem so a wide pane keeps book-like gutters', () => {
+    const layout = readingColumnLayout(1400, 16, { minRem: 22, optRem: 22 });
+    expect(layout.columns).toBe(2);
+    expect(layout.columnWidth).toBe(22 * 16);
+    const spread = pagedSpreadMetrics(1400, 16, { minRem: 22, optRem: 22 });
+    expect(spread.width).toBe(22 * 16 * 2 + spread.gap);
+    expect(spread.width).toBeLessThan(1400);
   });
 });
 

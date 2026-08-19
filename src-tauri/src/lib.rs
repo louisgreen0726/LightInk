@@ -16,6 +16,7 @@ mod opds;
 mod recents;
 mod remote;
 mod snapshot;
+mod window_chrome;
 
 use tauri_plugin_opener::OpenerExt;
 
@@ -109,6 +110,7 @@ pub fn run() {
             open_in_browser,
             open_path_default,
             reveal_path_in_files,
+            window_chrome::set_window_caption_color,
         ])
         // 用 build + run 才能接 RunEvent::Opened（macOS/iOS/Android 文件关联）。
         // Builder::run 会消费 builder 且不暴露事件循环钩子。

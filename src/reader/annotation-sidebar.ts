@@ -100,6 +100,7 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
   const root = document.createElement('aside');
   root.className = 'lightink-reader-sidebar';
   root.setAttribute('aria-label', deps.t('annotation.sidebar'));
+  root.setAttribute('aria-modal', 'true');
 
   const header = document.createElement('div');
   header.className = 'lightink-reader-sidebar-header';
@@ -120,8 +121,8 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
   const noteSearchInput = document.createElement('input');
   noteSearchInput.type = 'text';
   noteSearchInput.className = 'lightink-reader-sidebar-note-search-input';
-  noteSearchInput.setAttribute('aria-label', deps.t('annotation.sidebar'));
-  noteSearchInput.placeholder = deps.t('reader.search.placeholder');
+  noteSearchInput.setAttribute('aria-label', deps.t('annotation.search.placeholder'));
+  noteSearchInput.placeholder = deps.t('annotation.search.placeholder');
   noteSearchInput.autocomplete = 'off';
   noteSearchInput.spellcheck = false;
   noteSearchInput.style.flex = '1 1 auto';
@@ -240,8 +241,8 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     searchInput = document.createElement('input');
     searchInput.type = 'text';
     searchInput.className = 'lightink-reader-sidebar-search-input';
-    searchInput.setAttribute('aria-label', deps.t('reader.search.title'));
-    searchInput.placeholder = deps.t('reader.search.placeholder');
+    searchInput.setAttribute('aria-label', deps.t('reader.search.document'));
+    searchInput.placeholder = deps.t('reader.search.document');
     searchInput.autocomplete = 'off';
     searchInput.spellcheck = false;
     searchInput.addEventListener('input', () => search.onQuery(searchInput!.value));
@@ -249,7 +250,22 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
     searchStatus.className = 'lightink-reader-sidebar-search-status';
     searchStatus.setAttribute('aria-live', 'polite');
     field.append(searchInput, searchStatus);
-    root.append(header, noteField, field, filters, colors, list);
+    const noteLabel = document.createElement('label');
+    noteLabel.className = 'lightink-reader-sidebar-search-label';
+    noteLabel.textContent = deps.t('annotation.search.placeholder');
+    const noteWrap = document.createElement('div');
+    noteWrap.className = 'lightink-reader-sidebar-search-mode lightink-reader-sidebar-search-mode--notes';
+    noteWrap.append(noteLabel, noteField);
+    const docLabel = document.createElement('label');
+    docLabel.className = 'lightink-reader-sidebar-search-label';
+    docLabel.textContent = deps.t('reader.search.document');
+    const docWrap = document.createElement('div');
+    docWrap.className = 'lightink-reader-sidebar-search-mode lightink-reader-sidebar-search-mode--document';
+    docWrap.append(docLabel, field);
+    const stack = document.createElement('div');
+    stack.className = 'lightink-reader-sidebar-search-stack';
+    stack.append(noteWrap, docWrap);
+    root.append(header, stack, filters, colors, list);
     root.addEventListener('keydown', (event) => {
       if (event.target === noteSearchInput) {
         return;
@@ -282,7 +298,13 @@ export function createAnnotationSidebar(deps: AnnotationSidebarDeps): Annotation
       }
     });
   } else {
-    root.append(header, noteField, filters, colors, list);
+    const noteLabel = document.createElement('label');
+    noteLabel.className = 'lightink-reader-sidebar-search-label';
+    noteLabel.textContent = deps.t('annotation.search.placeholder');
+    const stack = document.createElement('div');
+    stack.className = 'lightink-reader-sidebar-search-stack';
+    stack.append(noteLabel, noteField);
+    root.append(header, stack, filters, colors, list);
   }
 
   const renderItem = (annotation: Annotation): HTMLLIElement => {

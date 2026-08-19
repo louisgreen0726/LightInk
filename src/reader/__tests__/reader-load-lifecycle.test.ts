@@ -61,6 +61,13 @@ const nextFrame = async (): Promise<void> => {
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 };
 
+function useReaderScrollLayout(host: HTMLElement): void {
+  const reader = host.querySelector<HTMLElement>('.lightink-reader');
+  if (reader !== null) {
+    reader.dataset.readingLayout = 'scroll';
+  }
+}
+
 function frameSource(host: HTMLElement): string {
   return host.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame')?.srcdoc ?? '';
 }
@@ -263,6 +270,7 @@ describe('Reader load lifecycle', () => {
       scale: 1,
       locationKind: 'chapter',
     });
+    useReaderScrollLayout(host);
 
     const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
     const chapters = scroll.querySelectorAll<HTMLElement>('.lightink-reader-chapter');
@@ -296,6 +304,7 @@ describe('Reader load lifecycle', () => {
       }),
     });
     await view.load('book.epub');
+    useReaderScrollLayout(host);
 
     const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
     const chapters = scroll.querySelectorAll<HTMLElement>('.lightink-reader-chapter');
@@ -537,6 +546,7 @@ describe('Reader load lifecycle', () => {
       progressStorage,
     });
     await first.load('resume.epub');
+    useReaderScrollLayout(host);
     mockScrollMetrics(host);
 
     const scroll = host.querySelector<HTMLElement>('.lightink-reader-scroll')!;
@@ -571,6 +581,7 @@ describe('Reader load lifecycle', () => {
         parseContent: async () => ({ chapters }),
         progressStorage,
       });
+      useReaderScrollLayout(host2);
       await second.load('resume.epub');
       const restored = host2.querySelector<HTMLElement>('.lightink-reader-scroll')!;
       expect(restored.scrollTop).toBe(375);
@@ -957,6 +968,7 @@ describe('Reader R7 memory regressions', () => {
     });
     await view.load('book.epub');
     document.documentElement.dataset.readingLayout = 'scroll';
+    useReaderScrollLayout(host);
 
     Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 2000 });
     Object.defineProperty(pane, 'clientHeight', { configurable: true, value: 400 });

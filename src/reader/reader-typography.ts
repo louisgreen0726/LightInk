@@ -198,7 +198,8 @@ export function readerTypographyColumnMinRem(typography: ReaderTypography): numb
 export function readerTypographyColumnOptions(
   typography: ReaderTypography,
 ): ReadingColumnLayoutOptions {
-  return { minRem: readerTypographyColumnMinRem(typography), maxColumns: 2 };
+  const minRem = readerTypographyColumnMinRem(typography);
+  return { minRem, optRem: minRem, maxColumns: 2 };
 }
 
 export function readerTypographyFontSizePx(

@@ -11,6 +11,7 @@ import {
   applyReadingLayout,
   DEFAULT_READING_LAYOUT,
   parseReadingLayout,
+  pagedColumnStep,
   pagedSpreadMetrics,
   readingColumnLayout,
   toggleReadingLayout,
@@ -18,18 +19,14 @@ import {
   type ReadingColumnLayoutOptions,
   type ReadingLayout,
 } from '../ui/reading-layout.js';
-import {
-  DEFAULT_READER_MEASURE_REM,
-  readerTypographyColumnOptions,
-  type ReaderTypography,
-} from './reader-typography.js';
+import { DEFAULT_READER_MEASURE_REM, type ReaderTypography } from './reader-typography.js';
 
 export const READER_FLOW_LAYOUT_STORAGE_KEY = 'lightink.reader.flow.layout';
 
 export const DEFAULT_READER_FLOW_LAYOUT: ReadingLayout = 'paginated';
 
-/** Paginated flow left/right gutter; narrower than the previous 0.7rem default. */
-export const READER_FLOW_PAGED_PADDING_X_REM = 0.4;
+/** Thin window inset; line-length gutters live on the page itself. */
+export const READER_FLOW_PAGED_PADDING_X_REM = 0.75;
 
 export type ReaderFlowLayout = ReadingLayout;
 
@@ -114,7 +111,7 @@ export function readerFlowUsesTextColumns(kind: string): boolean {
 export function readerFlowColumnOptions(
   minRem: number = DEFAULT_READER_MEASURE_REM,
 ): ReadingColumnLayoutOptions {
-  return { minRem, maxColumns: 2 };
+  return { minRem, optRem: minRem, maxColumns: 2 };
 }
 
 export function readerFlowColumnLayout(
@@ -133,14 +130,67 @@ export function readerFlowSpreadMetrics(
   return pagedSpreadMetrics(containerWidth, fontSizePx, readerFlowColumnOptions(minRem));
 }
 
+export interface ReaderPageSpread {
+  width: number;
+  columnWidth: number;
+  columns: number;
+  gap: number;
+  step: number;
+  pad: number;
+  measurePx: number;
+}
+
+/**
+ * Readium/Thorium page metrics.
+ * The paper and the text columns fill the window. A second column opens
+ * once the pane can hold two readable columns (~16rem), not two copies of
+ * the stored line-length — otherwise a desktop window stays one column
+ * with an empty facing page. Two columns split the page evenly so
+ * `column-count: 2` cannot leak a leftover sliver.
+ */
+export const READER_SPREAD_MIN_COLUMN_REM = 16;
+
+export function readerPageSpread(
+  containerWidth: number,
+  fontSizePx: number,
+  measureRem: number,
+): ReaderPageSpread {
+  const size = Number.isFinite(fontSizePx) && fontSizePx > 0 ? fontSizePx : 16;
+  const measurePx = Math.max(1, Math.round(measureRem * size));
+  const minColumnPx = Math.round(READER_SPREAD_MIN_COLUMN_REM * size);
+  const minPad = Math.max(40, Math.round(size * 2.5));
+  const pairGap = Math.max(40, Math.round(size * 2.5));
+  const pageWidth = Math.max(1, Math.round(containerWidth));
+  if (pageWidth >= 2 * minColumnPx + pairGap) {
+    const columnWidth = Math.max(1, Math.floor((pageWidth - pairGap) / 2));
+    const width = columnWidth * 2 + pairGap;
+    return {
+      width,
+      columnWidth,
+      columns: 2,
+      gap: pairGap,
+      pad: minPad,
+      measurePx,
+      // Skip the gap after the right-hand column; stepping by `width` alone
+      // leaves a sliver of that column on the next page (a fake third column).
+      step: pagedColumnStep(width, pairGap),
+    };
+  }
+  return {
+    width: pageWidth,
+    columnWidth: pageWidth,
+    columns: 1,
+    gap: 0,
+    pad: minPad,
+    measurePx,
+    step: pagedColumnStep(pageWidth, 0),
+  };
+}
+
 export function readerFlowSpreadFromTypography(
   containerWidth: number,
   fontSizePx: number,
   typography: ReaderTypography,
-): { width: number; columnWidth: number; columns: number; gap: number; step: number } {
-  return pagedSpreadMetrics(
-    containerWidth,
-    fontSizePx,
-    readerTypographyColumnOptions(typography),
-  );
+): ReaderPageSpread {
+  return readerPageSpread(containerWidth, fontSizePx, typography.measureRem);
 }

@@ -11,7 +11,7 @@
  * path that calls injected `returnToShelf`. 目录 / 排版 / 本书标注 call
  * `openOutline` / `openTypography` / `toggleSidebar`.
  *
- * The bar is out of document flow (`position: absolute|fixed`) so
+ * The bar is out of document flow (`position: absolute|fixed|sticky`) so
  * reveal/dismiss does not change the reading area's top or height.
  * Idle auto-hide is 2500ms unless `isOverlayOpen()` is true.
  *
@@ -154,9 +154,23 @@ describe('createReaderChrome reveal', () => {
     );
     expect(chrome.isRevealed()).toBe(true);
   });
+
+  it('reveals at the visible window top after the host has scrolled away', () => {
+    const { host, chrome } = mount();
+    stubRect(host, { width: 720, height: 4000, top: -2000 });
+    host.dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, clientX: 80, clientY: 8 }),
+    );
+    expect(chrome.isRevealed()).toBe(true);
+  });
 });
 
 describe('createReaderChrome overlay layout', () => {
+  it('pins the overlay as the first child so sticky top stays on the visible pane', () => {
+    const { host, chrome } = mount();
+    expect(host.firstElementChild).toBe(chrome.element);
+  });
+
   it('stacks over the page and does not shift reading-area top or height', () => {
     const { page, chrome } = mount();
     const before = page.getBoundingClientRect();
@@ -173,7 +187,7 @@ describe('createReaderChrome overlay layout', () => {
 
     const overlay = chrome.element;
     const position = overlay.style.position || getComputedStyle(overlay).position;
-    expect(['absolute', 'fixed']).toContain(position);
+    expect(['absolute', 'fixed', 'sticky']).toContain(position);
   });
 });
 
@@ -195,6 +209,16 @@ describe('createReaderChrome actions', () => {
     expect(deps.openOutline).toHaveBeenCalledTimes(1);
     expect(deps.openTypography).toHaveBeenCalledTimes(1);
     expect(deps.toggleSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes an open sheet when the page is clicked again', () => {
+    const { page, chrome, deps } = mount({
+      isOverlayOpen: vi.fn(() => true),
+    });
+    chrome.reveal();
+    clickPage(page, 160);
+    expect(deps.dismissOverlay).toHaveBeenCalledTimes(1);
+    expect(deps.returnToShelf).not.toHaveBeenCalled();
   });
 });
 
@@ -274,6 +298,30 @@ describe('createReaderChrome auto-hide', () => {
     overlay.open = true;
     chrome.reveal();
     vi.advanceTimersByTime(AUTO_HIDE_MS * 2);
+    expect(chrome.isRevealed()).toBe(true);
+  });
+
+  it('stays revealed while stayRevealed is true', () => {
+    vi.useFakeTimers();
+    let atTop = true;
+    const { chrome } = mount({
+      stayRevealed: () => atTop,
+    });
+    chrome.reveal();
+    vi.advanceTimersByTime(AUTO_HIDE_MS * 2);
+    expect(chrome.isRevealed()).toBe(true);
+    atTop = false;
+    chrome.syncStayRevealed();
+    vi.advanceTimersByTime(AUTO_HIDE_MS);
+    expect(chrome.isRevealed()).toBe(false);
+  });
+
+  it('reveals when syncStayRevealed runs at the top of scroll mode', () => {
+    const { chrome } = mount({
+      stayRevealed: () => true,
+    });
+    expect(chrome.isRevealed()).toBe(false);
+    chrome.syncStayRevealed();
     expect(chrome.isRevealed()).toBe(true);
   });
 });

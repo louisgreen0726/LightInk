@@ -86,3 +86,34 @@ export async function setNativeTheme(
     console.error('[lightink] setTheme failed', error);
   }
 }
+
+export interface NativeCaptionColors {
+  readonly caption: string;
+  readonly text: string;
+}
+
+export type NativeCaptionInvoke = (
+  cmd: string,
+  args: { caption: string | null; text: string | null },
+) => Promise<unknown>;
+
+/**
+ * Tint the native caption to match paper, or pass null to restore the
+ * system default. Windows 11 uses DWM caption color; macOS uses a
+ * transparent titlebar plus window background; Linux tints GTK CSD
+ * titlebars. Server-side window-manager bars stay light/dark only.
+ */
+export async function setNativeCaptionColors(
+  colors: NativeCaptionColors | null,
+  invokeFn?: NativeCaptionInvoke,
+): Promise<void> {
+  try {
+    const invoke = invokeFn ?? (await import('@tauri-apps/api/core')).invoke;
+    await invoke('set_window_caption_color', {
+      caption: colors?.caption ?? null,
+      text: colors?.text ?? null,
+    });
+  } catch {
+    /* browser preview or unsupported host */
+  }
+}

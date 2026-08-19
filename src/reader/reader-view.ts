@@ -106,14 +106,22 @@ import {
   createPagedWheelGate,
   createResizeSettle,
   nearestVisibleSlot,
-  pagedColumnStep,
+  pagedFrameStep,
   pagedProgressRatio,
   rafFrameScheduler,
   scrollToKeepViewportAnchor,
   snapPagedScroller,
   viewportAnchor,
 } from '../ui/reading-layout.js';
-import { createFlowRenderer } from './flow-renderer.js';
+import {
+  applyReaderDocumentLayout,
+  applyReaderLayout,
+  loadReaderLayout,
+  parseReaderLayout,
+  saveReaderLayout,
+  type ReaderFlowLayout,
+} from './reader-layout.js';
+import { createFlowRenderer, readerPagedScroller } from './flow-renderer.js';
 import { attachRemoteSource } from './sources/remote-source.js';
 import {
   NATIVE_ARCHIVE_EXTENSIONS,
@@ -124,17 +132,27 @@ import { fnv1a64Hex } from './document-hash.js';
 import type { ComicMetadata } from './comic-model.js';
 import { createReaderChrome, type ReaderChrome } from './reader-chrome.js';
 import {
+  fillReaderTocPanel,
+  fillReaderTypographyPanel,
+  pinFixedOverlay,
+  positionReaderChromePanel,
+  unpinFixedOverlay,
+  type ReaderChromePanelCopy,
+} from './reader-chrome-panels.js';
+import {
+  applyReaderTheme,
+  loadReaderTheme,
+  saveReaderTheme,
+  type ReaderThemeId,
+} from './reader-theme.js';
+import {
   loadReaderTypography,
   nextReaderFontScaleStep,
-  READER_FONT_FAMILY_PRESETS,
   saveReaderTypography,
-  type ReaderFontFamilyPreset,
   type ReaderTypography,
 } from './reader-typography.js';
 
 const PAGE_EXTS = new Set(['pdf', 'cbz', ...NATIVE_ARCHIVE_EXTENSIONS]);
-const READER_CHROME_LINE_HEIGHTS = [1.5, 1.65, 1.8, 2] as const;
-const READER_CHROME_MEASURE_REMS = [16, 18, 22, 26, 32] as const;
 
 function canMountReaderChrome(): boolean {
   if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
@@ -155,6 +173,17 @@ function dispatchReaderTypographyPref(typography: ReaderTypography): void {
   document.dispatchEvent(new CustomEvent('lightink:reader-typography', { detail: typography }));
 }
 
+function dispatchReaderFlowLayoutPref(layout: ReaderFlowLayout): void {
+  if (
+    typeof document === 'undefined' ||
+    typeof document.dispatchEvent !== 'function' ||
+    typeof CustomEvent !== 'function'
+  ) {
+    return;
+  }
+  document.dispatchEvent(new CustomEvent('lightink:reader-flow-layout', { detail: layout }));
+}
+
 function typographyStorage(): {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -163,19 +192,6 @@ function typographyStorage(): {
     return typeof localStorage === 'undefined' ? null : localStorage;
   } catch {
     return null;
-  }
-}
-
-function fontPresetLabel(family: ReaderFontFamilyPreset): string {
-  switch (family) {
-    case 'serif':
-      return '宋体';
-    case 'sans':
-      return '黑体';
-    case 'mono':
-      return '等宽';
-    default:
-      return '原文';
   }
 }
 
@@ -315,7 +331,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   status.hidden = true;
 
   root.append(scrollHost, pageHost, status);
+  applyReaderLayout(root, loadReaderLayout(typographyStorage()));
+  const initialTheme = loadReaderTheme(typographyStorage());
+  applyReaderTheme(root, initialTheme);
+  const editorPane = host.closest?.('#lightink-editor-area');
+  if (editorPane !== null && editorPane !== undefined) {
+    applyReaderTheme(editorPane, initialTheme);
+  }
   host.appendChild(root);
+  const flowIsPaginated = (): boolean =>
+    parseReaderLayout(root.dataset.readingLayout) === 'paginated';
 
   let readerChrome: ReaderChrome | null = null;
   let chromePanel: 'toc' | 'typography' | null = null;
@@ -324,20 +349,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   tocPanel.className = 'lightink-reader-chrome-panel lightink-reader-chrome-toc';
   tocPanel.hidden = true;
   tocPanel.setAttribute('data-panel', 'toc');
-  tocPanel.style.position = 'absolute';
-  tocPanel.style.left = '0';
-  tocPanel.style.right = '0';
-  tocPanel.style.top = '2.75rem';
-  tocPanel.style.zIndex = '13';
   const typePanel = document.createElement('div');
   typePanel.className = 'lightink-reader-chrome-panel lightink-reader-chrome-typography';
   typePanel.hidden = true;
   typePanel.setAttribute('data-panel', 'typography');
-  typePanel.style.position = 'absolute';
-  typePanel.style.left = '0';
-  typePanel.style.right = '0';
-  typePanel.style.top = '2.75rem';
-  typePanel.style.zIndex = '13';
 
   const annotationsEnabled = deps.readAnnotations !== undefined;
 
@@ -450,6 +465,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     dismissSelectionToolbar: () => dismissReaderOverlayStep(),
     isLayoutSwitching: () => layoutSwitching,
     scrollContainer: () => flowScrollContainer(),
+    onFramePointerMove: ({ clientY }) => {
+      readerChrome?.handlePointerMove({ clientY });
+      syncChromeRevealAttr();
+    },
   });
   const clearFlowBindings = (): void => {
     flowRenderer.clear();
@@ -472,7 +491,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     // applyPaginatedDocument（snap:false 不抢滚动位置，由调用方决定落点）。
     if (
       stalePaginatedChapters !== null &&
-      document.documentElement.dataset.readingLayout === 'paginated' &&
+      flowIsPaginated() &&
       stalePaginatedChapters.delete(index)
     ) {
       const frame = scrollHost.querySelector<HTMLIFrameElement>(
@@ -533,13 +552,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       return null;
     }
     const chapterIndex = Math.max(0, readerState.current - 1);
-    if (document.documentElement.dataset.readingLayout === 'paginated') {
-      const scroller = visibleFlowFrame()?.contentDocument?.documentElement;
+    if (flowIsPaginated()) {
+      const doc = visibleFlowFrame()?.contentDocument;
+      const scroller = doc === undefined || doc === null ? null : readerPagedScroller(doc);
       return {
         version: 1,
         kind: 'flow',
         index: chapterIndex,
-        ratio: scroller === undefined || scroller === null ? 0 : pagedProgressRatio(scroller),
+        ratio: scroller === null ? 0 : pagedProgressRatio(scroller),
         updatedAt: Date.now(),
       };
     }
@@ -620,13 +640,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (chapters.length === 0) {
       return false;
     }
-    if (document.documentElement.dataset.readingLayout === 'paginated') {
+    if (flowIsPaginated()) {
       setActiveChapter(Math.min(saved.index, chapters.length - 1));
       const frame = scrollHost.querySelector<HTMLIFrameElement>(
         `.lightink-reader-chapter[data-chapter-index="${Math.min(saved.index, chapters.length - 1)}"] .lightink-reader-chapter-frame`,
       );
-      const scroller = frame?.contentDocument?.documentElement;
-      if (scroller === undefined || scroller === null || scroller.clientWidth <= 1) {
+      const doc = frame?.contentDocument;
+      const scroller = doc === undefined || doc === null ? null : readerPagedScroller(doc);
+      if (scroller === null || scroller.clientWidth <= 1) {
         restoreAttempts += 1;
         if (restoreAttempts >= 8) {
           pendingRestore = null;
@@ -634,7 +655,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         }
         return false;
       }
-      applyPagedProgress(scroller, saved.ratio);
+      const step = pagedFrameStep(scroller);
+      applyPagedProgress(scroller, saved.ratio, step);
+      snapPagedScroller(scroller, step);
       pendingRestore = null;
       return true;
     }
@@ -787,7 +810,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     selectionToolbar = createSelectionToolbar({
       t,
-      onAction: (action) => {
+      onAction: (action, detail) => {
         const pending = pendingSelection;
         pendingSelection = null;
         if (pending === null) {
@@ -831,7 +854,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           return;
         }
         clearSourceSelection();
-        appendAnnotation('highlight', pending.locator, pending.quote, undefined);
+        appendAnnotation('highlight', pending.locator, pending.quote, undefined, detail?.color);
       },
     });
     root.appendChild(selectionToolbar.element);
@@ -906,7 +929,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const firstVisibleChapter = (): number => {
-    if (document.documentElement.dataset.readingLayout === 'paginated') {
+    if (flowIsPaginated()) {
       const active = scrollHost.querySelector<HTMLElement>('.lightink-reader-chapter.is-active');
       const index = Number(active?.dataset.chapterIndex ?? 0);
       return Number.isSafeInteger(index) ? index : 0;
@@ -925,9 +948,10 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     const current = Math.min(total, firstVisibleChapter() + 1);
     let progress = 1;
-    if (document.documentElement.dataset.readingLayout === 'paginated') {
-      const scroller = visibleFlowFrame()?.contentDocument?.documentElement;
-      if (scroller !== undefined && scroller !== null) {
+    if (flowIsPaginated()) {
+      const doc = visibleFlowFrame()?.contentDocument;
+      const scroller = doc === undefined || doc === null ? null : readerPagedScroller(doc);
+      if (scroller !== null) {
         const chapterRatio = total === 0 ? 0 : (current - 1) / total;
         const pageRatio = pagedProgressRatio(scroller) / Math.max(1, total);
         progress = Math.min(1, chapterRatio + pageRatio);
@@ -960,6 +984,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     syncFlowState();
     rememberFlowProgress();
     schedulePersistReadingProgress();
+    readerChrome?.syncStayRevealed();
+    syncChromeRevealAttr();
+    pinSidebarOverlay();
     // 工具栏按视口坐标固定定位，滚动后指向失效——直接隐藏。
     if (selectionToolbar?.isVisible() === true) {
       hideSelectionToolbar();
@@ -1005,6 +1032,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     locator: Locator,
     quote: string | undefined,
     note: string | undefined,
+    color?: string,
   ): void => {
     annotations = [
       ...annotations,
@@ -1015,6 +1043,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         quote,
         note,
         createdAt: Date.now(),
+        color,
       },
     ];
     renderHighlights();
@@ -1092,7 +1121,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
         // flow / text：优先定位到该条高亮的 <mark>，否则到章节。
         const chapter =
           loc.format === 'flow' ? loc.chapter : loc.format === 'text' ? 0 : firstVisibleChapter();
-        if (document.documentElement.dataset.readingLayout === 'paginated') {
+        if (flowIsPaginated()) {
           setActiveChapter(chapter);
         }
         const mark = Array.from(
@@ -1139,7 +1168,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     });
     sidebar.element.setAttribute('aria-hidden', sidebarVisible ? 'false' : 'true');
     sidebar.element.hidden = !tabActive || !sidebarVisible;
-    chromeHost().append(sidebarBackdrop, sidebar.element);
+    root.append(sidebarBackdrop, sidebar.element);
     renderSidebarAnnotations();
   }
 
@@ -1149,6 +1178,17 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     sidebar?.render(annotations);
   }
+
+  const pinSidebarOverlay = (): void => {
+    if (sidebar === null || sidebar.element.hidden) {
+      return;
+    }
+    if (flowIsPaginated()) {
+      unpinFixedOverlay(sidebar.element);
+      return;
+    }
+    pinFixedOverlay(sidebar.element, closestPane() ?? root);
+  };
 
   /** 侧栏覆盖层（含 portal 到共享 chrome 的部分）与当前显隐状态同步。 */
   function syncSidebarOverlayDom(): void {
@@ -1164,6 +1204,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (sidebarBackdrop !== null) {
       sidebarBackdrop.hidden = !shown;
     }
+    pinSidebarOverlay();
   }
 
   /** 切换侧栏显隐，并让窄窗 drawer 获得或释放键盘焦点。 */
@@ -1205,6 +1246,23 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     readerChrome.element.setAttribute('aria-hidden', shown ? 'false' : 'true');
   };
 
+  const syncChromeActionState = (): void => {
+    if (typeof root.querySelector !== 'function') {
+      return;
+    }
+    for (const action of ['toc', 'typography'] as const) {
+      const button = root.querySelector<HTMLButtonElement>(
+        `[data-reader-chrome-action="${action}"]`,
+      );
+      if (button === null) {
+        continue;
+      }
+      const open = chromePanel === action;
+      button.classList.toggle('is-open', open);
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  };
+
   const closeChromePanel = (): boolean => {
     if (chromePanel === null) {
       return false;
@@ -1212,6 +1270,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     chromePanel = null;
     tocPanel.hidden = true;
     typePanel.hidden = true;
+    syncChromeActionState();
     return true;
   };
 
@@ -1233,10 +1292,8 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   /**
-   * 标签可见性变化（切换标签时由宿主调用）。侧栏/搜索面板 portal 到共享的
-   * #lightink-main，不随标签宿主的 display:none 一起隐藏，必须在此显式同步，
-   * 否则会残留在别的标签上并继续操作非活动文档。sidebarVisible 只记用户偏好，
-   * 切回标签时自动恢复。
+   * 标签可见性变化（切换标签时由宿主调用）。侧栏挂在阅读根上，仍要显式同步
+   * hidden，避免切标签后操作非活动文档。sidebarVisible 只记用户偏好，切回时恢复。
    */
   function setTabActive(active: boolean): void {
     if (tabActive === active) {
@@ -1638,21 +1695,19 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       '.lightink-reader-chapter',
     );
     const chapter = Number(article?.dataset.chapterIndex ?? Number.NaN);
-    const paginated = document.documentElement.dataset.readingLayout === 'paginated';
+    const paginated = flowIsPaginated();
     if (paginated && Number.isSafeInteger(chapter)) {
       setActiveChapter(chapter);
       const frame = article?.querySelector<HTMLIFrameElement>('.lightink-reader-chapter-frame');
       const frameDocument = frame?.contentDocument;
       if (frame !== undefined && frame !== null && frameDocument !== undefined && frameDocument !== null) {
         applyPaginatedDocument(frame, frameDocument, { snap: false });
-        const html = frameDocument.documentElement;
-        const step = pagedColumnStep(
-          Number.parseFloat(html.style.width) || html.clientWidth,
-          Number.parseFloat(html.style.columnGap) || 0,
-        );
-        const left = mark.getBoundingClientRect().left - html.getBoundingClientRect().left + html.scrollLeft;
-        html.scrollLeft = Math.max(0, Math.floor(left / step) * step);
-        snapPagedScroller(html, step);
+        const scroller = readerPagedScroller(frameDocument);
+        const step = pagedFrameStep(scroller);
+        const left =
+          mark.getBoundingClientRect().left - scroller.getBoundingClientRect().left + scroller.scrollLeft;
+        scroller.scrollLeft = Math.max(0, Math.floor(left / step) * step);
+        snapPagedScroller(scroller, step);
         return;
       }
     }
@@ -1912,14 +1967,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       return;
     }
     if (item.chapter !== undefined) {
-      if (document.documentElement.dataset.readingLayout === 'paginated') {
+      if (flowIsPaginated()) {
         setActiveChapter(item.chapter);
         const frame = scrollHost.querySelector<HTMLIFrameElement>(
           `.lightink-reader-chapter[data-chapter-index="${item.chapter}"] .lightink-reader-chapter-frame`,
         );
-        const scroller = frame?.contentDocument?.documentElement;
-        if (scroller !== undefined && scroller !== null) {
-          scroller.scrollLeft = 0;
+        const doc = frame?.contentDocument;
+        if (doc !== undefined && doc !== null) {
+          readerPagedScroller(doc).scrollLeft = 0;
         }
       } else {
         scrollHost
@@ -2141,17 +2196,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
   };
 
   const advanceReadingContent = (direction: 1 | -1): boolean => {
-    const paginated = document.documentElement.dataset.readingLayout === 'paginated';
+    const paginated = flowIsPaginated();
     if (paginated) {
       const frame = visibleFlowFrame();
-      const scroller = frame?.contentDocument?.documentElement;
-      const step =
-        scroller === undefined || scroller === null
-          ? 0
-          : pagedColumnStep(
-              Number.parseFloat(scroller.style.width) || scroller.clientWidth,
-              Number.parseFloat(scroller.style.columnGap) || 0,
-            );
+      const scroller =
+        frame?.contentDocument === undefined || frame.contentDocument === null
+          ? null
+          : readerPagedScroller(frame.contentDocument);
+      const step = scroller === null ? 0 : pagedFrameStep(scroller);
       if (
         scroller !== undefined &&
         scroller !== null &&
@@ -2177,10 +2229,9 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
           return;
         }
         applyPaginatedDocument(nextFrame, nextDoc, { snap: false });
-        nextDoc.documentElement.scrollLeft =
-          direction < 0
-            ? Math.max(0, nextDoc.documentElement.scrollWidth - nextDoc.documentElement.clientWidth)
-            : 0;
+        const nextScroller = readerPagedScroller(nextDoc);
+        nextScroller.scrollLeft =
+          direction < 0 ? Math.max(0, nextScroller.scrollWidth - nextScroller.clientWidth) : 0;
       };
       applyChapterPage();
       requestAnimationFrame(applyChapterPage);
@@ -2237,7 +2288,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (destroyed || pdfHandle !== null || cbzHandle !== null || PAGE_EXTS.has(loadedExt)) {
       return;
     }
-    const paginated = document.documentElement.dataset.readingLayout === 'paginated';
+    const paginated = flowIsPaginated();
     const scroller = flowScrollContainer();
     const chapters = Array.from(
       scrollHost.querySelectorAll<HTMLElement>('.lightink-reader-chapter'),
@@ -2345,7 +2396,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     if (saved !== null && progressId !== '') {
       saveReadingProgress(progressStorage, progressId, saved);
     }
-    if (document.documentElement.dataset.readingLayout !== 'paginated') {
+    if (!flowIsPaginated()) {
       remasureScrollFrames();
       if (saved !== null) {
         pendingRestore = saved;
@@ -2384,7 +2435,7 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     layoutSwitching = true;
     try {
-      if (document.documentElement.dataset.readingLayout === 'paginated') {
+      if (flowIsPaginated()) {
         const frame = visibleFlowFrame();
         const doc = frame?.contentDocument;
         if (frame !== null && doc !== undefined && doc !== null) {
@@ -2398,6 +2449,16 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     refreshOpenSearch();
     syncFlowState();
+    pinSidebarOverlay();
+    if (chromePanel !== null) {
+      const panel = chromePanel === 'toc' ? tocPanel : typePanel;
+      const action = chromePanel === 'toc' ? 'toc' : 'typography';
+      positionReaderChromePanel(
+        panel,
+        root,
+        root.querySelector(`[data-reader-chrome-action="${action}"]`),
+      );
+    }
   };
   const settleViewportRefresh = createResizeSettle();
   let cancelSettledRefresh: (() => void) | null = null;
@@ -2484,81 +2545,104 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     renderTypographyPanel();
   };
 
+  const applyFlowLayout = (layout: ReaderFlowLayout): void => {
+    const next = parseReaderLayout(layout);
+    saveReaderLayout(typographyStorage(), next);
+    applyReaderLayout(root, next);
+    if (typeof document !== 'undefined') {
+      applyReaderDocumentLayout(document.documentElement, 'reader', next);
+    }
+    dispatchReaderFlowLayoutPref(next);
+    refreshViewport();
+    renderTypographyPanel();
+    readerChrome?.syncStayRevealed();
+    syncChromeRevealAttr();
+  };
+
+  const applyPaperTheme = (theme: ReaderThemeId): void => {
+    const next = saveReaderTheme(typographyStorage(), theme);
+    applyReaderTheme(root, next);
+    const pane = closestPane();
+    if (pane !== null) {
+      applyReaderTheme(pane, next);
+    }
+    flowRenderer.syncTheme();
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('lightink:reader-theme', { detail: next }));
+    }
+    renderTypographyPanel();
+  };
+
+  const readerPanelCopy = (): ReaderChromePanelCopy => ({
+    tocTitle: t('reader.toc.title'),
+    tocEmpty: t('outline.empty'),
+    typeTitle: t('reader.type.title'),
+    theme: t('reader.type.theme'),
+    size: t('reader.type.size'),
+    font: t('reader.type.font'),
+    lineHeight: t('reader.type.lineHeight'),
+    measure: t('reader.type.measure'),
+    layout: t('reader.type.layout'),
+    paginated: t('reader.type.paginated'),
+    scroll: t('reader.type.scroll'),
+    smaller: t('view.zoomOut'),
+    larger: t('view.zoomIn'),
+    fonts: {
+      body: t('reader.font.body'),
+      sans: t('reader.font.sans'),
+      serif: t('reader.font.serif'),
+      mono: t('reader.font.mono'),
+    },
+    lineHeights: [
+      t('reader.type.spacing.tight'),
+      t('reader.type.spacing.normal'),
+      t('reader.type.spacing.relaxed'),
+      t('reader.type.spacing.loose'),
+    ],
+    measures: [
+      t('reader.type.width.narrower'),
+      t('reader.type.width.narrow'),
+      t('reader.type.width.normal'),
+      t('reader.type.width.wide'),
+      t('reader.type.width.wider'),
+    ],
+    themes: {
+      white: t('reader.theme.white'),
+      sepia: t('reader.theme.sepia'),
+      gray: t('reader.theme.gray'),
+      night: t('reader.theme.night'),
+    },
+  });
+
   const renderTocPanel = (): void => {
-    tocPanel.textContent = '';
-    const heading = document.createElement('h2');
-    heading.textContent = t('outline.title');
-    tocPanel.appendChild(heading);
-    if (readerOutline.length === 0) {
-      const empty = document.createElement('p');
-      empty.textContent = t('outline.empty');
-      tocPanel.appendChild(empty);
-      return;
-    }
-    const list = document.createElement('nav');
-    for (const item of readerOutline) {
-      const button = document.createElement('button');
-      button.setAttribute('type', 'button');
-      button.textContent = item.text;
-      button.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        jumpToOutlineItem(item);
-        closeChromePanel();
-      });
-      list.appendChild(button);
-    }
-    tocPanel.appendChild(list);
+    const current =
+      readerState.locationKind === 'chapter'
+        ? { chapter: Math.max(0, readerState.current - 1) }
+        : readerState.locationKind === 'page'
+          ? { page: readerState.current }
+          : {};
+    fillReaderTocPanel(tocPanel, readerOutline, readerPanelCopy(), current, (item) => {
+      jumpToOutlineItem(item);
+      closeChromePanel();
+    });
   };
 
   const renderTypographyPanel = (): void => {
-    typePanel.textContent = '';
     const current = loadReaderTypography(typographyStorage());
-    const addChoice = (label: string, selected: boolean, apply: () => void): void => {
-      const button = document.createElement('button');
-      button.setAttribute('type', 'button');
-      button.textContent = selected ? `✓ ${label}` : label;
-      button.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        apply();
-      });
-      typePanel.appendChild(button);
-    };
-    const smaller = document.createElement('button');
-    smaller.setAttribute('type', 'button');
-    smaller.textContent = t('view.zoomOut');
-    smaller.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      applyTypographyPatch({ fontScaleStep: nextReaderFontScaleStep(current.fontScaleStep, 'out') });
-    });
-    const larger = document.createElement('button');
-    larger.setAttribute('type', 'button');
-    larger.textContent = t('view.zoomIn');
-    larger.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      applyTypographyPatch({ fontScaleStep: nextReaderFontScaleStep(current.fontScaleStep, 'in') });
-    });
-    typePanel.append(smaller, larger);
-    (Object.keys(READER_FONT_FAMILY_PRESETS) as ReaderFontFamilyPreset[]).forEach((family) => {
-      addChoice(
-        fontPresetLabel(family),
-        current.fontFamily === family || current.fontFamily === READER_FONT_FAMILY_PRESETS[family],
-        () => applyTypographyPatch({ fontFamily: family }),
-      );
-    });
-    for (const lineHeight of READER_CHROME_LINE_HEIGHTS) {
-      addChoice(`行高 ${lineHeight}`, current.lineHeight === lineHeight, () =>
-        applyTypographyPatch({ lineHeight }),
-      );
-    }
-    for (const measureRem of READER_CHROME_MEASURE_REMS) {
-      addChoice(`行长 ${measureRem}`, current.measureRem === measureRem, () =>
-        applyTypographyPatch({ measureRem }),
-      );
-    }
+    fillReaderTypographyPanel(
+      typePanel,
+      current,
+      loadReaderTheme(typographyStorage()),
+      readerPanelCopy(),
+      applyTypographyPatch,
+      applyPaperTheme,
+      (direction) =>
+        applyTypographyPatch({
+          fontScaleStep: nextReaderFontScaleStep(current.fontScaleStep, direction),
+        }),
+      loadReaderLayout(typographyStorage()),
+      applyFlowLayout,
+    );
   };
 
   const openChromePanel = (next: 'toc' | 'typography'): void => {
@@ -2574,6 +2658,14 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
     }
     tocPanel.hidden = next !== 'toc';
     typePanel.hidden = next !== 'typography';
+    const panel = next === 'toc' ? tocPanel : typePanel;
+    const action = next === 'toc' ? 'toc' : 'typography';
+    positionReaderChromePanel(
+      panel,
+      root,
+      root.querySelector(`[data-reader-chrome-action="${action}"]`),
+    );
+    syncChromeActionState();
   };
 
   if (canMountReaderChrome()) {
@@ -2587,11 +2679,15 @@ export function createReaderView(host: HTMLElement, deps: ReaderViewDeps = {}): 
       isSidebarVisible: () => sidebarVisible,
       isSelectionToolbarVisible: () => selectionToolbar?.isVisible() === true,
       hideSelectionToolbar,
+      stayRevealed: () =>
+        !flowIsPaginated() && flowScrollContainer().scrollTop <= 16,
     });
     root.append(tocPanel, typePanel);
     root.addEventListener('click', syncChromeRevealAttr);
     root.addEventListener('pointermove', syncChromeRevealAttr);
+    readerChrome.syncStayRevealed();
     syncChromeRevealAttr();
+    syncChromeActionState();
     if (typeof MutationObserver === 'function') {
       chromeRevealObserver = new MutationObserver(syncChromeRevealAttr);
       try {
