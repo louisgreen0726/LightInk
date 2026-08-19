@@ -1998,6 +1998,16 @@ libraryView = createLibraryView(shell.editorArea, {
   notify: (message, kind = 'warning') => {
     void dialogMessage(message, { title: i18n.t('app.name'), kind });
   },
+  confirmGroupDelete: async (_group, message) =>
+    (await showConfirmDialog(document, {
+      title: i18n.t('app.name'),
+      message,
+      buttons: [
+        { id: 'delete', label: i18n.t('dialog.discard'), kind: 'danger' },
+        { id: 'cancel', label: i18n.t('dialog.cancel'), kind: 'plain' },
+      ],
+      cancelId: 'cancel',
+    })) === 'delete',
   onVisibilityChange: onLibraryVisibilityChange,
 });
 applyWorkspaceState();

@@ -10,6 +10,7 @@ mod asset;
 mod cli;
 mod export;
 mod file;
+mod groups;
 mod identifiers;
 mod library;
 mod managed;
@@ -80,6 +81,14 @@ pub fn run() {
             library::library_clear_cache,
             library::library_set_cache_limit,
             library::library_cache_stats,
+            groups::library_list_groups,
+            groups::library_create_group,
+            groups::library_update_group,
+            groups::library_move_group,
+            groups::library_delete_group,
+            groups::library_list_group_memberships,
+            groups::library_set_group_member,
+            groups::library_set_item_groups,
             managed::library_import_managed_book,
             managed::library_preview_managed_migration,
             managed::library_apply_managed_migration,

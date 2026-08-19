@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager};
 pub const DATABASE_FILE: &str = "library.sqlite3";
 pub const CACHE_DIRECTORY: &str = "remote-cache";
 pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const CACHE_LIMIT_KEY: &str = "cache_limit_bytes";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,6 +283,32 @@ fn migrate_schema(connection: &mut Connection) -> Result<(), String> {
                     )
                     .map_err(|error| format!("无法迁移书籍可用状态: {error}"))?;
             }
+            6 => {
+                transaction
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS library_groups (
+                           id TEXT PRIMARY KEY NOT NULL,
+                           parent_id TEXT REFERENCES library_groups(id) ON DELETE SET NULL,
+                           name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+                           kind TEXT NOT NULL CHECK(kind IN ('custom', 'smart')),
+                           rule_json TEXT,
+                           sort_order INTEGER NOT NULL CHECK(sort_order >= 0),
+                           created_at INTEGER NOT NULL,
+                           updated_at INTEGER NOT NULL
+                         );
+                         CREATE INDEX IF NOT EXISTS library_groups_parent_idx
+                           ON library_groups(parent_id, sort_order, id);
+                         CREATE TABLE IF NOT EXISTS library_group_members (
+                           group_id TEXT NOT NULL REFERENCES library_groups(id) ON DELETE CASCADE,
+                           item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+                           created_at INTEGER NOT NULL,
+                           PRIMARY KEY(group_id, item_id)
+                         );
+                         CREATE INDEX IF NOT EXISTS library_group_members_item_idx
+                           ON library_group_members(item_id, group_id);",
+                    )
+                    .map_err(|error| format!("无法创建书架分组表: {error}"))?;
+            }
             _ => return Err(format!("缺少书库数据库 v{target} 迁移实现")),
         }
         transaction
@@ -427,7 +453,27 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
               alias_id TEXT PRIMARY KEY NOT NULL,
               item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE
             );
-            INSERT INTO schema_meta(key, value) VALUES ('version', '5')
+            CREATE TABLE IF NOT EXISTS library_groups (
+              id TEXT PRIMARY KEY NOT NULL,
+              parent_id TEXT REFERENCES library_groups(id) ON DELETE SET NULL,
+              name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+              kind TEXT NOT NULL CHECK(kind IN ('custom', 'smart')),
+              rule_json TEXT,
+              sort_order INTEGER NOT NULL CHECK(sort_order >= 0),
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS library_groups_parent_idx
+              ON library_groups(parent_id, sort_order, id);
+            CREATE TABLE IF NOT EXISTS library_group_members (
+              group_id TEXT NOT NULL REFERENCES library_groups(id) ON DELETE CASCADE,
+              item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY(group_id, item_id)
+            );
+            CREATE INDEX IF NOT EXISTS library_group_members_item_idx
+              ON library_group_members(item_id, group_id);
+            INSERT INTO schema_meta(key, value) VALUES ('version', '6')
               ON CONFLICT(key) DO NOTHING;
             INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', '2147483648')
               ON CONFLICT(key) DO NOTHING;

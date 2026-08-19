@@ -59,6 +59,20 @@ export interface ManagedItemLocation {
   readonly availability: LibraryItem['availability'];
 }
 
+export interface LibraryGroup {
+  readonly id: string;
+  readonly parentId?: string;
+  readonly name: string;
+  readonly kind: 'custom' | 'smart';
+  readonly rule?: Readonly<Record<string, unknown>>;
+  readonly sortOrder: number;
+}
+
+export interface LibraryGroupMembership {
+  readonly groupId: string;
+  readonly itemId: string;
+}
+
 export interface LibraryComicMetadata {
   readonly series?: string;
   readonly number?: string;
@@ -116,6 +130,45 @@ export class LibraryClient {
 
   materializeItem(itemId: string): Promise<ManagedItemLocation> {
     return this.invoker.invoke<ManagedItemLocation>('library_materialize_item', { itemId });
+  }
+
+  listGroups(): Promise<LibraryGroup[]> {
+    return this.invoker.invoke<LibraryGroup[]>('library_list_groups');
+  }
+
+  createGroup(name: string, parentId?: string): Promise<LibraryGroup> {
+    return this.invoker.invoke<LibraryGroup>('library_create_group', { name, parentId });
+  }
+
+  updateGroup(groupId: string, name: string): Promise<LibraryGroup> {
+    return this.invoker.invoke<LibraryGroup>('library_update_group', { groupId, name });
+  }
+
+  moveGroup(groupId: string, parentId: string | undefined, sortOrder: number): Promise<LibraryGroup> {
+    return this.invoker.invoke<LibraryGroup>('library_move_group', {
+      groupId,
+      parentId,
+      sortOrder,
+    });
+  }
+
+  deleteGroup(groupId: string): Promise<void> {
+    return this.invoker.invoke<void>('library_delete_group', { groupId });
+  }
+
+  listGroupMemberships(): Promise<LibraryGroupMembership[]> {
+    return this.invoker.invoke<LibraryGroupMembership[]>('library_list_group_memberships');
+  }
+
+  setGroupMember(groupId: string, itemId: string, present: boolean): Promise<void> {
+    return this.invoker.invoke<void>('library_set_group_member', { groupId, itemId, present });
+  }
+
+  setItemGroups(itemId: string, groupIds: readonly string[]): Promise<void> {
+    return this.invoker.invoke<void>('library_set_item_groups', {
+      itemId,
+      groupIds: [...groupIds],
+    });
   }
 
   listAcquisitionLinks(itemId: string): Promise<AcquisitionLink[]> {

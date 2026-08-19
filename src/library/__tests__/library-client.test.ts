@@ -33,3 +33,42 @@ describe('LibraryClient managed content', () => {
     });
   });
 });
+
+describe('LibraryClient groups', () => {
+  it('uses camel-case group commands and preserves explicit root placement', async () => {
+    const group = {
+      id: 'group-a',
+      name: 'Favorites',
+      kind: 'custom' as const,
+      sortOrder: 0,
+    };
+    const invoke = vi.fn(async () => group);
+    const client = new LibraryClient({ invoke } as LibraryClientInvoker);
+
+    await client.createGroup('Favorites');
+    await client.moveGroup('group-a', undefined, 2);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'library_create_group', {
+      name: 'Favorites',
+      parentId: undefined,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'library_move_group', {
+      groupId: 'group-a',
+      parentId: undefined,
+      sortOrder: 2,
+    });
+  });
+
+  it('copies readonly membership ids before invoking Rust', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const client = new LibraryClient({ invoke } as LibraryClientInvoker);
+    const groupIds = ['group-a', 'group-b'] as const;
+
+    await client.setItemGroups('book-a', groupIds);
+
+    expect(invoke).toHaveBeenCalledWith('library_set_item_groups', {
+      itemId: 'book-a',
+      groupIds: ['group-a', 'group-b'],
+    });
+  });
+});
