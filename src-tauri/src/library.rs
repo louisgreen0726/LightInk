@@ -162,6 +162,83 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> bool 
         .unwrap_or(false)
 }
 
+fn schema_version(connection: &Connection) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法读取书库数据库版本: {error}"))
+}
+
+fn migrate_schema(connection: &mut Connection) -> Result<(), String> {
+    let mut version = schema_version(connection)?;
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "书库数据库版本 {version} 高于当前支持的版本 {SCHEMA_VERSION}"
+        ));
+    }
+    while version < SCHEMA_VERSION {
+        let target = version + 1;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("无法开启书库迁移事务: {error}"))?;
+        match target {
+            2 => {
+                if !table_has_column(&transaction, "opds_sources", "allow_http") {
+                    transaction
+                        .execute(
+                            "ALTER TABLE opds_sources ADD COLUMN allow_http INTEGER NOT NULL DEFAULT 0",
+                            [],
+                        )
+                        .map_err(|error| format!("无法迁移 OPDS 源协议设置: {error}"))?;
+                }
+            }
+            3 => {
+                transaction
+                    .execute(
+                        "INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', ?1)
+                         ON CONFLICT(key) DO NOTHING",
+                        params![DEFAULT_CACHE_LIMIT_BYTES as i64],
+                    )
+                    .map_err(|error| format!("无法迁移书库缓存设置: {error}"))?;
+            }
+            4 => {
+                for (column, definition) in [
+                    ("series", "series TEXT"),
+                    ("number", "number TEXT"),
+                    ("volume", "volume TEXT"),
+                    ("page_count", "page_count INTEGER"),
+                    ("reading_direction", "reading_direction TEXT"),
+                    ("cover_page", "cover_page INTEGER"),
+                ] {
+                    if !table_has_column(&transaction, "library_items", column) {
+                        transaction
+                            .execute(
+                                &format!("ALTER TABLE library_items ADD COLUMN {definition}"),
+                                [],
+                            )
+                            .map_err(|error| format!("无法迁移漫画元数据列 {column}: {error}"))?;
+                    }
+                }
+            }
+            _ => return Err(format!("缺少书库数据库 v{target} 迁移实现")),
+        }
+        transaction
+            .execute(
+                "UPDATE schema_meta SET value=?1 WHERE key='version'",
+                params![target.to_string()],
+            )
+            .map_err(|error| format!("无法更新书库数据库版本: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交书库 v{target} 迁移事务: {error}"))?;
+        version = target;
+    }
+    Ok(())
+}
+
 pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String> {
     fs::create_dir_all(app_data_dir).map_err(|error| format!("无法创建书库数据目录: {error}"))?;
     let path = app_data_dir.join(DATABASE_FILE);
@@ -282,59 +359,7 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
             ",
         )
         .map_err(|error| format!("无法初始化书库数据库: {error}"))?;
-    let version: i64 = connection
-        .query_row(
-            "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='version'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(1);
-    if version < SCHEMA_VERSION {
-        let transaction = connection
-            .transaction()
-            .map_err(|error| format!("无法开启书库迁移事务: {error}"))?;
-        if !table_has_column(&transaction, "opds_sources", "allow_http") {
-            transaction
-                .execute(
-                    "ALTER TABLE opds_sources ADD COLUMN allow_http INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )
-                .map_err(|error| format!("无法迁移 OPDS 源协议设置: {error}"))?;
-        }
-        for (column, definition) in [
-            ("series", "series TEXT"),
-            ("number", "number TEXT"),
-            ("volume", "volume TEXT"),
-            ("page_count", "page_count INTEGER"),
-            ("reading_direction", "reading_direction TEXT"),
-            ("cover_page", "cover_page INTEGER"),
-        ] {
-            if !table_has_column(&transaction, "library_items", column) {
-                transaction
-                    .execute(
-                        &format!("ALTER TABLE library_items ADD COLUMN {definition}"),
-                        [],
-                    )
-                    .map_err(|error| format!("无法迁移漫画元数据列 {column}: {error}"))?;
-            }
-        }
-        transaction
-            .execute(
-                "INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', ?1)
-                 ON CONFLICT(key) DO NOTHING",
-                params![DEFAULT_CACHE_LIMIT_BYTES as i64],
-            )
-            .map_err(|error| format!("无法迁移书库数据库: {error}"))?;
-        transaction
-            .execute(
-                "UPDATE schema_meta SET value=?1 WHERE key='version'",
-                params![SCHEMA_VERSION.to_string()],
-            )
-            .map_err(|error| format!("无法更新书库数据库版本: {error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("无法提交书库迁移事务: {error}"))?;
-    }
+    migrate_schema(&mut connection)?;
     Ok(connection)
 }
 
@@ -975,6 +1000,60 @@ mod tests {
         );
         assert_eq!(version, 4);
         assert_eq!(title, "旧漫画");
+    }
+
+    #[test]
+    fn migrates_each_schema_version_in_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = Connection::open(directory.path().join(DATABASE_FILE)).unwrap();
+        legacy
+            .execute_batch(
+                "
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                INSERT INTO schema_meta(key, value) VALUES ('version', '1');
+                CREATE TABLE opds_sources (
+                  id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+                  credential_ref TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE library_items (
+                  id TEXT PRIMARY KEY NOT NULL, source_id TEXT, source_kind TEXT NOT NULL,
+                  title TEXT NOT NULL, authors_json TEXT NOT NULL, cover_url TEXT,
+                  local_path TEXT, acquisition_url TEXT, media_type TEXT, extension TEXT,
+                  size INTEGER, etag TEXT, last_modified TEXT, updated_at INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let migrated = database_for_tests(directory.path()).unwrap();
+        assert_eq!(schema_version(&migrated).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&migrated, "opds_sources", "allow_http"));
+        assert!(table_has_column(&migrated, "library_items", "cover_page"));
+        let cache_limit: i64 = migrated
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='cache_limit_bytes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cache_limit, DEFAULT_CACHE_LIMIT_BYTES as i64);
+    }
+
+    #[test]
+    fn refuses_a_schema_newer_than_the_application() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = database_for_tests(directory.path()).unwrap();
+        connection
+            .execute(
+                "UPDATE schema_meta SET value=?1 WHERE key='version'",
+                params![(SCHEMA_VERSION + 1).to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = database_for_tests(directory.path()).unwrap_err();
+        assert!(error.contains("高于当前支持的版本"), "{error}");
     }
 
     #[test]
