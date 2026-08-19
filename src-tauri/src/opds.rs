@@ -505,8 +505,8 @@ fn persist_feed(app: &AppHandle, source_id: &str, feed: &OpdsFeed) -> Result<(),
             .execute(
                 "INSERT INTO library_items(
                    id, source_id, source_kind, title, authors_json, cover_url,
-                   acquisition_url, media_type, extension, size, updated_at
-                 ) VALUES (?1,?2,'opds',?3,?4,?5,?6,?7,?8,?9,?10)
+                   acquisition_url, media_type, extension, size, availability, updated_at
+                 ) VALUES (?1,?2,'opds',?3,?4,?5,?6,?7,?8,?9,'remote',?10)
                  ON CONFLICT(id) DO UPDATE SET title=?3, authors_json=?4, cover_url=?5,
                    acquisition_url=?6, media_type=?7, extension=?8, size=?9, updated_at=?10",
                 params![

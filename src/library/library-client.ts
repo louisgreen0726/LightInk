@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 export interface LibraryItem {
   readonly id: string;
   readonly sourceId?: string;
-  readonly sourceKind: 'local' | 'opds' | 'remote';
+  readonly sourceKind: 'local' | 'managed' | 'opds' | 'remote' | 'webdav';
   readonly title: string;
   readonly authors: readonly string[];
   readonly coverUrl?: string;
@@ -20,7 +20,43 @@ export interface LibraryItem {
   readonly pageCount?: number;
   readonly readingDirection?: 'ltr' | 'rtl';
   readonly coverPage?: number;
+  readonly blobHash?: string;
+  readonly availability?: 'external' | 'local' | 'remote' | 'missing' | 'downloading';
+  readonly offlinePinned?: boolean;
+  readonly subjects?: readonly string[];
   readonly updatedAt: number;
+}
+
+export interface ManagedMigrationEntry {
+  readonly itemId: string;
+  readonly title: string;
+  readonly path: string;
+  readonly status: 'ready' | 'duplicate' | 'missing' | 'tooLarge' | 'unreadable' | 'failed';
+  readonly size?: number;
+  readonly blobHash?: string;
+  readonly error?: string;
+}
+
+export interface ManagedMigrationPreview {
+  readonly entries: readonly ManagedMigrationEntry[];
+}
+
+export interface LibraryItemAlias {
+  readonly aliasId: string;
+  readonly itemId: string;
+}
+
+export interface ManagedMigrationResult {
+  readonly migrated: number;
+  readonly duplicates: number;
+  readonly failed: readonly ManagedMigrationEntry[];
+  readonly aliases: readonly LibraryItemAlias[];
+}
+
+export interface ManagedItemLocation {
+  readonly itemId: string;
+  readonly path: string;
+  readonly availability: LibraryItem['availability'];
 }
 
 export interface LibraryComicMetadata {
@@ -62,6 +98,24 @@ export class LibraryClient {
 
   listItems(sourceId?: string): Promise<LibraryItem[]> {
     return this.invoker.invoke<LibraryItem[]>('library_list_items', { sourceId });
+  }
+
+  importManagedBook(path: string): Promise<LibraryItem> {
+    return this.invoker.invoke<LibraryItem>('library_import_managed_book', { path });
+  }
+
+  previewManagedMigration(): Promise<ManagedMigrationPreview> {
+    return this.invoker.invoke<ManagedMigrationPreview>('library_preview_managed_migration');
+  }
+
+  applyManagedMigration(itemIds: readonly string[]): Promise<ManagedMigrationResult> {
+    return this.invoker.invoke<ManagedMigrationResult>('library_apply_managed_migration', {
+      itemIds: [...itemIds],
+    });
+  }
+
+  materializeItem(itemId: string): Promise<ManagedItemLocation> {
+    return this.invoker.invoke<ManagedItemLocation>('library_materialize_item', { itemId });
   }
 
   listAcquisitionLinks(itemId: string): Promise<AcquisitionLink[]> {

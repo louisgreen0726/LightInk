@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager};
 pub const DATABASE_FILE: &str = "library.sqlite3";
 pub const CACHE_DIRECTORY: &str = "remote-cache";
 pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const CACHE_LIMIT_KEY: &str = "cache_limit_bytes";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,7 +52,19 @@ pub struct LibraryItem {
     pub page_count: Option<i64>,
     pub reading_direction: Option<String>,
     pub cover_page: Option<i64>,
+    #[serde(default)]
+    pub blob_hash: Option<String>,
+    #[serde(default = "default_library_availability")]
+    pub availability: String,
+    #[serde(default)]
+    pub offline_pinned: bool,
+    #[serde(default)]
+    pub subjects: Vec<String>,
     pub updated_at: i64,
+}
+
+fn default_library_availability() -> String {
+    "external".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -223,6 +235,54 @@ fn migrate_schema(connection: &mut Connection) -> Result<(), String> {
                     }
                 }
             }
+            5 => {
+                for (column, definition) in [
+                    ("blob_hash", "blob_hash TEXT"),
+                    (
+                        "availability",
+                        "availability TEXT NOT NULL DEFAULT 'external'",
+                    ),
+                    (
+                        "offline_pinned",
+                        "offline_pinned INTEGER NOT NULL DEFAULT 0",
+                    ),
+                    ("subjects_json", "subjects_json TEXT NOT NULL DEFAULT '[]'"),
+                ] {
+                    if !table_has_column(&transaction, "library_items", column) {
+                        transaction
+                            .execute(
+                                &format!("ALTER TABLE library_items ADD COLUMN {definition}"),
+                                [],
+                            )
+                            .map_err(|error| format!("无法迁移受管书籍字段 {column}: {error}"))?;
+                    }
+                }
+                transaction
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS managed_blobs (
+                           hash TEXT PRIMARY KEY NOT NULL,
+                           relative_path TEXT NOT NULL UNIQUE,
+                           size INTEGER NOT NULL CHECK(size >= 0),
+                           created_at INTEGER NOT NULL,
+                           last_verified_at INTEGER NOT NULL
+                         );
+                         CREATE TABLE IF NOT EXISTS library_item_aliases (
+                           alias_id TEXT PRIMARY KEY NOT NULL,
+                           item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE
+                         );
+                         CREATE INDEX IF NOT EXISTS library_items_blob_idx
+                           ON library_items(blob_hash);",
+                    )
+                    .map_err(|error| format!("无法创建受管内容表: {error}"))?;
+                transaction
+                    .execute(
+                        "UPDATE library_items SET availability =
+                           CASE WHEN source_kind='local' THEN 'external' ELSE 'remote' END
+                         WHERE blob_hash IS NULL",
+                        [],
+                    )
+                    .map_err(|error| format!("无法迁移书籍可用状态: {error}"))?;
+            }
             _ => return Err(format!("缺少书库数据库 v{target} 迁移实现")),
         }
         transaction
@@ -319,6 +379,10 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
               page_count INTEGER,
               reading_direction TEXT,
               cover_page INTEGER,
+              blob_hash TEXT,
+              availability TEXT NOT NULL DEFAULT 'external',
+              offline_pinned INTEGER NOT NULL DEFAULT 0,
+              subjects_json TEXT NOT NULL DEFAULT '[]',
               updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS library_items_source_idx
@@ -352,7 +416,18 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
             );
             CREATE INDEX IF NOT EXISTS cache_ranges_lookup_idx
               ON cache_ranges(object_id, start, end);
-            INSERT INTO schema_meta(key, value) VALUES ('version', '4')
+            CREATE TABLE IF NOT EXISTS managed_blobs (
+              hash TEXT PRIMARY KEY NOT NULL,
+              relative_path TEXT NOT NULL UNIQUE,
+              size INTEGER NOT NULL CHECK(size >= 0),
+              created_at INTEGER NOT NULL,
+              last_verified_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS library_item_aliases (
+              alias_id TEXT PRIMARY KEY NOT NULL,
+              item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE
+            );
+            INSERT INTO schema_meta(key, value) VALUES ('version', '5')
               ON CONFLICT(key) DO NOTHING;
             INSERT INTO schema_meta(key, value) VALUES ('cache_limit_bytes', '2147483648')
               ON CONFLICT(key) DO NOTHING;
@@ -360,6 +435,12 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
         )
         .map_err(|error| format!("无法初始化书库数据库: {error}"))?;
     migrate_schema(&mut connection)?;
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS library_items_blob_idx ON library_items(blob_hash)",
+            [],
+        )
+        .map_err(|error| format!("无法创建受管内容索引: {error}"))?;
     Ok(connection)
 }
 
@@ -457,7 +538,8 @@ pub fn library_list_items(
             "SELECT id, source_id, source_kind, title, authors_json, cover_url,
                     local_path, acquisition_url, media_type, extension, size,
                     etag, last_modified, series, number, volume, page_count,
-                    reading_direction, cover_page, updated_at
+                    reading_direction, cover_page, blob_hash, availability,
+                    offline_pinned, subjects_json, updated_at
              FROM library_items
              WHERE (?1 IS NULL OR source_id = ?1)
              ORDER BY updated_at DESC, title COLLATE NOCASE, id",
@@ -467,6 +549,8 @@ pub fn library_list_items(
         .query_map(params![source_id], |row| {
             let authors_json: String = row.get(4)?;
             let authors = serde_json::from_str(&authors_json).unwrap_or_default();
+            let subjects_json: String = row.get(22)?;
+            let subjects = serde_json::from_str(&subjects_json).unwrap_or_default();
             Ok(LibraryItem {
                 id: row.get(0)?,
                 source_id: row.get(1)?,
@@ -487,7 +571,11 @@ pub fn library_list_items(
                 page_count: row.get(16)?,
                 reading_direction: row.get(17)?,
                 cover_page: row.get(18)?,
-                updated_at: row.get(19)?,
+                blob_hash: row.get(19)?,
+                availability: row.get(20)?,
+                offline_pinned: row.get::<_, i64>(21)? != 0,
+                subjects,
+                updated_at: row.get(23)?,
             })
         })
         .map_err(|error| format!("无法读取书库条目: {error}"))?;
@@ -531,6 +619,8 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
     }
     let authors_json = serde_json::to_string(&item.authors)
         .map_err(|error| format!("无法序列化作者信息: {error}"))?;
+    let subjects_json = serde_json::to_string(&item.subjects)
+        .map_err(|error| format!("无法序列化主题信息: {error}"))?;
     let connection = open_database_at(&app_data_dir(&app)?)?;
     let transaction = connection
         .unchecked_transaction()
@@ -541,9 +631,10 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
                id, source_id, source_kind, title, authors_json, cover_url,
                local_path, acquisition_url, media_type, extension, size,
                etag, last_modified, series, number, volume, page_count,
-               reading_direction, cover_page, updated_at
+               reading_direction, cover_page, blob_hash, availability,
+               offline_pinned, subjects_json, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                       ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                       ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
              ON CONFLICT(id) DO UPDATE SET
                source_id=?2, source_kind=?3, title=?4, authors_json=?5,
                cover_url=?6, local_path=?7, acquisition_url=?8, media_type=?9,
@@ -551,7 +642,8 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
                series=COALESCE(?14, series), number=COALESCE(?15, number),
                volume=COALESCE(?16, volume), page_count=COALESCE(?17, page_count),
                reading_direction=COALESCE(?18, reading_direction),
-               cover_page=COALESCE(?19, cover_page), updated_at=?20",
+               cover_page=COALESCE(?19, cover_page), blob_hash=COALESCE(?20, blob_hash),
+               availability=?21, offline_pinned=?22, subjects_json=?23, updated_at=?24",
             params![
                 item.id,
                 item.source_id,
@@ -572,6 +664,10 @@ pub fn library_upsert_item(app: AppHandle, item: LibraryItem) -> Result<(), Stri
                 item.page_count,
                 item.reading_direction,
                 item.cover_page,
+                item.blob_hash,
+                item.availability,
+                i64::from(item.offline_pinned),
+                subjects_json,
                 item.updated_at,
             ],
         )
@@ -998,7 +1094,7 @@ mod tests {
                 )
                 .unwrap(),
         );
-        assert_eq!(version, 4);
+        assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(title, "旧漫画");
     }
 

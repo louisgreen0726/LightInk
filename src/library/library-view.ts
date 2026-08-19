@@ -399,6 +399,10 @@ function itemAuthors(item: LibraryItem): readonly string[] {
   return Array.isArray(item.authors) ? item.authors : [];
 }
 
+function isLocalItem(item: LibraryItem): boolean {
+  return item.sourceKind === 'local' || item.sourceKind === 'managed';
+}
+
 const SHELF_GROUPS: readonly ShelfGroup[] = ['all', 'in-progress', 'unread', 'text', 'comic'];
 
 function groupLabel(labels: Labels, group: ShelfGroup): string {
@@ -932,7 +936,7 @@ export function createLibraryView(
   }
 
   async function ensureLinks(display: DisplayItem): Promise<DisplayItem> {
-    if (display.links.length > 0 || display.item.sourceKind === 'local') return display;
+    if (display.links.length > 0 || isLocalItem(display.item)) return display;
     try {
       const links = await deps.library.listAcquisitionLinks(display.item.id);
       return { ...display, links };
@@ -973,7 +977,7 @@ export function createLibraryView(
   async function openSelected(display = selected): Promise<void> {
     if (display === null) return;
     const request = requestFor(display);
-    if (display.item.sourceKind !== 'local' && request.acquisition === undefined) {
+    if (!isLocalItem(display.item) && request.acquisition === undefined) {
       deps.notify(labels().noAcquisition, 'warning');
       return;
     }
@@ -1069,10 +1073,10 @@ export function createLibraryView(
       selectedProgress?.status === 'in-progress' ? labels().continueReading : labels().open,
       'lightink-library-primary',
     );
-    open.disabled = selected.item.sourceKind !== 'local' && selected.links.length === 0;
+    open.disabled = !isLocalItem(selected.item) && selected.links.length === 0;
     open.addEventListener('click', () => void openSelected());
     actions.appendChild(open);
-    if (selected.item.sourceKind !== 'local') {
+    if (!isLocalItem(selected.item)) {
       const cache = button(doc, labels().cacheBook);
       cache.disabled = selected.links.length === 0;
       cache.addEventListener('click', async () => {
@@ -1103,7 +1107,7 @@ export function createLibraryView(
   function needsLocalEnrich(item: LibraryItem): boolean {
     const extension = (item.extension ?? '').toLowerCase();
     return (
-      item.sourceKind === 'local' &&
+      isLocalItem(item) &&
       item.localPath !== undefined &&
       !isShelfCoverUrl(item.coverUrl) &&
       (extension === 'epub' || extension === 'cbz')

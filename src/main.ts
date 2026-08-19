@@ -71,7 +71,7 @@ import type { ReaderTarget, RemoteReaderTarget } from './reader/sources/types.js
 import { readerLoadErrorDetail } from './reader/error-message.js';
 import { loadReaderTheme, readerNativeWindowChrome } from './reader/reader-theme.js';
 import { loadReaderTypography, nextReaderFontScaleStep } from './reader/reader-typography.js';
-import { TabManager, fileNameOf, isMarkdownTab } from './tabs/tab-manager.js';
+import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
 import { createAutosave, type AutosaveController } from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
@@ -726,11 +726,9 @@ async function openLibraryItem(
   signal?: AbortSignal,
 ): Promise<void> {
   const { item } = request;
-  if (item.sourceKind === 'local') {
-    if (item.localPath === undefined || item.localPath === '') {
-      throw new Error('本地书籍路径不可用');
-    }
-    const tab = await openPathByKind(item.localPath);
+  if (item.sourceKind === 'local' || item.sourceKind === 'managed') {
+    const location = await libraryClient.materializeItem(item.id);
+    const tab = await openPathByKind(location.path);
     if (tab === null) {
       throw new Error(i18n.t('reader.loadFailed', { detail: item.title }));
     }
@@ -792,7 +790,9 @@ async function cacheLibraryItem(
   signal?: AbortSignal,
 ): Promise<void> {
   const { item, acquisition } = request;
-  if (item.sourceKind === 'local' || acquisition === undefined) return;
+  if (item.sourceKind === 'local' || item.sourceKind === 'managed' || acquisition === undefined) {
+    return;
+  }
   let opened: RemoteOpenResult;
   try {
     opened = await openLibraryRemote(request, signal);
@@ -833,7 +833,10 @@ async function cacheLibraryItem(
 async function enrichLocalLibraryItem(
   item: import('./library/library-client.js').LibraryItem,
 ): Promise<import('./library/library-client.js').LibraryItem> {
-  if (item.sourceKind !== 'local' || item.localPath === undefined) {
+  if (
+    (item.sourceKind !== 'local' && item.sourceKind !== 'managed') ||
+    item.localPath === undefined
+  ) {
     return item;
   }
   const extension = (item.extension ?? '').toLowerCase();
@@ -872,16 +875,7 @@ async function importLocalLibraryItem(): Promise<import('./library/library-clien
     return null;
   }
   if (selected === null) return null;
-  const extension = extOfPath(selected);
-  const item = {
-    id: `local:${selected}`,
-    sourceKind: 'local' as const,
-    title: fileNameOf(selected),
-    authors: [] as string[],
-    localPath: selected,
-    extension,
-    updatedAt: Date.now(),
-  };
+  const item = await libraryClient.importManagedBook(selected);
   const enriched = await enrichLocalLibraryItem(item);
   await libraryClient.upsertItem(enriched);
   return enriched;

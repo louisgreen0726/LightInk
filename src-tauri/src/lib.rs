@@ -12,6 +12,7 @@ mod export;
 mod file;
 mod identifiers;
 mod library;
+mod managed;
 mod opds;
 mod recents;
 mod remote;
@@ -79,6 +80,10 @@ pub fn run() {
             library::library_clear_cache,
             library::library_set_cache_limit,
             library::library_cache_stats,
+            managed::library_import_managed_book,
+            managed::library_preview_managed_migration,
+            managed::library_apply_managed_migration,
+            managed::library_materialize_item,
             remote::remote_open,
             remote::remote_info,
             remote::remote_read_range,
