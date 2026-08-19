@@ -13,6 +13,14 @@ import {
   type GroupKeyboardMove,
   type LibraryGroupNode,
 } from './library-group-tree.js';
+import {
+  dynamicAuthorAndSeriesGroups,
+  dynamicSourceAndFormatGroups,
+  SMART_GROUP_DEFINITIONS,
+  smartGroupMatches,
+  smartGroupFromRecord,
+  type SmartGroupDefinition,
+} from './library-smart-groups.js';
 import { classifyLibraryKind } from './library-kind.js';
 import { isShelfCoverUrl } from './local-book-meta.js';
 import type {
@@ -115,6 +123,15 @@ interface Labels {
   saveGroups: string;
   noCustomGroups: string;
   invalidGroupMove: string;
+  smartGroups: string;
+  managedBooks: string;
+  remoteBooks: string;
+  epubBooks: string;
+  pdfBooks: string;
+  authorGroup: string;
+  seriesGroup: string;
+  sourceGroup: string;
+  formatGroup: string;
 }
 
 const LABELS: Record<Locale, Labels> = {
@@ -200,6 +217,15 @@ const LABELS: Record<Locale, Labels> = {
     saveGroups: 'Save groups',
     noCustomGroups: 'Create a custom group first.',
     invalidGroupMove: 'Groups cannot form a cycle or exceed 8 levels.',
+    smartGroups: 'Smart groups',
+    managedBooks: 'Managed books',
+    remoteBooks: 'Remote books',
+    epubBooks: 'EPUB books',
+    pdfBooks: 'PDF books',
+    authorGroup: 'Author: {name}',
+    seriesGroup: 'Series: {name}',
+    sourceGroup: 'Source: {name}',
+    formatGroup: 'Format: {name}',
   },
   'zh-CN': {
     library: '书库',
@@ -283,6 +309,15 @@ const LABELS: Record<Locale, Labels> = {
     saveGroups: '保存分组',
     noCustomGroups: '请先创建自定义分组。',
     invalidGroupMove: '分组不能形成循环或超过 8 层。',
+    smartGroups: '智能分组',
+    managedBooks: '受管书籍',
+    remoteBooks: '远程书籍',
+    epubBooks: 'EPUB',
+    pdfBooks: 'PDF',
+    authorGroup: '作者：{name}',
+    seriesGroup: '系列：{name}',
+    sourceGroup: '来源：{name}',
+    formatGroup: '格式：{name}',
   },
 };
 
@@ -659,6 +694,8 @@ export function createLibraryView(
   let selectedCustomGroupId: string | null = null;
   let groups: LibraryGroup[] = [];
   let memberships: LibraryGroupMembership[] = [];
+  let smartGroups: SmartGroupDefinition[] = [...SMART_GROUP_DEFINITIONS];
+  let selectedSmartGroupId: string | null = null;
   const expandedGroupIds = new Set<string>();
   let groupEditorMode:
     | { readonly kind: 'create'; readonly parentId?: string }
@@ -681,6 +718,52 @@ export function createLibraryView(
   const labels = (): Labels => LABELS[deps.getLocale()];
   const selectedSource = (): OpdsSource | undefined =>
     sources.find((source) => source.id === selectedSourceId);
+
+  function smartGroupLabel(group: SmartGroupDefinition): string {
+    if (group.rule.type === 'author') {
+      return labels().authorGroup.replace('{name}', group.rule.value);
+    }
+    if (group.rule.type === 'series') {
+      return labels().seriesGroup.replace('{name}', group.rule.value);
+    }
+    if (group.rule.type === 'source' && group.rule.value.startsWith('id:')) {
+      return labels().sourceGroup.replace('{name}', group.nameKey);
+    }
+    if (group.rule.type === 'format' && !['smart:epub', 'smart:pdf'].includes(group.id)) {
+      return labels().formatGroup.replace('{name}', group.rule.value.toUpperCase());
+    }
+    const key = group.nameKey as keyof Labels;
+    const value = labels()[key];
+    if (typeof value === 'string') return value;
+    if (group.rule.type === 'format') return group.rule.value.toUpperCase();
+    return group.nameKey;
+  }
+
+  function refreshSmartGroups(): void {
+    const persisted = groups
+      .map(smartGroupFromRecord)
+      .filter((group): group is SmartGroupDefinition => group !== null);
+    const definitions = [
+      ...SMART_GROUP_DEFINITIONS,
+      ...dynamicAuthorAndSeriesGroups(items.map((display) => display.item)),
+      ...dynamicSourceAndFormatGroups(items.map((display) => display.item), sources),
+    ];
+    const seen = new Set<string>();
+    smartGroups = [...definitions, ...persisted].filter((group) => {
+      if (seen.has(group.id)) return false;
+      seen.add(group.id);
+      return true;
+    });
+    smartGroups.sort(
+      (left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id),
+    );
+    if (
+      selectedSmartGroupId !== null &&
+      !smartGroups.some((group) => group.id === selectedSmartGroupId)
+    ) {
+      selectedSmartGroupId = null;
+    }
+  }
 
   function progressFor(display: DisplayItem): LibraryProgress | null {
     const catalogEntry = display.entry !== undefined;
@@ -718,6 +801,10 @@ export function createLibraryView(
   }
 
   function matchesGroup(display: DisplayItem): boolean {
+    if (selectedSmartGroupId !== null) {
+      const smart = smartGroups.find((group) => group.id === selectedSmartGroupId);
+      return smart !== undefined && smartGroupMatches(display.item, smart.rule, progressFor(display));
+    }
     if (selectedCustomGroupId !== null) {
       return itemIdsForGroup(groups, memberships, selectedCustomGroupId).has(display.item.id);
     }
@@ -996,6 +1083,7 @@ export function createLibraryView(
     if (selectedCustomGroupId === node.group.id) choose.setAttribute('aria-current', 'true');
     choose.addEventListener('click', () => {
       selectedCustomGroupId = node.group.id;
+      selectedSmartGroupId = null;
       renderGroups();
       renderContinueBar();
       renderItems();
@@ -1119,12 +1207,37 @@ export function createLibraryView(
     for (const group of SHELF_GROUPS) {
       const row = button(doc, groupLabel(labels(), group), 'lightink-library-group');
       row.dataset.shelfGroup = group;
-      const active = selectedCustomGroupId === null && selectedGroup === group;
+      const active =
+        selectedCustomGroupId === null && selectedSmartGroupId === null && selectedGroup === group;
       row.classList.toggle('is-active', active);
       if (active) row.setAttribute('aria-current', 'true');
       row.addEventListener('click', () => {
         selectedGroup = group;
         selectedCustomGroupId = null;
+        selectedSmartGroupId = null;
+        renderGroups();
+        renderContinueBar();
+        renderItems();
+      });
+      groupList.appendChild(row);
+    }
+    const smartDivider = doc.createElement('div');
+    smartDivider.className = 'lightink-library-group-divider';
+    groupList.appendChild(smartDivider);
+    const smartHeading = doc.createElement('div');
+    smartHeading.className = 'lightink-library-group-section-label';
+    smartHeading.textContent = labels().smartGroups;
+    groupList.appendChild(smartHeading);
+    for (const smart of smartGroups) {
+      const row = button(doc, smartGroupLabel(smart), 'lightink-library-group lightink-library-smart-group');
+      row.dataset.smartGroupId = smart.id;
+      const active = selectedSmartGroupId === smart.id;
+      row.classList.toggle('is-active', active);
+      if (active) row.setAttribute('aria-current', 'true');
+      row.addEventListener('click', () => {
+        selectedSmartGroupId = smart.id;
+        selectedCustomGroupId = null;
+        selectedGroup = 'all';
         renderGroups();
         renderContinueBar();
         renderItems();
@@ -1373,6 +1486,7 @@ export function createLibraryView(
       libraryPage !== 'my-books' ||
       selectedGroup !== 'all' ||
       selectedCustomGroupId !== null ||
+      selectedSmartGroupId !== null ||
       searchInput.value.trim() !== ''
     ) {
       continueHost.hidden = true;
@@ -1639,6 +1753,7 @@ export function createLibraryView(
       items = loaded.map((item) => ({ item, links: [] }));
       groups = loadedGroups;
       memberships = loadedMemberships;
+      refreshSmartGroups();
       for (const group of groups) expandedGroupIds.add(group.id);
       selected = null;
       feed = null;
@@ -1670,6 +1785,7 @@ export function createLibraryView(
       if (generation !== requestGeneration) return;
       feed = loaded;
       items = loaded.entries.map((entry) => itemFromEntry(source.id, entry));
+      refreshSmartGroups();
       selected = null;
       if (pushTrail) trail.push({ title: loaded.title, url: loaded.sourceUrl });
       setStatus('');
@@ -1740,6 +1856,7 @@ export function createLibraryView(
           `${itemTitle(item)}\n${itemAuthors(item).join('\n')}`.toLocaleLowerCase().includes(lowered),
         )
         .map((item) => ({ item, links: [] }));
+      refreshSmartGroups();
       selected = null;
       renderContinueBar();
       renderItems();
@@ -1753,6 +1870,7 @@ export function createLibraryView(
       if (generation !== requestGeneration) return;
       feed = loaded;
       items = loaded.entries.map((entry) => itemFromEntry(selectedSourceId!, entry));
+      refreshSmartGroups();
       selected = null;
       trail.splice(0, trail.length, { title: `${labels().search}: ${query}`, url: loaded.sourceUrl });
       setStatus('');
@@ -2142,6 +2260,8 @@ export function createLibraryView(
       deps.onVisibilityChange?.(true);
       libraryPage = 'my-books';
       selectedGroup = 'all';
+      selectedSmartGroupId = null;
+      selectedCustomGroupId = null;
       searchInput.value = '';
       await initialLoad();
       searchInput.focus();

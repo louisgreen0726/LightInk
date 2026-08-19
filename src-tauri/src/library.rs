@@ -487,6 +487,7 @@ pub(crate) fn open_database_at(app_data_dir: &Path) -> Result<Connection, String
             [],
         )
         .map_err(|error| format!("无法创建受管内容索引: {error}"))?;
+    crate::groups::ensure_smart_groups(&connection)?;
     Ok(connection)
 }
 

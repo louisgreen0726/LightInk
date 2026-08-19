@@ -1,6 +1,6 @@
 //! Persistent custom shelf groups and their many-to-many book memberships.
 
-use crate::library;
+use crate::{library, sync};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -8,6 +8,68 @@ use tauri::AppHandle;
 
 pub const MAX_GROUP_DEPTH: usize = 8;
 const MAX_GROUP_NAME_CHARS: usize = 80;
+
+pub(crate) fn ensure_smart_groups(connection: &Connection) -> Result<(), String> {
+    let presets = [
+        (
+            "smart:in-progress",
+            "在读",
+            r#"{"type":"progress","value":"in-progress"}"#,
+            0_i64,
+        ),
+        (
+            "smart:unread",
+            "未读",
+            r#"{"type":"progress","value":"unread"}"#,
+            1,
+        ),
+        (
+            "smart:text",
+            "文字书",
+            r#"{"type":"kind","value":"text"}"#,
+            2,
+        ),
+        (
+            "smart:comic",
+            "漫画",
+            r#"{"type":"kind","value":"comic"}"#,
+            3,
+        ),
+        (
+            "smart:managed",
+            "受管书籍",
+            r#"{"type":"source","value":"managed"}"#,
+            4,
+        ),
+        (
+            "smart:remote",
+            "远程书籍",
+            r#"{"type":"source","value":"remote"}"#,
+            5,
+        ),
+        (
+            "smart:epub",
+            "EPUB",
+            r#"{"type":"format","value":"epub"}"#,
+            6,
+        ),
+        ("smart:pdf", "PDF", r#"{"type":"format","value":"pdf"}"#, 7),
+    ];
+    let now = library::now_ms();
+    for (id, name, rule, sort_order) in presets {
+        connection
+            .execute(
+                "INSERT INTO library_groups(
+                   id,parent_id,name,kind,rule_json,sort_order,created_at,updated_at
+                 ) VALUES (?1,NULL,?2,'smart',?3,?4,?5,?5)
+                 ON CONFLICT(id) DO UPDATE SET parent_id=NULL,name=?2,kind='smart',rule_json=?3,
+                   sort_order=?4,updated_at=?5",
+                params![id, name, rule, sort_order, now],
+            )
+            .map_err(|error| format!("无法初始化智能分组: {error}"))?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +128,12 @@ fn group_at(connection: &Connection, group_id: &str) -> Result<LibraryGroup, Str
         .optional()
         .map_err(|error| format!("无法读取分组: {error}"))?
         .ok_or_else(|| "分组不存在".to_string())
+}
+
+fn write_group_sync_record(connection: &Connection, group: &LibraryGroup) -> Result<(), String> {
+    let value =
+        serde_json::to_value(group).map_err(|error| format!("无法序列化分组同步状态: {error}"))?;
+    sync::write_group_state_record_at(connection, &group.id, Some(value)).map(|_| ())
 }
 
 fn parent_depth_and_cycle(
@@ -145,15 +213,16 @@ fn sibling_ids(
     let mut statement = connection
         .prepare(
             "SELECT id FROM library_groups
-             WHERE parent_id IS ?1 AND (?2 IS NULL OR id<>?2)
+             WHERE parent_id IS ?1 AND kind='custom' AND (?2 IS NULL OR id<>?2)
              ORDER BY sort_order,id",
         )
         .map_err(|error| format!("无法读取同级分组: {error}"))?;
-    statement
+    let siblings = statement
         .query_map(params![parent_id, excluding], |row| row.get::<_, String>(0))
         .map_err(|error| format!("无法读取同级分组: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("无法解析同级分组: {error}"))
+        .map_err(|error| format!("无法解析同级分组: {error}"))?;
+    Ok(siblings)
 }
 
 fn write_order(
@@ -181,25 +250,34 @@ fn create_group_at(
     validate_placement(connection, None, parent_id.as_deref())?;
     let sort_order: i64 = connection
         .query_row(
-            "SELECT COALESCE(MAX(sort_order)+1,0) FROM library_groups WHERE parent_id IS ?1",
+            "SELECT COALESCE(MAX(sort_order)+1,0) FROM library_groups
+             WHERE parent_id IS ?1 AND kind='custom'",
             params![parent_id],
             |row| row.get(0),
         )
         .map_err(|error| format!("无法确定分组顺序: {error}"))?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = library::now_ms();
-    connection
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("无法开启创建分组事务: {error}"))?;
+    transaction
         .execute(
             "INSERT INTO library_groups(id,parent_id,name,kind,rule_json,sort_order,created_at,updated_at)
              VALUES (?1,?2,?3,'custom',NULL,?4,?5,?5)",
             params![id, parent_id, name, sort_order, now],
         )
         .map_err(|error| format!("无法创建分组: {error}"))?;
-    group_at(connection, &id)
+    let group = group_at(&transaction, &id)?;
+    write_group_sync_record(&transaction, &group)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交创建分组: {error}"))?;
+    Ok(group)
 }
 
 fn update_group_at(
-    connection: &Connection,
+    connection: &mut Connection,
     group_id: &str,
     name: String,
 ) -> Result<LibraryGroup, String> {
@@ -208,13 +286,21 @@ fn update_group_at(
         return Err("智能组为只读分组".to_string());
     }
     let name = validate_name(&name)?;
-    connection
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("无法开启重命名分组事务: {error}"))?;
+    transaction
         .execute(
             "UPDATE library_groups SET name=?1,updated_at=?2 WHERE id=?3",
             params![name, library::now_ms(), group_id],
         )
         .map_err(|error| format!("无法重命名分组: {error}"))?;
-    group_at(connection, group_id)
+    let group = group_at(&transaction, group_id)?;
+    write_group_sync_record(&transaction, &group)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交重命名分组: {error}"))?;
+    Ok(group)
 }
 
 fn move_group_at(
@@ -247,6 +333,14 @@ fn move_group_at(
         write_order(&transaction, old_parent.as_deref(), siblings)?;
     }
     write_order(&transaction, parent_id.as_deref(), &destination)?;
+    let changed = old_siblings
+        .iter()
+        .flatten()
+        .chain(destination.iter())
+        .collect::<HashSet<_>>();
+    for changed_id in changed {
+        write_group_sync_record(&transaction, &group_at(&transaction, changed_id)?)?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("无法提交分组移动: {error}"))?;
@@ -259,6 +353,13 @@ fn delete_group_at(connection: &mut Connection, group_id: &str) -> Result<(), St
         return Err("智能组为只读分组".to_string());
     }
     let children = sibling_ids(connection, Some(group_id), None)?;
+    let member_item_ids = connection
+        .prepare("SELECT item_id FROM library_group_members WHERE group_id=?1 ORDER BY item_id")
+        .and_then(|mut statement| {
+            let rows = statement.query_map(params![group_id], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| format!("无法读取待删除分组成员: {error}"))?;
     let mut promoted = sibling_ids(connection, group.parent_id.as_deref(), Some(group_id))?;
     let insertion = (group.sort_order.max(0) as usize).min(promoted.len());
     promoted.splice(insertion..insertion, children);
@@ -269,6 +370,13 @@ fn delete_group_at(connection: &mut Connection, group_id: &str) -> Result<(), St
         .execute("DELETE FROM library_groups WHERE id=?1", params![group_id])
         .map_err(|error| format!("无法删除分组: {error}"))?;
     write_order(&transaction, group.parent_id.as_deref(), &promoted)?;
+    for changed_id in &promoted {
+        write_group_sync_record(&transaction, &group_at(&transaction, changed_id)?)?;
+    }
+    sync::write_group_state_record_at(&transaction, group_id, None)?;
+    for item_id in member_item_ids {
+        sync::write_membership_record_at(&transaction, group_id, &item_id, false)?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("无法提交删除分组: {error}"))
@@ -319,6 +427,13 @@ fn set_item_groups_at(
 ) -> Result<(), String> {
     let item_id = resolve_item_id(connection, item_id)?;
     validate_custom_groups(connection, &group_ids)?;
+    let previous = connection
+        .prepare("SELECT group_id FROM library_group_members WHERE item_id=?1")
+        .and_then(|mut statement| {
+            let rows = statement.query_map(params![item_id], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<HashSet<_>, _>>()
+        })
+        .map_err(|error| format!("无法读取现有书籍分组: {error}"))?;
     let transaction = connection
         .transaction()
         .map_err(|error| format!("无法开启分组成员事务: {error}"))?;
@@ -341,6 +456,14 @@ fn set_item_groups_at(
                 .map_err(|error| format!("无法添加书籍分组: {error}"))?;
         }
     }
+    for group_id in previous.union(&unique) {
+        sync::write_membership_record_at(
+            &transaction,
+            group_id,
+            &item_id,
+            unique.contains(group_id),
+        )?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("无法提交书籍分组: {error}"))
@@ -355,11 +478,12 @@ pub fn library_list_groups(app: AppHandle) -> Result<Vec<LibraryGroup>, String> 
              ORDER BY parent_id IS NOT NULL,parent_id,sort_order,id",
         )
         .map_err(|error| format!("无法读取书架分组: {error}"))?;
-    statement
+    let groups = statement
         .query_map([], read_group)
         .map_err(|error| format!("无法读取书架分组: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("无法解析书架分组: {error}"))
+        .map_err(|error| format!("无法解析书架分组: {error}"))?;
+    Ok(groups)
 }
 
 #[tauri::command]
@@ -378,8 +502,8 @@ pub fn library_update_group(
     group_id: String,
     name: String,
 ) -> Result<LibraryGroup, String> {
-    let connection = library::open_database_at(&library::app_data_dir(&app)?)?;
-    update_group_at(&connection, &group_id, name)
+    let mut connection = library::open_database_at(&library::app_data_dir(&app)?)?;
+    update_group_at(&mut connection, &group_id, name)
 }
 
 #[tauri::command]
@@ -407,7 +531,7 @@ pub fn library_list_group_memberships(
     let mut statement = connection
         .prepare("SELECT group_id,item_id FROM library_group_members ORDER BY group_id,item_id")
         .map_err(|error| format!("无法读取分组成员: {error}"))?;
-    statement
+    let memberships = statement
         .query_map([], |row| {
             Ok(LibraryGroupMembership {
                 group_id: row.get(0)?,
@@ -416,7 +540,8 @@ pub fn library_list_group_memberships(
         })
         .map_err(|error| format!("无法读取分组成员: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("无法解析分组成员: {error}"))
+        .map_err(|error| format!("无法解析分组成员: {error}"))?;
+    Ok(memberships)
 }
 
 #[tauri::command]
@@ -429,8 +554,11 @@ pub fn library_set_group_member(
     let mut connection = library::open_database_at(&library::app_data_dir(&app)?)?;
     let item_id = resolve_item_id(&connection, &item_id)?;
     validate_custom_groups(&connection, std::slice::from_ref(&group_id))?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("无法开启分组成员事务: {error}"))?;
     if present {
-        connection
+        transaction
             .execute(
                 "INSERT INTO library_group_members(group_id,item_id,created_at)
                  VALUES (?1,?2,?3) ON CONFLICT(group_id,item_id) DO NOTHING",
@@ -438,14 +566,17 @@ pub fn library_set_group_member(
             )
             .map_err(|error| format!("无法添加分组成员: {error}"))?;
     } else {
-        connection
+        transaction
             .execute(
                 "DELETE FROM library_group_members WHERE group_id=?1 AND item_id=?2",
                 params![group_id, item_id],
             )
             .map_err(|error| format!("无法移除分组成员: {error}"))?;
     }
-    Ok(())
+    sync::write_membership_record_at(&transaction, &group_id, &item_id, present)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交分组成员: {error}"))
 }
 
 #[tauri::command]
@@ -503,6 +634,37 @@ mod tests {
     }
 
     #[test]
+    fn custom_root_order_does_not_rewrite_smart_groups() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut connection = library::open_database_at(directory.path()).unwrap();
+        let smart_before: Vec<(String, Option<String>, i64)> = connection
+            .prepare(
+                "SELECT id,parent_id,sort_order FROM library_groups WHERE kind='smart' ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        let first = create_group_at(&mut connection, None, "First".to_string()).unwrap();
+        assert_eq!(first.sort_order, 0);
+        let second = create_group_at(&mut connection, None, "Second".to_string()).unwrap();
+        move_group_at(&mut connection, &second.id, None, 0).unwrap();
+
+        let smart_after: Vec<(String, Option<String>, i64)> = connection
+            .prepare(
+                "SELECT id,parent_id,sort_order FROM library_groups WHERE kind='smart' ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(smart_after, smart_before);
+    }
+
+    #[test]
     fn rejects_cycles_and_promotes_children_when_deleting_a_parent() {
         let directory = tempfile::tempdir().unwrap();
         let mut connection = library::open_database_at(directory.path()).unwrap();
@@ -512,7 +674,7 @@ mod tests {
             create_group_at(&mut connection, Some(root.id.clone()), "Child".to_string()).unwrap();
         let leaf =
             create_group_at(&mut connection, Some(child.id.clone()), "Leaf".to_string()).unwrap();
-        assert!(move_group_at(&mut connection, &root.id, Some(leaf.id), 0).is_err());
+        assert!(move_group_at(&mut connection, &root.id, Some(leaf.id.clone()), 0).is_err());
         set_item_groups_at(&mut connection, "book-a", vec![child.id.clone()]).unwrap();
 
         delete_group_at(&mut connection, &child.id).unwrap();
@@ -535,5 +697,13 @@ mod tests {
             .unwrap();
         assert_eq!(book_count, 1);
         assert_eq!(member_count, 0);
+        let records = sync::list_records_at(&connection).unwrap();
+        assert!(records.iter().any(|record| {
+            record.object_id == format!("library-group:{}", child.id) && record.tombstone
+        }));
+        assert!(records.iter().any(|record| {
+            record.object_id == format!("library-membership:{}:book-a", child.id)
+                && record.tombstone
+        }));
     }
 }
