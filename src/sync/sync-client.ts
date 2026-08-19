@@ -16,6 +16,34 @@ export interface SyncRecord {
   readonly tombstone: boolean;
 }
 
+export type CausalOrder = 'equal' | 'dominates' | 'is-dominated' | 'concurrent';
+
+function counterFor(point: VersionPoint, deviceId: string): number {
+  return point.deviceId === deviceId ? point.version : point.context[deviceId] ?? 0;
+}
+
+/** Compare dotted version vectors using the same rules as the Rust merger. */
+export function compareVersionPoints(left: VersionPoint, right: VersionPoint): CausalOrder {
+  const devices = new Set([
+    left.deviceId,
+    right.deviceId,
+    ...Object.keys(left.context),
+    ...Object.keys(right.context),
+  ]);
+  let leftGreater = false;
+  let rightGreater = false;
+  for (const device of devices) {
+    const l = counterFor(left, device);
+    const r = counterFor(right, device);
+    if (l > r) leftGreater = true;
+    if (l < r) rightGreater = true;
+  }
+  if (!leftGreater && !rightGreater) return 'equal';
+  if (leftGreater && !rightGreater) return 'dominates';
+  if (!leftGreater && rightGreater) return 'is-dominated';
+  return 'concurrent';
+}
+
 export interface SyncConflict {
   readonly id: string;
   readonly objectId: string;
@@ -102,6 +130,10 @@ export class SyncRecordClient {
 
   downloadDocument(documentId: string): Promise<string> {
     return this.invoker.invoke<string>('sync_download_document', { documentId });
+  }
+
+  downloadDraft(draftId: string): Promise<string> {
+    return this.invoker.invoke<string>('sync_download_draft', { draftId });
   }
 }
 

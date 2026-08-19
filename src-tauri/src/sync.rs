@@ -211,6 +211,14 @@ impl SyncRecord {
         if self.object_id.len() > 512 || self.field.len() > 160 || self.point.context.len() > 256 {
             return Err("同步记录超过大小限制".to_string());
         }
+        if self
+            .value
+            .as_ref()
+            .and_then(|value| serde_json::to_vec(value).ok())
+            .is_some_and(|bytes| bytes.len() > 4 * 1024 * 1024)
+        {
+            return Err("同步记录值超过大小限制".to_string());
+        }
         if self.tombstone && self.value.is_some() {
             return Err("删除记录不能同时携带值".to_string());
         }

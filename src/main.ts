@@ -136,6 +136,8 @@ import { credentialRefForResource, opdsClient } from './library/opds-client.js';
 import { createSyncableStorage } from './storage/syncable-storage.js';
 import { documentClient } from './sync/document-client.js';
 import { syncRecordClient } from './sync/sync-client.js';
+import { currentSyncRecords, ApplicationStateSync } from './sync/app-state-sync.js';
+import { webDavClient } from './sync/webdav-client.js';
 import {
   createBoundVersionActions,
   showVersionsModal,
@@ -150,11 +152,13 @@ if (app === null) {
   throw new Error('LightInk: #app root container not found in index.html');
 }
 
+let applicationStateSync: ApplicationStateSync | undefined;
 const syncableStorage = createSyncableStorage(window.localStorage, {
   onChange: (key, value) => {
     window.dispatchEvent(
       new CustomEvent('lightink:syncable-storage-change', { detail: { key, value } }),
     );
+    applicationStateSync?.notifyStorageChange(key, value);
   },
 });
 
@@ -679,6 +683,41 @@ function bindOpenedBookProgress(progressId: string, target: ReaderTarget): void 
   saveLibraryProgressAlias(syncableStorage, libraryItemIdForTarget(target), progressId);
 }
 
+function rememberManagedRecent(documentId: string): void {
+  if (documentId.trim() === '') return;
+  let ids: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(syncableStorage.getItem('lightink.recent.managed') ?? '[]');
+    if (Array.isArray(parsed)) ids = parsed.filter((value): value is string => typeof value === 'string');
+  } catch {
+    ids = [];
+  }
+  ids = [documentId, ...ids.filter((id) => id !== documentId)].slice(0, 20);
+  syncableStorage.setItem('lightink.recent.managed', JSON.stringify(ids));
+}
+
+async function applyManagedRecents(records: readonly import('./sync/sync-client.js').SyncRecord[]): Promise<void> {
+  const record = currentSyncRecords(records, 'app-state').find(
+    (candidate) => candidate.field === 'lightink.recent.managed',
+  );
+  if (record === undefined || record.tombstone || typeof record.value !== 'string') return;
+  let ids: string[];
+  try {
+    const parsed: unknown = JSON.parse(record.value);
+    if (!Array.isArray(parsed)) return;
+    ids = parsed.filter((value): value is string => typeof value === 'string').slice(0, 20);
+  } catch {
+    return;
+  }
+  const documents = await documentClient.list().catch(() => []);
+  for (const id of ids) {
+    const document = documents.find((candidate) => candidate.id === id && candidate.localPath);
+    if (document?.localPath !== undefined) {
+      await persistRecentMutation('add_recent', { path: document.localPath });
+    }
+  }
+}
+
 function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
   if (acquisition.extension !== undefined && acquisition.extension !== '') return acquisition.extension;
   if (item.extension !== undefined && item.extension !== '') return item.extension;
@@ -958,6 +997,7 @@ async function joinActiveMarkdownToSyncSpace(): Promise<void> {
       result.content,
     );
     if (!adopted) return;
+    rememberManagedRecent(result.document.id);
     if (result.warnings.length > 0) {
       void dialogMessage(result.warnings.join('\n'), {
         title: i18n.locale === 'en' ? 'Sync space warnings' : '同步空间提示',
@@ -1579,7 +1619,7 @@ shell = createAppShell(
       }
     },
   },
-  { shortcutBindings: getShortcutBindings },
+  { shortcutBindings: getShortcutBindings, storage: syncableStorage },
 );
 
 /**
@@ -1730,6 +1770,70 @@ function pruneSourceViews(): void {
   }
 }
 
+async function writeSyncedAnnotations(contentHash: string, json: string): Promise<void> {
+  await invoke<void>('write_annotations', { contentHash, json });
+  // Annotation records are independent fields. A failed sync-record write must
+  // never make the local annotation save appear to fail.
+  await syncRecordClient
+    .writeRecord(`annotation:${contentHash}`, 'json', json)
+    .catch(() => undefined);
+  applicationStateSync?.schedule();
+}
+
+async function applySyncedAnnotations(records: readonly import('./sync/sync-client.js').SyncRecord[]): Promise<void> {
+  for (const objectId of new Set(records.map((record) => record.objectId).filter((id) => id.startsWith('annotation:')))) {
+    const hash = objectId.slice('annotation:'.length);
+    if (!/^[0-9a-f]{16,64}$/i.test(hash)) continue;
+    const record = currentSyncRecords(records, objectId).find((candidate) => candidate.field === 'json');
+    if (record?.tombstone || typeof record?.value !== 'string') continue;
+    await invoke<void>('write_annotations', { contentHash: hash, json: record.value }).catch(() => undefined);
+  }
+}
+
+async function applyPortableOpdsSources(
+  records: readonly import('./sync/sync-client.js').SyncRecord[],
+): Promise<void> {
+  const record = currentSyncRecords(records, 'app-state').find(
+    (candidate) => candidate.field === 'lightink.opds.sources',
+  );
+  if (record === undefined || record.tombstone || typeof record.value !== 'string') return;
+  let remote: PortableOpdsSource[];
+  try {
+    const parsed: unknown = JSON.parse(record.value);
+    if (!Array.isArray(parsed)) return;
+    remote = parsed.filter(
+      (source): source is PortableOpdsSource =>
+        typeof source === 'object' &&
+        source !== null &&
+        typeof (source as Record<string, unknown>).id === 'string' &&
+        typeof (source as Record<string, unknown>).title === 'string' &&
+        typeof (source as Record<string, unknown>).url === 'string' &&
+        typeof (source as Record<string, unknown>).allowHttp === 'boolean',
+    );
+  } catch {
+    return;
+  }
+  const local = await opdsClient.listSources().catch(() => []);
+  const remoteIds = new Set(remote.map((source) => source.id));
+  for (const source of local) {
+    if (!remoteIds.has(source.id)) await opdsClient.removeSource(source.id).catch(() => undefined);
+  }
+  for (const source of remote) {
+    const existing = local.find((candidate) => candidate.id === source.id);
+    await opdsClient
+      .addSource({
+        id: source.id,
+        title: source.title,
+        url: source.url,
+        allowHttp: source.allowHttp,
+        // Keep a credential reference already present on this device, but
+        // never serialize it into the portable record sent to another device.
+        credentialRef: existing?.credentialRef,
+      })
+      .catch(() => undefined);
+  }
+}
+
 function annotationHostFor(tab: MarkdownTabState): MarkdownAnnotationHost {
   let host = markdownAnnotations.get(tab.id);
   if (host === undefined) {
@@ -1737,7 +1841,7 @@ function annotationHostFor(tab: MarkdownTabState): MarkdownAnnotationHost {
       t: (key, vars) => i18n.t(key, vars),
       getContentHash: (path) => invoke<string>('content_hash', { path }),
       readAnnotations: (contentHash) => invoke<string>('read_annotations', { contentHash }),
-      writeAnnotations: (contentHash, json) => invoke('write_annotations', { contentHash, json }),
+      writeAnnotations: writeSyncedAnnotations,
       notify: (message) => {
         void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
       },
@@ -1794,7 +1898,7 @@ manager = new TabManager({
       getContentHash: (path) => invoke<string>('content_hash', { path }),
       readAnnotations: (contentHash) => invoke<string>('read_annotations', { contentHash }),
       writeAnnotations: (contentHash, json) =>
-        invoke('write_annotations', { contentHash, json }),
+        writeSyncedAnnotations(contentHash, json),
       notify: (message) => {
         void dialogMessage(message, { title: i18n.t('app.name'), kind: 'warning' });
       },
@@ -1817,6 +1921,8 @@ manager = new TabManager({
           },
         ),
       onProgressBound: bindOpenedBookProgress,
+      progressStorage: syncableStorage,
+      preferenceStorage: syncableStorage,
       onReturnToShelf: () => workspace.returnToShelf(),
     });
     reader.subscribeState(() => {
@@ -1919,6 +2025,12 @@ manager = new TabManager({
   },
   onFileOpened: (filePath) => {
     void persistRecentMutation('add_recent', { path: filePath });
+    const opened = manager?.tabList.find(
+      (candidate) => candidate.kind === 'markdown' && candidate.filePath === filePath,
+    );
+    if (opened?.kind === 'markdown' && opened.managedDocumentId !== undefined) {
+      rememberManagedRecent(opened.managedDocumentId);
+    }
   },
   onFileSaved: (filePath, content) => {
     // R13：每次成功保存自动生成一份版本快照。
@@ -1933,6 +2045,7 @@ manager = new TabManager({
       .deviceId()
       .then((deviceId) => documentClient.createVersion(documentId, content, deviceId))
       .catch(() => undefined);
+    applicationStateSync?.schedule();
   },
   onLinkNavigate: (href) => handleLinkNavigation(href),
   // R13：轮询发现活动文件被删/不可读时的一次性可见提示（TabManager 按不可读期去重）。
@@ -1995,6 +2108,7 @@ setSlashImageHandler(() => insertImageFromFile());
 // T7：大纲侧栏。闭包读取活动标签的宿主/markdown；刷新由 TabManager 的
 // onActiveContentChanged 回调防抖驱动（切换标签/活动标签内容变化）。
 outline = createOutlineView({
+  storage: syncableStorage,
   getActiveHost: () => manager.activeTab?.hostElement ?? null,
   getActiveMarkdown: () => {
     const tab = activeMarkdownTab();
@@ -2060,8 +2174,45 @@ statusBar = createStatusBar(document, shell.statusBarHost, {
   }),
 });
 
+type PortableOpdsSource = {
+  id: string;
+  title: string;
+  url: string;
+  allowHttp: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+async function persistPortableOpdsSources(): Promise<void> {
+  const sources = await opdsClient.listSources();
+  const portable: PortableOpdsSource[] = sources.map((source) => ({
+    id: source.id,
+    title: source.title,
+    url: source.url,
+    allowHttp: source.allowHttp,
+    createdAt: source.createdAt,
+    updatedAt: source.updatedAt,
+  }));
+  syncableStorage.setItem('lightink.opds.sources', JSON.stringify(portable));
+}
+
+const syncedOpdsClient = {
+  addSource: async (input: Parameters<typeof opdsClient.addSource>[0]) => {
+    const source = await opdsClient.addSource(input);
+    await persistPortableOpdsSources().catch(() => undefined);
+    return source;
+  },
+  listSources: () => opdsClient.listSources(),
+  removeSource: async (sourceId: string) => {
+    await opdsClient.removeSource(sourceId);
+    await persistPortableOpdsSources().catch(() => undefined);
+  },
+  browse: (sourceId: string, url?: string) => opdsClient.browse(sourceId, url),
+  search: (sourceId: string, query: string) => opdsClient.search(sourceId, query),
+};
+
 libraryView = createLibraryView(shell.editorArea, {
-  opds: opdsClient,
+  opds: syncedOpdsClient,
   library: libraryClient,
   getLocale: () => i18n.locale,
   getProgress: bindLibraryProgress(syncableStorage),
@@ -2086,6 +2237,24 @@ libraryView = createLibraryView(shell.editorArea, {
   onVisibilityChange: onLibraryVisibilityChange,
 });
 applyWorkspaceState();
+
+applicationStateSync = new ApplicationStateSync({
+  storage: syncableStorage,
+  records: syncRecordClient,
+  getProfile: () => webDavClient.getProfile(),
+  eventTarget: window,
+  onRecordsApplied: async (records) => {
+    await applySyncedAnnotations(records);
+    await applyPortableOpdsSources(records);
+    await applyManagedRecents(records);
+  },
+  onError: (error) => {
+    // Automatic sync is intentionally quiet; the sync status surface can
+    // present the backend error without interrupting editing.
+    console.warn('[lightink/sync] automatic state sync failed', error);
+  },
+});
+applicationStateSync.start();
 
 /** R8：状态栏 Markdown 序列化缓存——按内容版本去重，避免光标移动时重复全量序列化。 */
 let statusMarkdownCache: { tabId: string; revision: number; markdown: string } | null = null;
@@ -3100,6 +3269,7 @@ function shutdown(): void {
     externalChangeTimer = null;
   }
   autosave?.dispose();
+  applicationStateSync?.dispose();
   displayScale.dispose();
   wheelZoom.dispose();
 }
