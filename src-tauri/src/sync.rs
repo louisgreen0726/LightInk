@@ -6,6 +6,7 @@
 //! without relying on wall-clock order alone.
 
 use crate::documents;
+use crate::file::write_file_impl;
 use crate::library;
 use crate::managed;
 use crate::webdav::{self, WebDavError, WebDavState, MAX_SYNC_RESPONSE_BYTES};
@@ -1564,9 +1565,10 @@ pub async fn sync_download_document(
             .await
             .map_err(|error| format!("无法创建文档目录: {error}"))?;
     }
-    tokio::fs::copy(&blob, &path)
+    let content = tokio::fs::read_to_string(&blob)
         .await
-        .map_err(|error| format!("无法提交文档正文: {error}"))?;
+        .map_err(|error| format!("无法读取已校验的文档正文: {error}"))?;
+    write_file_impl(&path, &content)?;
     connection
         .execute(
             "UPDATE managed_documents SET local_path=?1,availability='local',updated_at=?2 WHERE id=?3",

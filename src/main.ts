@@ -134,6 +134,8 @@ import {
 } from './library/library-view.js';
 import { credentialRefForResource, opdsClient } from './library/opds-client.js';
 import { createSyncableStorage } from './storage/syncable-storage.js';
+import { documentClient } from './sync/document-client.js';
+import { syncRecordClient } from './sync/sync-client.js';
 import {
   createBoundVersionActions,
   showVersionsModal,
@@ -920,6 +922,57 @@ function saveActiveAs(): void {
   }
 }
 
+/** 将当前已保存的 Markdown 复制到应用数据目录并把标签切换到受管副本。 */
+async function joinActiveMarkdownToSyncSpace(): Promise<void> {
+  commitActiveSourceMode();
+  const tab = activeMarkdownTab();
+  if (tab === null || tab.filePath === null || tab.managedDocumentId !== undefined) {
+    return;
+  }
+  if (tab.dirty) {
+    const choice = await showConfirmDialog(document, {
+      title: i18n.locale === 'en' ? 'Save before joining' : '加入同步空间前保存',
+      message:
+        i18n.locale === 'en'
+          ? 'The source Markdown must be saved before it can be copied into the sync space.'
+          : '加入同步空间前需要先保存当前 Markdown，原文件不会被移动或删除。',
+      buttons: [
+        {
+          id: 'save',
+          label: i18n.locale === 'en' ? 'Save and continue' : '保存并继续',
+          kind: 'primary',
+        },
+        { id: 'cancel', label: i18n.t('dialog.cancel'), kind: 'plain' },
+      ],
+      cancelId: 'cancel',
+    });
+    if (choice !== 'save') return;
+    if (!(await manager.saveTab(tab.id))) return;
+  }
+  try {
+    const result = await documentClient.join(tab.filePath);
+    const adopted = await manager.adoptManagedDocument(
+      tab.id,
+      result.document.id,
+      result.managedPath,
+      result.content,
+    );
+    if (!adopted) return;
+    if (result.warnings.length > 0) {
+      void dialogMessage(result.warnings.join('\n'), {
+        title: i18n.locale === 'en' ? 'Sync space warnings' : '同步空间提示',
+        kind: 'warning',
+      });
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error ?? '');
+    void dialogMessage(
+      `${i18n.locale === 'en' ? 'Could not join the sync space' : '加入同步空间失败'}\n${detail}`,
+      { title: i18n.t('app.name'), kind: 'error' },
+    );
+  }
+}
+
 /**
  * 向活动标签插入元素（R2 插入菜单 / R5 快捷键）：
  *   - 图片：走本地文件选择 → 落盘 assets → 光标处插入（见 insertImageFromFile）；
@@ -1403,6 +1456,13 @@ shell = createAppShell(
       commitActiveSourceMode();
       void saveActiveAs();
     },
+    onJoinSyncSpace: () => {
+      void joinActiveMarkdownToSyncSpace();
+    },
+    canJoinSyncSpace: () => {
+      const tab = activeMarkdownTab();
+      return tab?.filePath !== null && tab?.filePath !== undefined && tab.managedDocumentId === undefined;
+    },
     // R14：自动保存开关（文件菜单勾选项；autosave 在 TabManager 后创建，
     // 菜单动作经 ?. 短路，菜单打开时 isAutosaveEnabled 重算勾选态）。
     isAutosaveEnabled: () => autosave?.isEnabled() === true,
@@ -1867,6 +1927,12 @@ manager = new TabManager({
     if (tab !== undefined && tab.kind === 'markdown') {
       markdownAnnotations.get(tab.id)?.syncIdentity(tab.filePath, tab.syntheticId);
     }
+  },
+  onManagedDocumentSaved: (documentId, content) => {
+    void syncRecordClient
+      .deviceId()
+      .then((deviceId) => documentClient.createVersion(documentId, content, deviceId))
+      .catch(() => undefined);
   },
   onLinkNavigate: (href) => handleLinkNavigation(href),
   // R13：轮询发现活动文件被删/不可读时的一次性可见提示（TabManager 按不可读期去重）。

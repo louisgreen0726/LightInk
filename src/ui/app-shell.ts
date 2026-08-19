@@ -155,6 +155,9 @@ export interface AppShellActions {
   hasActiveFile(): boolean;
   onSave(): void;
   onSaveAs(): void;
+  /** 将当前已保存 Markdown 加入同步空间并切换到受管副本。 */
+  onJoinSyncSpace?(): void;
+  canJoinSyncSpace?(): boolean;
   /**
    * R14：切换自动保存开关。可选——测试 stub 可省略（菜单动作空操作）。
    * 实现方负责持久化偏好（lightink.autosave.enabled，默认关）。
@@ -760,6 +763,13 @@ export function buildMenus(actions: AppShellActions): Menu[] {
         separator('file-sep1'),
         menuItem('file-save', () => t('file.save'), actions.onSave, sc(actions, 'Ctrl+S')),
         menuItem('file-save-as', () => t('file.saveAs'), actions.onSaveAs, sc(actions, 'Ctrl+Shift+S')),
+        menuItem(
+          'file-join-sync-space',
+          () => (actions.getLocale() === 'en' ? 'Add to sync space' : '加入同步空间'),
+          () => actions.onJoinSyncSpace?.(),
+          '',
+          () => actions.canJoinSyncSpace?.() === true,
+        ),
         // R14：自动保存开关（勾选标记式）。i18n 目录不在本任务 scope，
         // 标签按当前 locale 内联双语（同 T5「字数统计」先例）。
         menuItem(

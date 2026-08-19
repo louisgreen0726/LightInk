@@ -41,6 +41,8 @@ export interface DocumentDraft {
 
 export interface JoinDocumentResult {
   readonly document: ManagedDocument;
+  /** 本机运行时受管副本路径；不会出现在同步快照。 */
+  readonly managedPath: string;
   readonly content: string;
   readonly copiedAssets: readonly ManagedAsset[];
   readonly warnings: readonly string[];
@@ -95,13 +97,27 @@ export class DocumentClient {
     title: string | undefined,
     deviceId: string,
     content: string,
+    draftId?: string,
   ): Promise<DocumentDraft> {
     return this.invoker.invoke<DocumentDraft>('managed_document_save_draft', {
+      draftId,
       documentId,
       title,
       deviceId,
       content,
     });
+  }
+
+  listDrafts(): Promise<DocumentDraft[]> {
+    return this.invoker.invoke<DocumentDraft[]>('managed_document_list_drafts');
+  }
+
+  readDraft(draftId: string): Promise<string> {
+    return this.invoker.invoke<string>('managed_document_read_draft', { draftId });
+  }
+
+  deleteDraft(draftId: string): Promise<void> {
+    return this.invoker.invoke<void>('managed_document_delete_draft', { draftId });
   }
 }
 
