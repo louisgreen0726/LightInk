@@ -60,8 +60,20 @@ import type {
   ExportServiceDeps,
   ExportTabSnapshot,
 } from './export/export-service.js';
-import { readFile, writeFile } from './file/file-service.js';
-import { createOutlineView, type OutlineView } from './outline/outline-view.js';
+import {
+  clearSnapshot as clearCrashSnapshot,
+  listUntitledDrafts as listCrashDrafts,
+  readFile,
+  writeFile,
+  writeSnapshot as writeCrashSnapshot,
+  type UntitledDraft,
+} from './file/file-service.js';
+import {
+  createOutlineView,
+  OUTLINE_WIDTH_DEFAULT,
+  readStoredOutlineWidth,
+  type OutlineView,
+} from './outline/outline-view.js';
 import {
   createMarkdownAnnotationHost,
   type MarkdownAnnotationHost,
@@ -72,7 +84,11 @@ import { readerLoadErrorDetail } from './reader/error-message.js';
 import { loadReaderTheme, readerNativeWindowChrome } from './reader/reader-theme.js';
 import { loadReaderTypography, nextReaderFontScaleStep } from './reader/reader-typography.js';
 import { TabManager, isMarkdownTab } from './tabs/tab-manager.js';
-import { createAutosave, type AutosaveController } from './tabs/autosave.js';
+import {
+  createAutosave,
+  loadAutosaveEnabled,
+  type AutosaveController,
+} from './tabs/autosave.js';
 import type { CloseChoice, MarkdownTabState, ReaderTabState, TabState } from './tabs/types.js';
 import { createStyleTagSlot, ThemeService } from './theme/theme-service.js';
 import type { CheatBinding } from './ui/help-cheatsheet.js';
@@ -95,12 +111,13 @@ import { showExitConfirmation } from './ui/exit-confirmation.js';
 import {
   createStatusBar,
   cursorPositionFromOffset,
+  loadStatusBarVisible,
   type StatusBar,
   type StatusBarSnapshot,
 } from './ui/status-bar.js';
-import { createI18n } from './i18n/i18n.js';
+import { createI18n, loadLocale } from './i18n/i18n.js';
 import { installDisplayScale } from './ui/display-scale.js';
-import { installFontScale, type FontScaleHandle } from './ui/font-scale.js';
+import { installFontScale, loadFontScale, type FontScaleHandle } from './ui/font-scale.js';
 import { installWheelZoom } from './ui/wheel-zoom.js';
 import {
   advancePagedScroller,
@@ -118,13 +135,15 @@ import {
   type ReadingLayout,
 } from './ui/reading-layout.js';
 import { formatShortcutLabel, isMacPlatform } from './ui/platform.js';
+import { loadChromePinPrefs } from './ui/chrome-prefs.js';
 import { ShortcutRegistry, pagingShouldIgnoreTarget, wheelPagingShouldIgnoreTarget } from './ui/shortcuts.js';
 import { setNativeCaptionColors, setNativeTheme, setNativeTitleBar, toggleFullscreen } from './ui/window-chrome.js';
 import { formatDocumentTitle } from './ui/window-title.js';
 import { installWindowCloseProtection } from './ui/window-lifecycle.js';
-import { libraryClient } from './library/library-client.js';
+import { libraryClient, type ManagedItemLocation } from './library/library-client.js';
 import {
   bindLibraryProgress,
+  migrateLibraryProgressAliases,
   saveLibraryProgressAlias,
 } from './library/library-progress.js';
 import {
@@ -138,6 +157,7 @@ import { documentClient } from './sync/document-client.js';
 import { syncRecordClient } from './sync/sync-client.js';
 import { currentSyncRecords, ApplicationStateSync } from './sync/app-state-sync.js';
 import { webDavClient } from './sync/webdav-client.js';
+import { showSyncPanel } from './sync/sync-panel.js';
 import {
   createBoundVersionActions,
   showVersionsModal,
@@ -307,6 +327,19 @@ function applyLocaleChrome(): void {
   setSlashTranslate((key) => i18n.t(key));
 }
 applyLocaleChrome();
+
+function refreshLocalizedSurfaces(revealMenu = false): void {
+  applyLocaleChrome();
+  shell?.rebuildMenus();
+  if (revealMenu) shell?.revealMenu();
+  outline?.retranslate();
+  libraryView?.retranslate();
+  statusBar?.refresh(getActiveStatusSnapshot);
+  const tab = manager?.activeTab ?? null;
+  document.title = formatDocumentTitle(
+    tab === null ? null : { title: tab.title, dirty: tab.dirty },
+  );
+}
 
 // 主题服务：首次启动默认 warm-light，恢复上次选择；自定义主题走 <style> 注入槽。
 // R3：主题切换同步原生窗口明暗（Tauri setTheme → 原生标题栏颜色）。
@@ -676,8 +709,12 @@ document.addEventListener('lightink:reader-theme', () => {
 });
 
 function libraryItemIdForTarget(target: ReaderTarget): string {
-  return target.kind === 'remote' ? target.itemId : target.identity.id;
+  return target.kind === 'remote'
+    ? target.itemId
+    : (managedItemIdsByPath.get(target.path) ?? target.identity.id);
 }
+
+const managedItemIdsByPath = new Map<string, string>();
 
 function bindOpenedBookProgress(progressId: string, target: ReaderTarget): void {
   saveLibraryProgressAlias(syncableStorage, libraryItemIdForTarget(target), progressId);
@@ -712,10 +749,84 @@ async function applyManagedRecents(records: readonly import('./sync/sync-client.
   const documents = await documentClient.list().catch(() => []);
   for (const id of ids) {
     const document = documents.find((candidate) => candidate.id === id && candidate.localPath);
-    if (document?.localPath !== undefined) {
+    if (document?.localPath != null && document.localPath !== '') {
       await persistRecentMutation('add_recent', { path: document.localPath });
     }
   }
+}
+
+const synchronizedDraftIdsByKey = new Map<string, string>();
+const offeredDraftKeys = new Set<string>();
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUntitledSnapshotKey(key: string): boolean {
+  return /^untitled-[A-Za-z0-9-]{1,96}$/.test(key);
+}
+
+function embeddedDraftId(key: string): string | undefined {
+  const candidate = key.slice('untitled-'.length);
+  return UUID_PATTERN.test(candidate) ? candidate : undefined;
+}
+
+async function writeSynchronizedSnapshot(key: string, content: string): Promise<void> {
+  await writeCrashSnapshot(key, content);
+  if (!isUntitledSnapshotKey(key)) return;
+  const deviceId = await syncRecordClient.deviceId();
+  const draft = await documentClient.saveDraft(
+    undefined,
+    key,
+    deviceId,
+    content,
+    synchronizedDraftIdsByKey.get(key) ?? embeddedDraftId(key),
+  );
+  synchronizedDraftIdsByKey.set(key, draft.id);
+  applicationStateSync?.schedule();
+}
+
+async function clearSynchronizedSnapshot(key: string): Promise<void> {
+  await clearCrashSnapshot(key);
+  if (!isUntitledSnapshotKey(key)) return;
+  const draftId = synchronizedDraftIdsByKey.get(key) ?? embeddedDraftId(key);
+  synchronizedDraftIdsByKey.delete(key);
+  if (draftId !== undefined) {
+    await documentClient.deleteDraft(draftId);
+    applicationStateSync?.schedule();
+  }
+}
+
+async function listRecoverableDrafts(): Promise<UntitledDraft[]> {
+  const localDrafts = await listCrashDrafts().catch(() => []);
+  const available = new Map(localDrafts.map((draft) => [draft.key, draft]));
+  const synchronized = await documentClient.listDrafts().catch(() => []);
+  for (const draft of synchronized) {
+    if (draft.documentId !== undefined) continue;
+    const storedKey = draft.title;
+    const key =
+      storedKey !== undefined && isUntitledSnapshotKey(storedKey)
+        ? storedKey
+        : `untitled-sync-${draft.id}`;
+    synchronizedDraftIdsByKey.set(key, draft.id);
+    if (available.has(key) || offeredDraftKeys.has(key)) continue;
+    const content = await documentClient
+      .readDraft(draft.id)
+      .catch(() => syncRecordClient.downloadDraft(draft.id))
+      .catch(() => null);
+    if (content !== null) available.set(key, { key, content });
+  }
+  const drafts = [...available.values()].filter((draft) => !offeredDraftKeys.has(draft.key));
+  for (const draft of drafts) offeredDraftKeys.add(draft.key);
+  return drafts;
+}
+
+let draftRecoveryQueue: Promise<void> = Promise.resolve();
+
+function recoverAvailableDrafts(): Promise<void> {
+  const recover = async (): Promise<void> => {
+    await manager.recoverUntitledDrafts();
+  };
+  const task = draftRecoveryQueue.then(recover, recover);
+  draftRecoveryQueue = task.catch(() => undefined);
+  return task;
 }
 
 function remoteExtension(item: LibraryOpenRequest['item'], acquisition: NonNullable<LibraryOpenRequest['acquisition']>): string {
@@ -777,7 +888,21 @@ async function openLibraryItem(
 ): Promise<void> {
   const { item } = request;
   if (item.sourceKind === 'local' || item.sourceKind === 'managed') {
-    const location = await libraryClient.materializeItem(item.id);
+    let location: ManagedItemLocation;
+    try {
+      location = await libraryClient.materializeItem(item.id);
+    } catch (error) {
+      // A synced managed row may have metadata but no local body yet. Opening
+      // it is the same user action as pressing the explicit download button.
+      if (item.sourceKind !== 'managed' || item.blobHash == null || item.blobHash === '') throw error;
+      throwIfOperationAborted(signal);
+      const path = await syncRecordClient.downloadBook(item.id);
+      throwIfOperationAborted(signal);
+      location = { itemId: item.id, path, availability: 'local' as const };
+    }
+    if (item.sourceKind === 'managed') {
+      managedItemIdsByPath.set(location.path, location.itemId);
+    }
     const tab = await openPathByKind(location.path);
     if (tab === null) {
       throw new Error(i18n.t('reader.loadFailed', { detail: item.title }));
@@ -885,7 +1010,7 @@ async function enrichLocalLibraryItem(
 ): Promise<import('./library/library-client.js').LibraryItem> {
   if (
     (item.sourceKind !== 'local' && item.sourceKind !== 'managed') ||
-    item.localPath === undefined
+    item.localPath == null || item.localPath === ''
   ) {
     return item;
   }
@@ -1503,6 +1628,35 @@ shell = createAppShell(
       const tab = activeMarkdownTab();
       return tab?.filePath !== null && tab?.filePath !== undefined && tab.managedDocumentId === undefined;
     },
+    onOpenSyncPanel: () => {
+      showSyncPanel({
+        doc: document,
+        webdav: webDavClient,
+        sync: syncRecordClient,
+        syncNow: () => applicationStateSync?.syncNow() ?? syncRecordClient.run(),
+        migration: {
+          preview: () => libraryClient.previewManagedMigration(),
+          apply: async (itemIds) => {
+            const selected = new Set(itemIds);
+            const legacyPaths = new Map<string, string>();
+            const currentItems = await libraryClient.listItems().catch(() => []);
+            for (const item of currentItems) {
+              if (selected.has(item.id) && item.localPath != null && item.localPath !== '') {
+                legacyPaths.set(item.id, item.localPath);
+              }
+            }
+            const result = await libraryClient.applyManagedMigration(itemIds);
+            migrateLibraryProgressAliases(syncableStorage, result.aliases, legacyPaths);
+            for (const alias of result.aliases) {
+              const path = legacyPaths.get(alias.aliasId);
+              if (path !== undefined) managedItemIdsByPath.set(path, alias.itemId);
+            }
+            return result;
+          },
+        },
+        locale: i18n.locale,
+      });
+    },
     // R14：自动保存开关（文件菜单勾选项；autosave 在 TabManager 后创建，
     // 菜单动作经 ?. 短路，菜单打开时 isAutosaveEnabled 重算勾选态）。
     isAutosaveEnabled: () => autosave?.isEnabled() === true,
@@ -1598,25 +1752,8 @@ shell = createAppShell(
     getLocale: () => i18n.locale,
     setLocale: (locale) => {
       i18n.setLocale(locale);
-      applyLocaleChrome();
-      if (shell !== undefined) {
-        shell.rebuildMenus();
-        // Keep menu chrome visible so the user sees the new language immediately.
-        shell.revealMenu();
-      }
-      // Outline chrome (title / toggle tooltips / empty states).
-      if (outline !== undefined) {
-        outline.retranslate();
-      }
-      libraryView?.retranslate();
-      statusBar?.refresh(getActiveStatusSnapshot);
-      // Refresh window title with localized app name.
-      const tab = manager?.activeTab ?? null;
-      if (tab !== null) {
-        document.title = formatDocumentTitle({ title: tab.title, dirty: tab.dirty });
-      } else {
-        document.title = formatDocumentTitle(null);
-      }
+      // Keep menu chrome visible so the user sees the new language immediately.
+      refreshLocalizedSurfaces(true);
     },
   },
   { shortcutBindings: getShortcutBindings, storage: syncableStorage },
@@ -1648,6 +1785,39 @@ function toggleChromePinnedWithOutline(): void {
     outline.setVisibility(outlineVisibilityBeforeImmersive);
     outlineVisibilityBeforeImmersive = null;
   }
+  scheduleReadingColumnSync();
+}
+
+function applySynchronizedPreferences(): void {
+  themeService.refreshFromStorage();
+
+  i18n.setLocale(loadLocale(syncableStorage));
+  refreshLocalizedSurfaces();
+
+  fontScale.setScale(loadFontScale(syncableStorage));
+  setReadingLayout(loadReadingLayout(syncableStorage));
+  shell.refreshReaderPreferences();
+  for (const tab of manager.tabList) {
+    if (tab.kind === 'reader') tab.reader.refreshPreferences?.();
+  }
+
+  autosave?.setEnabled(loadAutosaveEnabled(syncableStorage));
+  statusBar?.setVisible(loadStatusBarVisible(syncableStorage));
+  outline?.setWidth(readStoredOutlineWidth(syncableStorage) ?? OUTLINE_WIDTH_DEFAULT);
+
+  const chrome = loadChromePinPrefs(syncableStorage);
+  const pinned = chrome.menu && chrome.tabs;
+  if (shell.isChromePinned() !== pinned) {
+    shell.setChromePinned(pinned);
+    if (!pinned && outline.visibility !== 'hidden') {
+      outlineVisibilityBeforeImmersive = outline.visibility;
+      outline.setVisibility('hidden');
+    } else if (pinned && outlineVisibilityBeforeImmersive !== null) {
+      outline.setVisibility(outlineVisibilityBeforeImmersive);
+      outlineVisibilityBeforeImmersive = null;
+    }
+  }
+  syncNativeWindowChrome();
   scheduleReadingColumnSync();
 }
 
@@ -1886,6 +2056,9 @@ manager = new TabManager({
   formatUntitledTitle: (n) => i18n.t('app.untitled', { n: String(n) }),
   formatUntitledRestoredTitle: (n) => i18n.t('app.untitledRestored', { n: String(n) }),
   remoteImageLoadLabel: i18n.t('reader.remoteImageLoad'),
+  writeSnapshot: writeSynchronizedSnapshot,
+  clearSnapshot: clearSynchronizedSnapshot,
+  listUntitledDrafts: listRecoverableDrafts,
   mountEditor,
   mountReader: async (host) => {
     host.classList.add('lightink-tab-host--reader');
@@ -1908,18 +2081,17 @@ manager = new TabManager({
           retry,
           t: (key, vars) => i18n.t(key, vars),
         }),
-      onComicMetadata: (target, metadata) =>
-        libraryClient.updateComicMetadata(
-          target.kind === 'remote' ? target.itemId : target.identity.id,
-          {
-            series: metadata.series,
-            number: metadata.number,
-            volume: metadata.volume,
-            pageCount: metadata.pageCount,
-            readingDirection: metadata.readingDirection,
-            coverPage: metadata.coverPage,
-          },
-        ),
+      onComicMetadata: async (target, metadata) => {
+        await libraryClient.updateComicMetadata(libraryItemIdForTarget(target), {
+          series: metadata.series,
+          number: metadata.number,
+          volume: metadata.volume,
+          pageCount: metadata.pageCount,
+          readingDirection: metadata.readingDirection,
+          coverPage: metadata.coverPage,
+        });
+        applicationStateSync?.schedule();
+      },
       onProgressBound: bindOpenedBookProgress,
       progressStorage: syncableStorage,
       preferenceStorage: syncableStorage,
@@ -2143,7 +2315,6 @@ shell.outlineSidebar.appendChild(outline.root);
 // 标签闭包现读 locale，语言切换后下次刷新即用新文案。
 statusBar = createStatusBar(document, shell.statusBarHost, {
   storage: syncableStorage,
-  initiallyVisible: false,
   labels: () => ({
     words: i18n.t('status.words'),
     characters: i18n.t('status.characters'),
@@ -2220,7 +2391,14 @@ libraryView = createLibraryView(shell.editorArea, {
   enrichLocalItem: enrichLocalLibraryItem,
   onOpen: openLibraryItem,
   onCache: cacheLibraryItem,
+  onDownload: async (item, signal) => {
+    throwIfOperationAborted(signal);
+    const path = await syncRecordClient.downloadBook(item.id);
+    throwIfOperationAborted(signal);
+    return path;
+  },
   onImportLocal: importLocalLibraryItem,
+  onLocalChange: () => applicationStateSync?.schedule(),
   notify: (message, kind = 'warning') => {
     void dialogMessage(message, { title: i18n.t('app.name'), kind });
   },
@@ -2243,10 +2421,16 @@ applicationStateSync = new ApplicationStateSync({
   records: syncRecordClient,
   getProfile: () => webDavClient.getProfile(),
   eventTarget: window,
+  onStorageApplied: () => {
+    applySynchronizedPreferences();
+  },
   onRecordsApplied: async (records) => {
     await applySyncedAnnotations(records);
     await applyPortableOpdsSources(records);
     await applyManagedRecents(records);
+    void recoverAvailableDrafts().catch((error: unknown) => {
+      console.warn('[lightink/sync] synchronized draft recovery failed', error);
+    });
   },
   onError: (error) => {
     // Automatic sync is intentionally quiet; the sync status surface can
@@ -3307,7 +3491,7 @@ void (async () => {
 
 async function bootstrap(): Promise<void> {
   // 先恢复崩溃遗留的未命名草稿（其副作用：为每个恢复草稿开标签）。
-  await manager.recoverUntitledDrafts();
+  await recoverAvailableDrafts();
   // R1：先注册单实例 open-file 监听，再取首实例 pending——监听就绪前到达的第二实例
   // 文件由随后的初始 take_pending_file 抽干槽兜底，避免启动竞态内事件被孤立。
   // Runtime association/second-instance opens restore the window and notify;

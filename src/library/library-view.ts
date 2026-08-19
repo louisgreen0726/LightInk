@@ -67,6 +67,12 @@ interface Labels {
   open: string;
   cacheBook: string;
   caching: string;
+  downloadBook: string;
+  downloadingBook: string;
+  keepOffline: string;
+  removeOffline: string;
+  keepGroupOffline: string;
+  removeGroupOffline: string;
   remove: string;
   clearCache: string;
   cacheUsage: string;
@@ -161,6 +167,12 @@ const LABELS: Record<Locale, Labels> = {
     open: 'Open',
     cacheBook: 'Cache book',
     caching: 'Caching…',
+    downloadBook: 'Download book',
+    downloadingBook: 'Downloading…',
+    keepOffline: 'Keep offline',
+    removeOffline: 'Remove offline copy',
+    keepGroupOffline: 'Keep group offline',
+    removeGroupOffline: 'Stop keeping group offline',
     remove: 'Remove from library',
     clearCache: 'Clear cache',
     cacheUsage: '{used} of {limit}',
@@ -253,6 +265,12 @@ const LABELS: Record<Locale, Labels> = {
     open: '打开阅读',
     cacheBook: '缓存整本',
     caching: '正在缓存…',
+    downloadBook: '下载正文',
+    downloadingBook: '正在下载…',
+    keepOffline: '保留离线',
+    removeOffline: '取消离线保留',
+    keepGroupOffline: '整组保留离线',
+    removeGroupOffline: '取消整组离线保留',
     remove: '移出书库',
     clearCache: '清理缓存',
     cacheUsage: '已用 {used} / {limit}',
@@ -352,13 +370,18 @@ export interface LibraryViewDependencies {
         | 'listGroupMemberships'
         | 'setGroupMember'
         | 'setItemGroups'
+        | 'setOfflinePinned'
       >
     >;
   readonly getLocale: () => Locale;
   readonly onOpen: (request: LibraryOpenRequest, signal?: AbortSignal) => Promise<void>;
   readonly onCache: (request: LibraryOpenRequest, signal?: AbortSignal) => Promise<void>;
+  /** Download a synced managed book body and return its local materialized path. */
+  readonly onDownload?: (item: LibraryItem, signal?: AbortSignal) => Promise<string | void>;
   readonly onImportLocal: () => Promise<LibraryItem | null>;
   readonly notify: (message: string, kind?: 'error' | 'warning') => void;
+  /** Schedule the debounced snapshot sync after a library metadata mutation. */
+  readonly onLocalChange?: () => void;
   readonly onVisibilityChange?: (visible: boolean) => void;
   /** Shelf projection. Catalog rows pass `{ catalogEntry: true }`. */
   readonly getProgress?: (
@@ -392,6 +415,8 @@ interface DisplayItem {
   readonly item: LibraryItem;
   readonly entry?: OpdsEntry;
   readonly links: readonly AcquisitionLink[];
+  readonly catalogGroupKey?: string;
+  readonly catalogGroupTitle?: string;
 }
 
 function bytesLabel(bytes: number): string {
@@ -442,6 +467,21 @@ function itemFromEntry(sourceId: string, entry: OpdsEntry): DisplayItem {
     entry,
     links,
   };
+}
+
+function itemsFromFeed(sourceId: string, feed: OpdsFeed): DisplayItem[] {
+  const displays = feed.entries.map((entry) => itemFromEntry(sourceId, entry));
+  for (const [index, group] of (feed.groups ?? []).entries()) {
+    const entries = [...(group.publications ?? []), ...group.navigation];
+    for (const entry of entries) {
+      displays.push({
+        ...itemFromEntry(sourceId, entry),
+        catalogGroupKey: `opds-group-${index}`,
+        catalogGroupTitle: group.title,
+      });
+    }
+  }
+  return displays;
 }
 
 function safeCoverUrl(item: LibraryItem, sources: readonly OpdsSource[]): string | undefined {
@@ -517,6 +557,19 @@ function itemAuthors(item: LibraryItem): readonly string[] {
 
 function isLocalItem(item: LibraryItem): boolean {
   return item.sourceKind === 'local' || item.sourceKind === 'managed';
+}
+
+function isManagedItem(item: LibraryItem): boolean {
+  return item.sourceKind === 'managed' && item.blobHash != null && item.blobHash !== '';
+}
+
+function isManagedBodyAvailable(item: LibraryItem): boolean {
+  return (
+    isManagedItem(item) &&
+    item.localPath != null &&
+    item.localPath !== '' &&
+    item.availability === 'local'
+  );
 }
 
 const SHELF_GROUPS: readonly ShelfGroup[] = ['all', 'in-progress', 'unread', 'text', 'comic'];
@@ -1013,6 +1066,7 @@ export function createLibraryView(
       await deps.library.moveGroup(groupId, parentId, sortOrder);
       if (parentId !== undefined) expandedGroupIds.add(parentId);
       await reloadGroups();
+      deps.onLocalChange?.();
     } catch (error) {
       deps.notify(errorText(error, labels().invalidGroupMove), 'error');
     }
@@ -1039,6 +1093,7 @@ export function createLibraryView(
       groupActionsId = null;
       closeGroupEditor();
       await reloadGroups();
+      deps.onLocalChange?.();
     } catch (error) {
       deps.notify(errorText(error, labels().offline), 'error');
     }
@@ -1056,6 +1111,27 @@ export function createLibraryView(
       run();
     });
     return action;
+  }
+
+  async function setGroupOffline(groupId: string, pinned: boolean): Promise<void> {
+    if (deps.library.setOfflinePinned === undefined) return;
+    const memberIds = itemIdsForGroup(groups, memberships, groupId);
+    const managed = items
+      .map((display) => display.item)
+      .filter((item) => memberIds.has(item.id) && isManagedItem(item));
+    if (managed.length === 0) return;
+    try {
+      for (const item of managed) {
+        await deps.library.setOfflinePinned(item.id, pinned);
+        updateItemInMemory({ ...item, offlinePinned: pinned });
+      }
+      groupActionsId = null;
+      renderGroups();
+      renderItems();
+      deps.onLocalChange?.();
+    } catch (error) {
+      deps.notify(errorText(error, labels().offline), 'error');
+    }
   }
 
   function appendCustomGroupNode(node: LibraryGroupNode): void {
@@ -1136,6 +1212,12 @@ export function createLibraryView(
       const down = keyboardGroupPlacement(groups, node.group.id, 'down');
       const outdent = keyboardGroupPlacement(groups, node.group.id, 'outdent');
       const indent = keyboardGroupPlacement(groups, node.group.id, 'indent');
+      const memberIds = itemIdsForGroup(groups, memberships, node.group.id);
+      const managedMembers = items
+        .map((display) => display.item)
+        .filter((item) => memberIds.has(item.id) && isManagedItem(item));
+      const groupPinned =
+        managedMembers.length > 0 && managedMembers.every((item) => item.offlinePinned === true);
       menu.append(
         groupAction(labels().addChildGroup, () =>
           openGroupEditor({ kind: 'create', parentId: node.group.id }),
@@ -1158,6 +1240,11 @@ export function createLibraryView(
           labels().indent,
           () => void keyboardMoveGroup(node.group.id, 'indent'),
           indent === null,
+        ),
+        groupAction(
+          groupPinned ? labels().removeGroupOffline : labels().keepGroupOffline,
+          () => void setGroupOffline(node.group.id, !groupPinned),
+          managedMembers.length === 0 || deps.library.setOfflinePinned === undefined,
         ),
         groupAction(labels().deleteGroup, () => void deleteCustomGroup(node.group)),
       );
@@ -1312,8 +1399,8 @@ export function createLibraryView(
         breadcrumbs.append(separator, crumbButton);
       }
     }
-    previousButton.disabled = feed?.previousUrl === undefined;
-    nextButton.disabled = feed?.nextUrl === undefined;
+    previousButton.disabled = feed?.previousUrl == null || feed.previousUrl === '';
+    nextButton.disabled = feed?.nextUrl == null || feed.nextUrl === '';
     pager.hidden = previousButton.disabled && nextButton.disabled;
   }
 
@@ -1360,6 +1447,7 @@ export function createLibraryView(
       await deps.library.setGroupMember(groupId, itemId, true);
       memberships.push({ groupId, itemId });
       renderItems();
+      deps.onLocalChange?.();
     } catch (error) {
       deps.notify(errorText(error, labels().offline), 'error');
     }
@@ -1374,14 +1462,30 @@ export function createLibraryView(
 
   function openMembershipEditor(itemId: string): void {
     const custom = flattenedCustomGroups();
-    if (custom.length === 0) {
+    const display = items.find((candidate) => candidate.item.id === itemId);
+    const canPin =
+      display !== undefined &&
+      isManagedItem(display.item) &&
+      deps.library.setOfflinePinned !== undefined;
+    if (custom.length === 0 && !canPin) {
       deps.notify(labels().noCustomGroups, 'warning');
       return;
     }
     membershipItemId = itemId;
-    const display = items.find((candidate) => candidate.item.id === itemId);
     membershipTitle.textContent = `${labels().organizeBook}: ${display?.item.title ?? ''}`;
     membershipOptions.replaceChildren();
+    if (canPin && display !== undefined) {
+      const pinLabel = doc.createElement('label');
+      pinLabel.className = 'lightink-library-membership-offline';
+      const pin = doc.createElement('input');
+      pin.type = 'checkbox';
+      pin.name = 'offlinePinned';
+      pin.checked = display.item.offlinePinned === true;
+      const text = doc.createElement('span');
+      text.textContent = labels().keepOffline;
+      pinLabel.append(pin, text);
+      membershipOptions.appendChild(pinLabel);
+    }
     const assigned = new Set(
       memberships.filter((entry) => entry.itemId === itemId).map((entry) => entry.groupId),
     );
@@ -1536,7 +1640,21 @@ export function createLibraryView(
       detail.hidden = true;
       return;
     }
+    let renderedCatalogGroup: string | undefined;
     for (const display of shown) {
+      if (
+        libraryPage === 'catalog' &&
+        display.catalogGroupKey !== undefined &&
+        display.catalogGroupKey !== renderedCatalogGroup
+      ) {
+        renderedCatalogGroup = display.catalogGroupKey;
+        if (display.catalogGroupTitle !== undefined) {
+          const groupHeading = doc.createElement('h3');
+          groupHeading.className = 'lightink-library-opds-group-title';
+          groupHeading.textContent = display.catalogGroupTitle;
+          itemList.appendChild(groupHeading);
+        }
+      }
       itemList.appendChild(
         libraryPage === 'my-books' ? renderCoverCard(display) : renderCatalogRow(display),
       );
@@ -1568,6 +1686,16 @@ export function createLibraryView(
     }
   }
 
+  function updateItemInMemory(item: LibraryItem): void {
+    const index = items.findIndex((candidate) => candidate.item.id === item.id);
+    if (index >= 0) {
+      items[index] = { ...items[index]!, item };
+    }
+    if (selected?.item.id === item.id) {
+      selected = { ...selected, item };
+    }
+  }
+
   function selectedAcquisition(display: DisplayItem | null = selected): AcquisitionLink | undefined {
     const select = detail.querySelector<HTMLSelectElement>('.lightink-library-acquisition');
     const href = select?.value;
@@ -1584,7 +1712,11 @@ export function createLibraryView(
 
   async function openSelected(display = selected): Promise<void> {
     if (display === null) return;
-    if (display.entry?.kind === 'navigation' && display.entry.navigationUrl !== undefined) {
+    if (
+      display.entry?.kind === 'navigation' &&
+      display.entry.navigationUrl != null &&
+      display.entry.navigationUrl !== ''
+    ) {
       trail.push({ title: display.item.title, url: display.entry.navigationUrl });
       await loadFeed(display.entry.navigationUrl, false);
       return;
@@ -1686,12 +1818,76 @@ export function createLibraryView(
       selectedProgress?.status === 'in-progress' ? labels().continueReading : labels().open,
       'lightink-library-primary',
     );
+    const managedBodyMissing = isManagedItem(selected.item) && !isManagedBodyAvailable(selected.item);
     open.disabled =
       selected.entry?.kind === 'navigation'
-        ? selected.entry.navigationUrl === undefined
-        : !isLocalItem(selected.item) && selected.links.length === 0;
+        ? selected.entry.navigationUrl == null || selected.entry.navigationUrl === ''
+        : (!isLocalItem(selected.item) && selected.links.length === 0) ||
+          (managedBodyMissing && deps.onDownload === undefined);
     open.addEventListener('click', () => void openSelected());
     actions.appendChild(open);
+    if (managedBodyMissing && deps.onDownload !== undefined) {
+      const download = button(doc, labels().downloadBook);
+      const itemId = selected.item.id;
+      download.addEventListener('click', async () => {
+        const current = items.find((candidate) => candidate.item.id === itemId)?.item;
+        if (current === undefined || deps.onDownload === undefined) return;
+        download.disabled = true;
+        download.textContent = labels().downloadingBook;
+        const controller = new AbortController();
+        activeOperations.add(controller);
+        try {
+          const path = await deps.onDownload(current, controller.signal);
+          if (controller.signal.aborted) return;
+          const next: LibraryItem = {
+            ...current,
+            ...(path === undefined ? {} : { localPath: path }),
+            availability: 'local',
+          };
+          updateItemInMemory(next);
+          renderDetail();
+          renderItems();
+        } catch (error) {
+          if (!controller.signal.aborted) deps.notify(errorText(error, labels().offline), 'error');
+        } finally {
+          activeOperations.delete(controller);
+          if (download.isConnected) {
+            download.disabled = false;
+            download.textContent = labels().downloadBook;
+          }
+        }
+      });
+      actions.appendChild(download);
+    }
+    if (isManagedItem(selected.item) && deps.library.setOfflinePinned !== undefined) {
+      const pinLabel = doc.createElement('label');
+      pinLabel.className = 'lightink-library-offline-toggle';
+      const pin = doc.createElement('input');
+      pin.type = 'checkbox';
+      pin.checked = selected.item.offlinePinned === true;
+      pin.addEventListener('change', async () => {
+        if (selected === null || deps.library.setOfflinePinned === undefined) return;
+        const nextPinned = pin.checked;
+        pin.disabled = true;
+        try {
+          await deps.library.setOfflinePinned(selected.item.id, nextPinned);
+          updateItemInMemory({ ...selected.item, offlinePinned: nextPinned });
+          pinText.textContent = nextPinned ? labels().removeOffline : labels().keepOffline;
+          renderItems();
+          deps.onLocalChange?.();
+        } catch (error) {
+          pin.checked = !nextPinned;
+          pinText.textContent = pin.checked ? labels().removeOffline : labels().keepOffline;
+          deps.notify(errorText(error, labels().offline), 'error');
+        } finally {
+          pin.disabled = false;
+        }
+      });
+      const pinText = doc.createElement('span');
+      pinText.textContent = pin.checked ? labels().removeOffline : labels().keepOffline;
+      pinLabel.append(pin, pinText);
+      actions.appendChild(pinLabel);
+    }
     if (!isLocalItem(selected.item)) {
       const cache = button(doc, labels().cacheBook);
       cache.disabled = selected.links.length === 0;
@@ -1724,7 +1920,8 @@ export function createLibraryView(
     const extension = (item.extension ?? '').toLowerCase();
     return (
       isLocalItem(item) &&
-      item.localPath !== undefined &&
+      item.localPath != null &&
+      item.localPath !== '' &&
       !isShelfCoverUrl(item.coverUrl) &&
       (extension === 'epub' || extension === 'cbz')
     );
@@ -1796,7 +1993,7 @@ export function createLibraryView(
       const loaded = await deps.opds.browse(source.id, url);
       if (generation !== requestGeneration) return;
       feed = loaded;
-      items = loaded.entries.map((entry) => itemFromEntry(source.id, entry));
+      items = itemsFromFeed(source.id, loaded);
       refreshSmartGroups();
       selected = null;
       if (pushTrail) trail.push({ title: loaded.title, url: loaded.sourceUrl });
@@ -1881,7 +2078,7 @@ export function createLibraryView(
       const loaded = await deps.opds.search(selectedSourceId, query);
       if (generation !== requestGeneration) return;
       feed = loaded;
-      items = loaded.entries.map((entry) => itemFromEntry(selectedSourceId!, entry));
+      items = itemsFromFeed(selectedSourceId, loaded);
       refreshSmartGroups();
       selected = null;
       trail.splice(0, trail.length, { title: `${labels().search}: ${query}`, url: loaded.sourceUrl });
@@ -2043,6 +2240,7 @@ export function createLibraryView(
       selected = null;
       renderItems();
       renderDetail();
+      deps.onLocalChange?.();
     } catch (error) {
       deps.notify(errorText(error, labels().offline), 'error');
     }
@@ -2138,6 +2336,7 @@ export function createLibraryView(
       }
       closeGroupEditor();
       await reloadGroups();
+      deps.onLocalChange?.();
     } catch (error) {
       deps.notify(errorText(error, labels().offline), 'error');
     }
@@ -2158,13 +2357,25 @@ export function createLibraryView(
     const groupIds = Array.from(
       membershipOptions.querySelectorAll<HTMLInputElement>('input[name="membership"]:checked'),
     ).map((input) => input.value);
+    const offlinePin = membershipOptions.querySelector<HTMLInputElement>(
+      'input[name="offlinePinned"]',
+    );
     try {
-      if (deps.library.setItemGroups === undefined) return;
-      await deps.library.setItemGroups(itemId, groupIds);
-      memberships = memberships.filter((entry) => entry.itemId !== itemId);
-      memberships.push(...groupIds.map((groupId) => ({ groupId, itemId })));
+      if (deps.library.setItemGroups !== undefined) {
+        await deps.library.setItemGroups(itemId, groupIds);
+        memberships = memberships.filter((entry) => entry.itemId !== itemId);
+        memberships.push(...groupIds.map((groupId) => ({ groupId, itemId })));
+      }
+      if (offlinePin !== null && deps.library.setOfflinePinned !== undefined) {
+        await deps.library.setOfflinePinned(itemId, offlinePin.checked);
+        const current = items.find((candidate) => candidate.item.id === itemId)?.item;
+        if (current !== undefined) {
+          updateItemInMemory({ ...current, offlinePinned: offlinePin.checked });
+        }
+      }
       closeMembershipEditor();
       renderItems();
+      deps.onLocalChange?.();
     } catch (error) {
       deps.notify(errorText(error, labels().offline), 'error');
     }
@@ -2191,7 +2402,10 @@ export function createLibraryView(
   });
   importButton.addEventListener('click', async () => {
     const item = await deps.onImportLocal();
-    if (item !== null) await showMyBooks();
+    if (item !== null) {
+      deps.onLocalChange?.();
+      await showMyBooks();
+    }
   });
   clearCacheButton.addEventListener('click', async () => {
     try {
@@ -2220,10 +2434,14 @@ export function createLibraryView(
   });
   retryButton.addEventListener('click', () => void lastAction?.());
   previousButton.addEventListener('click', () => {
-    if (feed?.previousUrl !== undefined) void loadFeed(feed.previousUrl, false);
+    if (feed?.previousUrl != null && feed.previousUrl !== '') {
+      void loadFeed(feed.previousUrl, false);
+    }
   });
   nextButton.addEventListener('click', () => {
-    if (feed?.nextUrl !== undefined) void loadFeed(feed.nextUrl, false);
+    if (feed?.nextUrl != null && feed.nextUrl !== '') {
+      void loadFeed(feed.nextUrl, false);
+    }
   });
   itemList.addEventListener('keydown', (event) => {
     const rows = Array.from(itemList.querySelectorAll<HTMLButtonElement>('.lightink-library-item'));

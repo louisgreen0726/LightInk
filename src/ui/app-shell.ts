@@ -158,6 +158,8 @@ export interface AppShellActions {
   /** 将当前已保存 Markdown 加入同步空间并切换到受管副本。 */
   onJoinSyncSpace?(): void;
   canJoinSyncSpace?(): boolean;
+  /** 打开 WebDAV 同步状态、配置和冲突面板。 */
+  onOpenSyncPanel?(): void;
   /**
    * R14：切换自动保存开关。可选——测试 stub 可省略（菜单动作空操作）。
    * 实现方负责持久化偏好（lightink.autosave.enabled，默认关）。
@@ -296,6 +298,8 @@ export interface AppShell {
   toggleChromePinned(): boolean;
   /** Rebuild menu bar labels/items after language switch. */
   rebuildMenus(): void;
+  /** Re-read synchronized reader layout/typography/theme fields and apply them. */
+  refreshReaderPreferences(): void;
   /**
    * Persist reader typography (`lightink.reader.typography`) and restamp
    * reader hosts. Used by the view menu and by host zoom shortcuts/wheel
@@ -770,6 +774,11 @@ export function buildMenus(actions: AppShellActions): Menu[] {
           '',
           () => actions.canJoinSyncSpace?.() === true,
         ),
+        menuItem(
+          'file-sync-settings',
+          () => (actions.getLocale() === 'en' ? 'WebDAV sync…' : 'WebDAV 同步…'),
+          () => actions.onOpenSyncPanel?.(),
+        ),
         // R14：自动保存开关（勾选标记式）。i18n 目录不在本任务 scope，
         // 标签按当前 locale 内联双语（同 T5「字数统计」先例）。
         menuItem(
@@ -1153,6 +1162,13 @@ export function createAppShell(
   }
   rebuildMenusRef = rebuildMenus;
 
+  function refreshReaderPreferences(): void {
+    fallbackReaderLayout = loadReaderLayout(storage);
+    fallbackReaderTypography = loadReaderTypography(storage);
+    applyReaderChrome();
+    rebuildMenus();
+  }
+
   chromeHost.replaceChildren(menuTrigger, toolbar);
   tabsHost.replaceChildren(tabsTrigger, tabBar);
   root.replaceChildren(chromeHost, tabsHost, readerShell, mainRow, statusBarHost);
@@ -1434,6 +1450,7 @@ export function createAppShell(
     setChromePinned,
     toggleChromePinned,
     rebuildMenus,
+    refreshReaderPreferences,
     setReaderTypography: (patch) => {
       menuActions.onSetReaderTypography?.(patch);
     },

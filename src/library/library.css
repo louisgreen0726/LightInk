@@ -957,8 +957,23 @@
 .lightink-library-detail-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 7px;
   margin-top: 14px;
+}
+
+.lightink-library-offline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  color: var(--lightink-shelf-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lightink-library-offline-toggle input {
+  margin: 0;
 }
 
 /* library-view page contract: data-library-page = my-books | manage | catalog */
@@ -1022,6 +1037,14 @@
   flex-direction: column;
   gap: 4px;
   padding: 4px var(--lightink-shelf-pad-x) 48px;
+}
+
+.lightink-library-opds-group-title {
+  margin: 16px 8px 4px;
+  color: var(--lightink-text-primary);
+  font-size: 14px;
+  line-height: 1.4;
+  letter-spacing: 0;
 }
 
 .lightink-library-item--row {
