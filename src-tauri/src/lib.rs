@@ -18,6 +18,7 @@ mod opds;
 mod recents;
 mod remote;
 mod snapshot;
+mod webdav;
 mod window_chrome;
 
 use tauri_plugin_opener::OpenerExt;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(cli::PendingFile(std::sync::Mutex::new(first_file)))
         .manage(remote::RemoteState::default())
         .manage(archive::ArchiveState::default())
+        .manage(webdav::WebDavState::default())
         .invoke_handler(tauri::generate_handler![
             file::read_file,
             file::read_file_bytes,
@@ -100,6 +102,11 @@ pub fn run() {
             remote::remote_cancel,
             remote::remote_store_credential,
             remote::remote_forget_credential,
+            webdav::sync_get_profile,
+            webdav::sync_save_profile,
+            webdav::sync_test_profile,
+            webdav::sync_forget_profile,
+            webdav::sync_store_credential,
             archive::archive_open,
             archive::archive_open_nested,
             archive::archive_stage_nested,
